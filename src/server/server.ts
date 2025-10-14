@@ -47,10 +47,37 @@ export const startServer = (
     logger,
   });
 
+  let zonesSubscribed = false;
+
+  const trySubscribeZones = () => {
+    if (zonesSubscribed) {
+      return;
+    }
+
+    try {
+      transportService.subscribeZones();
+      zonesSubscribed = true;
+      logger.info("Subscribed to Roon transport zones");
+    } catch (error) {
+      logger.warn({ err: error }, "Zone subscription deferred until core pairing completes");
+    }
+  };
+
   // Wire RoonClient events to Socket.IO
   roonClient.on("core-status", (event) => {
     logger.info(event, "Roon core status update");
     socketContext.io.emit("core-status", event);
+
+    if (event.coreStatus === "paired") {
+      transportService.start();
+      imageService.start();
+      zonesSubscribed = false;
+      trySubscribeZones();
+    }
+
+    if (event.coreStatus === "unpaired") {
+      zonesSubscribed = false;
+    }
   });
 
   // Wire TransportService events to Socket.IO
@@ -75,9 +102,6 @@ export const startServer = (
   roonClient.start();
   transportService.start();
   imageService.start();
-
-  // Subscribe to zone updates
-  transportService.subscribeZones();
 
   httpServer.listen(config.port, config.host, () => {
     logger.info(
