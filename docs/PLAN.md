@@ -128,5 +128,7 @@
 | 2025-10-13 | C.1-C.2 Frontend Foundation | SvelteKit scaffold, 4 stores (core, zones, nowPlaying, browse), REST client, Socket.IO client, npm run build ✅ (Codex) |
 | 2025-10-13 | C.3 Views | Created Dashboard, Library browser, Search, Queue, Layout with Svelte 5 runes, npm run build ✅ (a11y warnings acceptable) |
 | 2025-10-13 | C.4 Socket Integration | Socket event listeners in stores (Codex), ErrorToast component, optimistic UI for transport controls, hierarchy tracking in browseStore, npm run build ✅ |
+| 2025-10-15 | D.1 Config & Env Validation | Added strict env parsing with ConfigError, .env.example, README updates, npm run build ✅ |
+| 2025-10-15 | D.3 Packaging | Added Dockerfile, docker-compose, systemd, launchd plist, Windows service script, README instructions, npm run build ✅ |
 
 Add a row after each significant change. Include tests run & manual verification steps.

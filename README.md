@@ -39,17 +39,34 @@ Copy `.env.example` as a starting point and adjust as needed.
 
 ## Running Natively (macOS / Linux)
 
-1. Install dependencies and build:
+1. Quick start (macOS/Linux):
+
+   ```bash
+   ./scripts/run-local.sh
+   ```
+
+   The script installs dependencies on first run and launches both backend and frontend with hot reload.
+
+   On Windows (PowerShell):
+
+   ```powershell
+   ./scripts/run-local.ps1
+   ```
+
+2. Manual workflow:
 
    ```bash
    npm install
    npm run build
+   npm start
    ```
 
-2. Start the server:
+   In another terminal for the frontend:
 
    ```bash
-   node dist/index.js
+   cd ui
+   npm install
+   npm run dev -- --host
    ```
 
 3. On macOS you can install the included launchd plist:
