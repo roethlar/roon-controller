@@ -37,8 +37,17 @@ export class BrowseService extends EventEmitter {
    * Entry-point for browsing the Roon hierarchy
    */
   public async browse(options: BrowseOptions): Promise<BrowseResult> {
+    this.logger.info({ options }, "BrowseService browse invoked");
     const response = await this.invoke("browse", this.mapBrowseOptions(options));
     const normalized = this.normalizeResult(response);
+    this.logger.debug(
+      {
+        hierarchy: options.hierarchy,
+        level: normalized.level,
+        count: normalized.count,
+      },
+      "BrowseService browse result"
+    );
     this.emit("browse-result", normalized);
     return normalized;
   }
@@ -47,8 +56,18 @@ export class BrowseService extends EventEmitter {
    * Load additional items for a previously retrieved hierarchy node
    */
   public async load(options: BrowseLoadOptions): Promise<BrowseResult> {
+    this.logger.info({ options }, "BrowseService load invoked");
     const response = await this.invoke("load", this.mapLoadOptions(options));
     const normalized = this.normalizeResult(response);
+    this.logger.debug(
+      {
+        hierarchy: options.hierarchy,
+        itemKey: options.itemKey,
+        level: normalized.level,
+        count: normalized.count,
+      },
+      "BrowseService load result"
+    );
     this.emit("browse-result", normalized);
     return normalized;
   }
@@ -57,8 +76,17 @@ export class BrowseService extends EventEmitter {
    * Pop the browse stack by the requested number of levels
    */
   public async pop(options: BrowsePopOptions): Promise<BrowseResult> {
+    this.logger.info({ options }, "BrowseService pop invoked");
     const response = await this.invoke("pop", this.mapPopOptions(options));
     const normalized = this.normalizeResult(response);
+    this.logger.debug(
+      {
+        hierarchy: options.hierarchy,
+        level: normalized.level,
+        count: normalized.count,
+      },
+      "BrowseService pop result"
+    );
     this.emit("browse-result", normalized);
     return normalized;
   }
@@ -67,6 +95,7 @@ export class BrowseService extends EventEmitter {
    * Perform a search using the browse hierarchy
    */
   public async search(options: BrowseSearchOptions): Promise<SearchResult[]> {
+    this.logger.info({ options }, "BrowseService search invoked");
     const browseOptions: BrowseOptions = {
       hierarchy: "search",
       zoneId: options.zoneId,
@@ -76,6 +105,10 @@ export class BrowseService extends EventEmitter {
 
     const result = await this.browse(browseOptions);
     const searchResults = result.items.map((item) => this.toSearchResult(item));
+    this.logger.debug(
+      { query: options.input, count: searchResults.length },
+      "BrowseService search result"
+    );
     this.emit("search-result", searchResults);
     return searchResults;
   }
