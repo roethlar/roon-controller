@@ -120,5 +120,12 @@
 | Date (UTC) | Task | Notes |
 | --- | --- | --- |
 | 2025-10-14 | Initial scaffold | Backend TypeScript project, logger, RoonClient skeleton, Socket.IO wiring |
+| 2025-10-13 | A.2 Transport Service | Implemented TransportService with Promise-based playback controls, zone subscription with incremental updates (zones_changed/added/removed), npm run build ✅ |
+| 2025-10-13 | A.4 Image Service | Implemented ImageService with streaming, cache headers, optional scaling parameters, npm run build ✅ |
+| 2025-10-13 | B.1 REST Endpoints | Created 5 route files (core, zones, transport, browse, image) with typed request/response, service composition in server.ts, npm run build ✅ |
+| 2025-10-13 | B.2 Socket Events | Implemented bidirectional Socket.IO (10 command listeners, event broadcasts), acknowledgment pattern with error handling, npm run build ✅ (Codex) |
+| 2025-10-13 | B.3 Error Handling | Created typed error hierarchy (RoonError, CoreUnpairedError, etc.), Express error middleware, refactored all TODO markers, npm run build ✅ |
+| 2025-10-13 | C.1-C.2 Frontend Foundation | SvelteKit scaffold, 4 stores (core, zones, nowPlaying, browse), REST client, Socket.IO client, npm run build ✅ (Codex) |
+| 2025-10-13 | C.3 Views | Created Dashboard, Library browser, Search, Queue, Layout with Svelte 5 runes, npm run build ✅ (a11y warnings acceptable) |
 
 Add a row after each significant change. Include tests run & manual verification steps.

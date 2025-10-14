@@ -37,6 +37,7 @@ export class RoonClient extends EventEmitter {
   private browse: any | null = null;
   private image: any | null = null;
   private pairedCore: RoonCoreInfo | null = null;
+  private coreStatus: "discovering" | "paired" | "unpaired" = "discovering";
 
   constructor(options: RoonClientOptions) {
     super();
@@ -92,6 +93,10 @@ export class RoonClient extends EventEmitter {
     return this.pairedCore;
   }
 
+  public getCoreStatus(): "discovering" | "paired" | "unpaired" {
+    return this.coreStatus;
+  }
+
   private onCorePaired(core: any): void {
     this.options.logger.info(
       {
@@ -101,6 +106,7 @@ export class RoonClient extends EventEmitter {
       "Paired with Roon core"
     );
 
+    this.coreStatus = "paired";
     this.pairedCore = {
       id: core.core_id,
       displayName: core.display_name,
@@ -119,6 +125,7 @@ export class RoonClient extends EventEmitter {
 
   private onCoreUnpaired(): void {
     this.options.logger.warn("Roon core unpaired");
+    this.coreStatus = "unpaired";
     this.transport = null;
     this.browse = null;
     this.image = null;
