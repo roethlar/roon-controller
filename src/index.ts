@@ -1,4 +1,4 @@
-import { loadConfig } from "./config/env";
+import { ConfigError, loadConfig } from "./config/env";
 import { createLogger } from "./core/logger";
 import { startServer } from "./server/server";
 
@@ -32,8 +32,13 @@ const bootstrap = async () => {
     process.on("SIGINT", () => shutdown("SIGINT"));
     process.on("SIGTERM", () => shutdown("SIGTERM"));
   } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error("Fatal error during startup", error);
+    if (error instanceof ConfigError) {
+      // eslint-disable-next-line no-console
+      console.error(`Configuration error: ${error.message}`);
+    } else {
+      // eslint-disable-next-line no-console
+      console.error("Fatal error during startup", error);
+    }
     process.exit(1);
   }
 };

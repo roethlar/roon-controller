@@ -63,10 +63,3 @@ export function setBrowseError(message: string): void {
 export function resetBrowse(): void {
 	internalStore.set(initialState);
 }
-
-export function setBrowseHierarchy(hierarchy: string): void {
-	internalStore.update((state) => ({
-		...state,
-		hierarchy
-	}));
-}

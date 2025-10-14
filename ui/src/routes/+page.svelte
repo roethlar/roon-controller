@@ -6,6 +6,7 @@
 	import type { TransportControlRequest, VolumeRequest } from '@shared/types';
 
 	let selectedZoneId = $state<string>('');
+	let commandInFlight = $state(false);
 	let socket = $state(getSocket());
 
 	$effect(() => {
@@ -19,24 +20,35 @@
 	const nowPlaying = $derived(selectedZoneId ? $nowPlayingStore[selectedZoneId] : undefined);
 	const paired = $derived($isCorePaired);
 
-	function sendCommand(event: string, payload: TransportControlRequest) {
-		socket.emit(event, payload);
+	async function sendCommand(event: string, payload: TransportControlRequest) {
+		commandInFlight = true;
+		try {
+			await new Promise<void>((resolve) => {
+				socket.emit(event, payload, () => {
+					resolve();
+				});
+				// Timeout after 3 seconds
+				setTimeout(resolve, 3000);
+			});
+		} finally {
+			commandInFlight = false;
+		}
 	}
 
 	function playPause() {
-		if (selectedZoneId) {
+		if (selectedZoneId && !commandInFlight) {
 			sendCommand('transport:play-pause', { zone_id: selectedZoneId });
 		}
 	}
 
 	function next() {
-		if (selectedZoneId) {
+		if (selectedZoneId && !commandInFlight) {
 			sendCommand('transport:next', { zone_id: selectedZoneId });
 		}
 	}
 
 	function previous() {
-		if (selectedZoneId) {
+		if (selectedZoneId && !commandInFlight) {
 			sendCommand('transport:previous', { zone_id: selectedZoneId });
 		}
 	}

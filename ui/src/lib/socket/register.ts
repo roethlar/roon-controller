@@ -1,4 +1,5 @@
 import { getSocket } from './client';
+import { get } from 'svelte/store';
 import {
 	setCoreStatus,
 	setZonesSnapshot,
@@ -11,16 +12,14 @@ import {
 	setBrowseError,
 	resetBrowse,
 	pushCommandFeedback,
-	commandFeedbackStore,
-	clearCommandFeedback,
-	setBrowseLoading,
-	setBrowseHierarchy
+	nowPlayingStore
 } from '../stores';
 import type {
 	CoreStatusResponse,
 	Zone,
 	BrowseResult,
-	SearchResult
+	SearchResult,
+	NowPlaying
 } from '@shared/types';
 
 interface CoreStatusEvent {
@@ -40,19 +39,12 @@ interface ZoneUpdatedEvent {
 	zone: Zone;
 }
 
-interface NowPlayingUpdatedEvent {
-	zone_id: string;
-	now_playing: NonNullable<SearchResult> extends never ? never : any;
-}
-
 interface CommandErrorEvent {
 	command: string;
 	error: string;
 }
 
 type CleanupFn = () => void;
-
-const listeners: CleanupFn[] = [];
 
 export function registerSocketHandlers(): CleanupFn {
 	const socket = getSocket();
@@ -78,13 +70,20 @@ export function registerSocketHandlers(): CleanupFn {
 
 	const handleZonesSnapshot = (payload: ZonesEvent) => {
 		setZonesSnapshot(payload.zones);
+		const activeZones = new Set(payload.zones.map((zone) => zone.zone_id));
+		const currentNowPlaying = get(nowPlayingStore);
+		Object.keys(currentNowPlaying).forEach((zoneId) => {
+			if (!activeZones.has(zoneId)) {
+				removeNowPlaying(zoneId);
+			}
+		});
 	};
 
 	const handleZoneUpdated = (payload: ZoneUpdatedEvent) => {
 		upsertZone(payload.zone);
 	};
 
-	const handleNowPlaying = (payload: { zone_id: string; now_playing: any }) => {
+	const handleNowPlaying = (payload: { zone_id: string; now_playing: NowPlaying | null }) => {
 		if (payload.now_playing) {
 			setNowPlaying(payload.zone_id, payload.now_playing);
 		} else {
@@ -94,7 +93,6 @@ export function registerSocketHandlers(): CleanupFn {
 
 	const handleBrowseResult = (result: BrowseResult) => {
 		setBrowseResult(result);
-		setBrowseLoading(result.title ?? undefined); // clear loading state
 	};
 
 	const handleSearchResult = (results: SearchResult[]) => {
@@ -125,7 +123,7 @@ export function registerSocketHandlers(): CleanupFn {
 		resetBrowse();
 	};
 
-	const eventHandlers: Array<[string, (...args: any[]) => void]> = [
+	const listeners: Array<[string, (...args: any[]) => void]> = [
 		['core-status', handleCoreStatus],
 		['zones', handleZonesSnapshot],
 		['zone-updated', handleZoneUpdated],
@@ -136,18 +134,16 @@ export function registerSocketHandlers(): CleanupFn {
 		['browse:error', handleBrowseError]
 	];
 
-	eventHandlers.forEach(([event, handler]) => {
+	listeners.forEach(([event, handler]) => {
 		socket.on(event, handler);
-		listeners.push(() => socket.off(event, handler));
 	});
 
 	socket.on('disconnect', handleDisconnect);
-	listeners.push(() => socket.off('disconnect', handleDisconnect));
 
 	return () => {
-		while (listeners.length) {
-			const dispose = listeners.pop();
-			dispose?.();
-		}
+		listeners.forEach(([event, handler]) => {
+			socket.off(event, handler);
+		});
+		socket.off('disconnect', handleDisconnect);
 	};
 }

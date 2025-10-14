@@ -277,12 +277,6 @@ export interface SearchResult extends BrowseItem {
 }
 
 // ========================================
-// Image Types (A.4 - Future)
-// ========================================
-
-// TODO: Image-related types to be added during A.4 implementation
-
-// ========================================
 // API Request/Response Types (B.1 - REST)
 // ========================================
 
@@ -351,7 +345,12 @@ export interface ZoneResponse {
 }
 
 // ========================================
-// Error Types (B.3 - Future)
+// Error Types (B.3 - Implemented)
 // ========================================
 
-// TODO: RoonError hierarchy to be added during B.3 implementation
+// See src/core/roon/errors.ts for complete error hierarchy:
+// - RoonError (base class)
+// - CoreUnpairedError
+// - ServiceUnavailableError
+// - ImageNotFoundError
+// - RoonOperationError

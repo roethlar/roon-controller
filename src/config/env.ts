@@ -6,26 +6,87 @@ dotenv.config();
 export interface AppConfig {
   readonly host: string;
   readonly port: number;
-  readonly logLevel: string;
+  readonly logLevel: LogLevel;
   readonly roonTokenPath: string;
 }
 
-const resolvePath = (value: string | undefined, fallback: string): string => {
-  return value && value.trim().length > 0 ? value : fallback;
+export type LogLevel = "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+
+export class ConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConfigError";
+  }
+}
+
+const VALID_LOG_LEVELS: LogLevel[] = [
+  "fatal",
+  "error",
+  "warn",
+  "info",
+  "debug",
+  "trace",
+  "silent",
+];
+
+const coerceString = (value: string | undefined): string | undefined =>
+  value?.trim() ? value.trim() : undefined;
+
+const parseHost = (value: string | undefined): string => {
+  const host = coerceString(value) ?? "0.0.0.0";
+  if (host.length === 0) {
+    throw new ConfigError("HOST cannot be empty");
+  }
+  return host;
+};
+
+const parsePort = (value: string | undefined): number => {
+  if (value === undefined || value.trim().length === 0) {
+    return 3333;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    throw new ConfigError("PORT must be an integer between 1 and 65535");
+  }
+
+  return parsed;
+};
+
+const parseLogLevel = (value: string | undefined): LogLevel => {
+  const level = coerceString(value)?.toLowerCase() as LogLevel | undefined;
+
+  if (!level) {
+    return "info";
+  }
+
+  if (!VALID_LOG_LEVELS.includes(level)) {
+    throw new ConfigError(
+      `LOG_LEVEL must be one of: ${VALID_LOG_LEVELS.join(", ")}`
+    );
+  }
+
+  return level;
+};
+
+const parseTokenPath = (value: string | undefined): string => {
+  const rawPath = coerceString(value) ?? "./config/roon-token.json";
+  if (!rawPath) {
+    throw new ConfigError("ROON_TOKEN_PATH cannot be empty");
+  }
+  return path.resolve(rawPath);
 };
 
 export const loadConfig = (): AppConfig => {
-  const host = resolvePath(process.env.HOST, "0.0.0.0");
-  const port = Number(process.env.PORT ?? "3333");
-  const logLevel = resolvePath(process.env.LOG_LEVEL, "info");
-
-  const roonTokenPath = path.resolve(
-    resolvePath(process.env.ROON_TOKEN_PATH, "./config/roon-token.json")
-  );
+  const host = parseHost(process.env.HOST);
+  const port = parsePort(process.env.PORT);
+  const logLevel = parseLogLevel(process.env.LOG_LEVEL);
+  const roonTokenPath = parseTokenPath(process.env.ROON_TOKEN_PATH);
 
   return {
     host,
-    port: Number.isFinite(port) && port > 0 ? port : 3333,
+    port,
     logLevel,
     roonTokenPath,
   };

@@ -22,6 +22,10 @@ export interface NowPlayingUpdatedEvent {
   now_playing: NowPlaying;
 }
 
+export interface ZoneRemovedEvent {
+  zone_id: string;
+}
+
 /**
  * TransportService event declarations for TypeScript
  */
@@ -31,8 +35,10 @@ export declare interface TransportService {
     event: "now-playing-updated",
     listener: (data: NowPlayingUpdatedEvent) => void
   ): this;
+  on(event: "zone-removed", listener: (data: ZoneRemovedEvent) => void): this;
   emit(event: "zone-updated", data: ZoneUpdatedEvent): boolean;
   emit(event: "now-playing-updated", data: NowPlayingUpdatedEvent): boolean;
+  emit(event: "zone-removed", data: ZoneRemovedEvent): boolean;
 }
 
 /**
@@ -201,7 +207,7 @@ export class TransportService extends EventEmitter {
         this.handleZonesUpdate(data);
       } else if (response === "Changed") {
         this.handleZonesUpdate(data);
-        // TODO(B.2): Handle zones_seek_changed for live progress updates
+        this.handleSeekChanged(data);
       } else if (response === "Unsubscribed") {
         this.logger.warn("Unsubscribed from zone updates");
         this.subscriptions.clear();
@@ -292,8 +298,33 @@ export class TransportService extends EventEmitter {
       for (const zone_id of data.zones_removed) {
         this.subscriptions.delete(zone_id);
         this.logger.info({ zone_id }, "Zone removed");
-        // TODO(B.2): Emit zone-removed event for frontend cleanup
+        this.emit("zone-removed", { zone_id });
       }
+    }
+  }
+
+  /**
+   * Handle seek position updates without full zone updates
+   */
+  private handleSeekChanged(data: any): void {
+    if (!data?.zones_seek_changed) {
+      return;
+    }
+
+    for (const seekUpdate of data.zones_seek_changed) {
+      const zoneId = seekUpdate.zone_id;
+      const seekPosition = seekUpdate.seek_position;
+      const queue_time_remaining = seekUpdate.queue_time_remaining;
+
+      // Update stored zone if exists
+      const zone = this.subscriptions.get(zoneId);
+      if (zone) {
+        zone.seek_position = seekPosition;
+        this.subscriptions.set(zoneId, zone);
+      }
+
+      // Emit seek update (lightweight, for progress bars)
+      this.logger.debug({ zone_id: zoneId, seek_position: seekPosition }, "Seek position updated");
     }
   }
 

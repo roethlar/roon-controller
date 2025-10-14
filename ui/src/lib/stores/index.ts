@@ -7,8 +7,7 @@ export {
 	setBrowseLoading,
 	setBrowseError,
 	setSearchResults,
-	resetBrowse,
-	setBrowseHierarchy
+	resetBrowse
 } from './browseStore';
 export {
 	commandFeedbackStore,

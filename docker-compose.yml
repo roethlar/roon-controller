@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  roon-controller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: roon-controller:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-3333}:3333"
+    volumes:
+      - ./config:/app/config

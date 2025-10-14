@@ -48,10 +48,16 @@ export class ImageService {
   ): Promise<{ stream: Readable; contentType: string }> {
     this.ensureImage();
 
+    // Validate width/height when scale is provided (Roon API requirement)
+    if (scale && (!width || !height)) {
+      const error = new Error("width and height are required when scale is specified");
+      this.logger.error({ imageKey, scale, width, height }, "Invalid getImage parameters");
+      throw error;
+    }
+
     return new Promise((resolve, reject) => {
       const options: any = { image_key: imageKey };
 
-      // TODO(B.1): Validate width/height both provided when scale is supplied (Roon API requirement)
       if (scale) options.scale = scale;
       if (width) options.width = width;
       if (height) options.height = height;

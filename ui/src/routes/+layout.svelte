@@ -1,7 +1,9 @@
 <script lang="ts">
 	import '../app.css';
 	import { coreStore, isCorePaired } from '$lib/stores/coreStore';
-	import { initializeStores } from '$lib/stores';
+	import { initializeStores, clearCommandFeedback } from '$lib/stores';
+	import { registerSocketHandlers } from '$lib/socket/register';
+	import ErrorToast from '$lib/components/ErrorToast.svelte';
 	import { onMount } from 'svelte';
 
 	let { children } = $props();
@@ -9,7 +11,13 @@
 
 	onMount(() => {
 		currentPath = window.location.pathname;
+		const cleanupSocket = registerSocketHandlers();
 		initializeStores(fetch);
+
+		return () => {
+			cleanupSocket();
+			clearCommandFeedback();
+		};
 	});
 
 	const navItems = [
@@ -43,6 +51,8 @@
 	<main>
 		{@render children()}
 	</main>
+
+	<ErrorToast />
 </div>
 
 <style>
