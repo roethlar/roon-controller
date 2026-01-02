@@ -39,6 +39,13 @@ export class BrowseService extends EventEmitter {
   public async browse(options: BrowseOptions): Promise<BrowseResult> {
     this.logger.info({ options }, "BrowseService browse invoked");
     const response = await this.invoke("browse", this.mapBrowseOptions(options));
+    if (!Array.isArray(response?.list?.items)) {
+      this.logger.warn(
+        { hierarchy: options.hierarchy, raw: response?.list },
+        "BrowseService browse response missing items"
+      );
+    }
+
     const normalized = this.normalizeResult(response);
     this.logger.debug(
       {
@@ -58,6 +65,13 @@ export class BrowseService extends EventEmitter {
   public async load(options: BrowseLoadOptions): Promise<BrowseResult> {
     this.logger.info({ options }, "BrowseService load invoked");
     const response = await this.invoke("load", this.mapLoadOptions(options));
+    if (!Array.isArray(response?.list?.items)) {
+      this.logger.warn(
+        { hierarchy: options.hierarchy, itemKey: options.itemKey, raw: response?.list },
+        "BrowseService load response missing items"
+      );
+    }
+
     const normalized = this.normalizeResult(response);
     this.logger.debug(
       {
@@ -78,6 +92,13 @@ export class BrowseService extends EventEmitter {
   public async pop(options: BrowsePopOptions): Promise<BrowseResult> {
     this.logger.info({ options }, "BrowseService pop invoked");
     const response = await this.invoke("pop", this.mapPopOptions(options));
+    if (!Array.isArray(response?.list?.items)) {
+      this.logger.warn(
+        { hierarchy: options.hierarchy, raw: response?.list },
+        "BrowseService pop response missing items"
+      );
+    }
+
     const normalized = this.normalizeResult(response);
     this.logger.debug(
       {
@@ -172,9 +193,10 @@ export class BrowseService extends EventEmitter {
       params.input = options.input;
     }
 
-    if (typeof options.offset === "number") {
-      params.offset = options.offset;
-    }
+    params.offset =
+      typeof options.offset === "number" && Number.isFinite(options.offset)
+        ? options.offset
+        : 0;
 
     if (typeof options.setDisplayOffset === "number") {
       params.set_display_offset = options.setDisplayOffset;
@@ -197,9 +219,10 @@ export class BrowseService extends EventEmitter {
       params.zone_or_output_id = options.zoneId;
     }
 
-    if (typeof options.offset === "number") {
-      params.offset = options.offset;
-    }
+    params.offset =
+      typeof options.offset === "number" && Number.isFinite(options.offset)
+        ? options.offset
+        : 0;
 
     return params;
   }
