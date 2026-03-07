@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import fs from "fs";
+import path from "path";
 import { Logger } from "pino";
 import { RoonClient } from "./RoonClient";
 import { CoreUnpairedError, ImageNotFoundError, RoonOperationError } from "./errors";
@@ -11,11 +13,17 @@ import { CoreUnpairedError, ImageNotFoundError, RoonOperationError } from "./err
  */
 export class ImageService {
   private image: any | null = null;
+  private readonly cacheDir: string;
 
   constructor(
     private roonClient: RoonClient,
-    private logger: Logger
-  ) {}
+    private logger: Logger,
+    cacheDir: string
+  ) {
+    this.cacheDir = cacheDir;
+    fs.mkdirSync(this.cacheDir, { recursive: true });
+    this.logger.info({ cacheDir: this.cacheDir }, "Image cache directory initialized");
+  }
 
   /**
    * Initialize image service
@@ -54,6 +62,44 @@ export class ImageService {
       throw error;
     }
 
+    // Build a cache key from imageKey + scale parameters
+    const cacheKey = scale
+      ? `${imageKey}_${scale}_${width}x${height}`
+      : imageKey;
+    const cachePath = path.join(this.cacheDir, cacheKey);
+    const metaPath = cachePath + ".meta";
+
+    // Check disk cache
+    try {
+      const [data, contentType] = await Promise.all([
+        fs.promises.readFile(cachePath),
+        fs.promises.readFile(metaPath, "utf-8"),
+      ]);
+      this.logger.debug({ imageKey, cacheKey }, "Image served from cache");
+      return { data, contentType: contentType.trim() };
+    } catch {
+      // Cache miss — fetch from Roon
+    }
+
+    const result = await this.fetchFromRoon(imageKey, scale, width, height);
+
+    // Write to cache (fire-and-forget, don't block the response)
+    fs.promises
+      .writeFile(cachePath, result.data)
+      .then(() => fs.promises.writeFile(metaPath, result.contentType))
+      .catch((err) =>
+        this.logger.warn({ err, cacheKey }, "Failed to write image cache")
+      );
+
+    return result;
+  }
+
+  private fetchFromRoon(
+    imageKey: string,
+    scale?: "fit" | "fill" | "stretch",
+    width?: number,
+    height?: number
+  ): Promise<{ data: Buffer; contentType: string }> {
     return new Promise((resolve, reject) => {
       const options: Record<string, unknown> = {};
       if (scale) options.scale = scale;
@@ -68,7 +114,7 @@ export class ImageService {
           this.logger.warn({ imageKey }, "Image not found");
           reject(new ImageNotFoundError(imageKey));
         } else {
-          this.logger.debug({ imageKey, contentType }, "Image retrieved");
+          this.logger.debug({ imageKey, contentType }, "Image retrieved from Roon");
           resolve({ data: imageData, contentType });
         }
       });

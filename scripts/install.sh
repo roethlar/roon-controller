@@ -144,6 +144,7 @@ HOST=0.0.0.0
 PORT=${PORT}
 LOG_LEVEL=info
 ROON_TOKEN_PATH=${INSTALL_DIR}/config/roon-token.json
+IMAGE_CACHE_PATH=${INSTALL_DIR}/data/image-cache
 EOF
 fi
 

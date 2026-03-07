@@ -8,6 +8,7 @@ export interface AppConfig {
   readonly port: number;
   readonly logLevel: LogLevel;
   readonly roonTokenPath: string;
+  readonly imageCachePath: string;
 }
 
 export type LogLevel = "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
@@ -78,16 +79,23 @@ const parseTokenPath = (value: string | undefined): string => {
   return path.resolve(rawPath);
 };
 
+const parseImageCachePath = (value: string | undefined): string => {
+  const rawPath = coerceString(value) ?? "./data/image-cache";
+  return path.resolve(rawPath);
+};
+
 export const loadConfig = (): AppConfig => {
   const host = parseHost(process.env.HOST);
   const port = parsePort(process.env.PORT);
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
   const roonTokenPath = parseTokenPath(process.env.ROON_TOKEN_PATH);
+  const imageCachePath = parseImageCachePath(process.env.IMAGE_CACHE_PATH);
 
   return {
     host,
     port,
     logLevel,
     roonTokenPath,
+    imageCachePath,
   };
 };

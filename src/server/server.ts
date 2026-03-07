@@ -29,7 +29,7 @@ export const startServer = (
   // Instantiate services
   const transportService = new TransportService(roonClient, logger);
   const browseService = new BrowseService(roonClient, logger);
-  const imageService = new ImageService(roonClient, logger);
+  const imageService = new ImageService(roonClient, logger, config.imageCachePath);
 
   // Create HTTP app with services
   const app: Application = createHttpApp(

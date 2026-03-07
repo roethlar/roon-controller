@@ -295,20 +295,30 @@ export class BrowseService extends EventEmitter {
       return [];
     }
 
+    const totalCount = browseResponse?.list?.count ?? 0;
+    const startOffset =
+      typeof offset === "number" && Number.isFinite(offset) ? offset : 0;
+
     this.logger.debug(
-      { hierarchy, count },
+      { hierarchy, totalCount, startOffset },
       "Loading items for browse result"
     );
 
-    const totalCount = browseResponse?.list?.count ?? 100;
+    const batchSize = 100;
+    const allItems: any[] = [];
 
-    const loadResponse = await this.invokeLoad({
-      hierarchy,
-      offset: typeof offset === "number" && Number.isFinite(offset) ? offset : 0,
-      count: Math.min(totalCount, 10000),
-    });
+    for (let off = startOffset; off < totalCount; off += batchSize) {
+      const loadResponse = await this.invokeLoad({
+        hierarchy,
+        offset: off,
+        count: Math.min(batchSize, totalCount - off),
+      });
+      const batch = loadResponse?.items ?? [];
+      allItems.push(...batch);
+      if (batch.length < Math.min(batchSize, totalCount - off)) break;
+    }
 
-    return loadResponse?.items ?? [];
+    return allItems;
   }
 
   /**

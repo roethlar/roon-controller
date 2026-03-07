@@ -247,12 +247,45 @@
 			: []
 	);
 
-	/** Navigable/displayable items in non-tracklist views (excludes action_list items). */
-	const gridItems = $derived(
+	/** Non-action items for the current list. */
+	const browseItems = $derived(
 		isTrackList
 			? []
 			: ($browseStore.current?.items.filter((i) => i.hint !== 'action_list') ?? [])
 	);
+
+	/** Levels 0–1 are navigation menus; level 2+ is content (artists, albums, etc.). */
+	const isContentList = $derived(($browseStore.current?.level ?? 0) >= 2);
+
+	const gridItems = $derived(isContentList ? browseItems : []);
+	const listItems = $derived(isContentList ? [] : browseItems);
+
+	/** Alphabetic jump list — unique first letters from the displayed items. */
+	const jumpLetters = $derived.by(() => {
+		if (isTrackList || browseItems.length <= 20) return [];
+		const seen = new Set<string>();
+		for (const item of browseItems) {
+			const ch = item.title.charAt(0).toUpperCase();
+			seen.add(/[A-Z]/.test(ch) ? ch : '#');
+		}
+		return Array.from(seen).sort((a, b) => (a === '#' ? 1 : b === '#' ? -1 : a.localeCompare(b)));
+	});
+
+	/** For each letter, the index of the first browseItem starting with it. */
+	const jumpIndex = $derived.by(() => {
+		const map = new Map<string, number>();
+		for (let i = 0; i < browseItems.length; i++) {
+			const ch = browseItems[i].title.charAt(0).toUpperCase();
+			const letter = /[A-Z]/.test(ch) ? ch : '#';
+			if (!map.has(letter)) map.set(letter, i);
+		}
+		return map;
+	});
+
+	function jumpTo(letter: string) {
+		const el = document.getElementById(`jump-${letter}`);
+		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
 
 	/** Extract the leading track number from a title like "3. Song Name" → "3" */
 	function trackNum(title: string, index: number): string {
@@ -305,6 +338,14 @@
 				{/if}
 			</div>
 
+			{#if jumpLetters.length > 0}
+				<nav class="jump-bar" aria-label="Alphabetic index">
+					{#each jumpLetters as letter}
+						<button type="button" class="jump-letter" onclick={() => jumpTo(letter)}>{letter}</button>
+					{/each}
+				</nav>
+			{/if}
+
 			{#if isTrackList}
 				{#if $browseStore.current?.subtitle}
 					<div class="album-header">
@@ -347,34 +388,57 @@
 					{/each}
 				</ol>
 			{:else}
-				<div class="items-grid">
-					{#each gridItems as item, index}
-						<div
-							class="item-wrapper"
-							style={`--delay: ${Math.min(index * 20, 240)}ms`}
-						>
-							<button
-								type="button"
-								class="item-card"
-								onclick={() => handleItemClick(item)}
-								disabled={!item.itemKey}
-								title={item.title}
-							>
-								<div class="item-art">
-									{#if item.imageKey}
-										<img src="/api/image/{item.imageKey}?scale=fit&width=320&height=320" alt={item.title} />
-									{/if}
-								</div>
-								<div class="item-meta">
-									<p class="title">{item.title}</p>
+				{#if listItems.length > 0}
+					<ul class="list-items">
+						{#each listItems as item}
+							<li>
+								<button
+									type="button"
+									class="list-item-btn"
+									onclick={() => handleItemClick(item)}
+									disabled={!item.itemKey}
+								>
+									<span class="list-item-title">{item.title}</span>
 									{#if item.subtitle}
-										<p class="subtitle">{item.subtitle}</p>
+										<span class="list-item-sub">{item.subtitle}</span>
 									{/if}
-								</div>
-							</button>
-						</div>
-					{/each}
-				</div>
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				{#if gridItems.length > 0}
+					<div class="items-grid">
+						{#each gridItems as item, index}
+							<div
+								class="item-wrapper"
+								style={`--delay: ${Math.min(index * 20, 240)}ms`}
+							>
+								<button
+									type="button"
+									class="item-card"
+									onclick={() => handleItemClick(item)}
+									disabled={!item.itemKey}
+									title={item.title}
+								>
+									<div class="item-art">
+										{#if item.imageKey}
+											<img src="/api/image/{item.imageKey}?scale=fit&width=320&height=320" alt={item.title} />
+										{:else}
+											<span class="art-placeholder">{item.title.charAt(0)}</span>
+										{/if}
+									</div>
+									<div class="item-meta">
+										<p class="title">{item.title}</p>
+										{#if item.subtitle}
+											<p class="subtitle">{item.subtitle}</p>
+										{/if}
+									</div>
+								</button>
+							</div>
+						{/each}
+					</div>
+				{/if}
 			{/if}
 		{:else}
 			<p class="loading">No content loaded.</p>
@@ -577,6 +641,64 @@
 		}
 	}
 
+	/* ── List items (no artwork) ── */
+	.list-items {
+		list-style: none;
+		margin: 0 0 0.85rem;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.list-item-btn {
+		width: 100%;
+		display: flex;
+		align-items: baseline;
+		gap: 0.6rem;
+		padding: 0.52rem 0.5rem;
+		border: none;
+		border-radius: 8px;
+		background: none;
+		color: var(--text);
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.list-item-btn:hover:not(:disabled) {
+		background: var(--surface-2);
+	}
+
+	.list-item-btn:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+
+	.list-items li + li .list-item-btn {
+		border-top: 1px solid var(--border);
+		border-radius: 0;
+	}
+
+	.list-items li:first-child .list-item-btn {
+		border-radius: 8px 8px 0 0;
+	}
+
+	.list-items li:last-child .list-item-btn {
+		border-radius: 0 0 8px 8px;
+	}
+
+	.list-items li:only-child .list-item-btn {
+		border-radius: 8px;
+	}
+
+	.list-item-title {
+		font-weight: 600;
+	}
+
+	.list-item-sub {
+		font-size: 0.82rem;
+		color: var(--text-soft);
+	}
+
 	/* ── Card grid ── */
 	.items-grid {
 		display: grid;
@@ -632,6 +754,16 @@
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
+	}
+
+	.art-placeholder {
+		font-size: 2.5rem;
+		font-weight: 700;
+		font-family: var(--font-display);
+		color: var(--text-soft);
+		opacity: 0.5;
+		text-transform: uppercase;
+		user-select: none;
 	}
 
 	.item-meta .title {
