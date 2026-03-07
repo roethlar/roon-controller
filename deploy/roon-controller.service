@@ -1,5 +1,5 @@
 [Unit]
-Description=Roon Controller Backend
+Description=Roon Controller
 After=network.target
 
 [Service]

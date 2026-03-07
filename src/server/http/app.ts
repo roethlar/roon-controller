@@ -1,3 +1,5 @@
+import path from "path";
+import fs from "fs";
 import express, { Application } from "express";
 import { Logger } from "pino";
 import { createHealthRouter } from "./routes/health";
@@ -30,6 +32,23 @@ export const createHttpApp = (
   app.use("/api/transport", createTransportRouter(transportService));
   app.use("/api/browse", createBrowseRouter(browseService));
   app.use("/api/image", createImageRouter(imageService));
+
+  // Serve the SvelteKit static build in production.
+  // UI_BUILD_PATH can be set explicitly; defaults to sibling `ui/build/` dir.
+  const uiBuildPath = path.resolve(
+    process.env.UI_BUILD_PATH ?? path.join(__dirname, "../../../ui/build")
+  );
+
+  if (fs.existsSync(uiBuildPath)) {
+    logger.info({ uiBuildPath }, "Serving frontend static files");
+    app.use(express.static(uiBuildPath));
+    // SPA fallback: serve index.html for any route not matched above
+    app.use((_req, res) => {
+      res.sendFile(path.join(uiBuildPath, "index.html"));
+    });
+  } else {
+    logger.info("No UI build found; frontend must be served separately");
+  }
 
   // Error handling middleware (must be last)
   app.use(createErrorHandler(logger));

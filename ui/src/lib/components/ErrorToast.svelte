@@ -30,7 +30,10 @@
 		<div class="toast-content">
 			<div class="toast-header">
 				<span class="toast-icon">⚠️</span>
-				<strong>{$commandFeedbackStore.source === 'transport' ? 'Playback' : 'Browse'} Error</strong>
+				<strong>
+					{$commandFeedbackStore.source === 'transport' ? 'Playback' :
+					 $commandFeedbackStore.source === 'queue' ? 'Queue' : 'Browse'} Error
+				</strong>
 			</div>
 			<p class="toast-message">{$commandFeedbackStore.message}</p>
 			<p class="toast-command">Command: {$commandFeedbackStore.command}</p>

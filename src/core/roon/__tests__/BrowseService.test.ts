@@ -2,7 +2,7 @@ import { BrowseService } from '../BrowseService';
 import { RoonClient } from '../RoonClient';
 import { Logger } from 'pino';
 import { CoreUnpairedError } from '../errors';
-import type { BrowseOptions } from '../../../shared/types';
+import type { BrowseOptions, BrowsePopOptions } from '../../../shared/types';
 
 // Mock RoonClient
 const mockRoonClient = {
@@ -26,83 +26,233 @@ const mockLogger = {
 
 describe('BrowseService', () => {
   let service: BrowseService;
-  let mockBrowse: any;
+  let mockBrowseApi: any;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockBrowse = {
+    mockBrowseApi = {
       browse: jest.fn(),
       load: jest.fn(),
-      pop: jest.fn(),
     };
-    (mockRoonClient.getBrowse as jest.Mock).mockReturnValue(mockBrowse);
+    (mockRoonClient.getBrowse as jest.Mock).mockReturnValue(mockBrowseApi);
     service = new BrowseService(mockRoonClient, mockLogger);
   });
 
   describe('browse', () => {
-    it('should call browse API and normalize result', async () => {
-      const mockResponse = {
+    it('should call browse then load and return normalized items', async () => {
+      // Roon browse() returns list metadata (no items)
+      const browseResponse = {
+        action: 'list',
         list: {
           title: 'Artists',
           level: 1,
-          offset: 0,
-          count: 10,
-          items: [
-            { title: 'Artist 1', item_key: 'key1' },
-          ],
+          count: 2,
         },
       };
 
-      mockBrowse.browse.mockImplementation((_params: any, callback: Function) => {
-        callback(null, mockResponse);
+      // Roon load() returns items at the top level
+      const loadResponse = {
+        items: [
+          { title: 'Artist 1', item_key: 'key1', hint: 'list' },
+          { title: 'Artist 2', item_key: 'key2', hint: 'list' },
+        ],
+        offset: 0,
+        list: { title: 'Artists', level: 1, count: 2 },
+      };
+
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+      mockBrowseApi.load.mockImplementation((_params: any, cb: Function) => {
+        cb(false, loadResponse);
       });
 
       const options: BrowseOptions = { hierarchy: 'browse' };
       const result = await service.browse(options);
 
+      expect(mockBrowseApi.browse).toHaveBeenCalledTimes(1);
+      expect(mockBrowseApi.load).toHaveBeenCalledTimes(1);
       expect(result.title).toBe('Artists');
       expect(result.level).toBe(1);
-      expect(result.items).toHaveLength(1);
+      expect(result.items).toHaveLength(2);
       expect(result.items[0].title).toBe('Artist 1');
+      expect(result.items[0].itemKey).toBe('key1');
+    });
+
+    it('should not call load when browse returns action other than list', async () => {
+      const browseResponse = {
+        action: 'message',
+        message: 'Done',
+        is_error: false,
+      };
+
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+
+      const result = await service.browse({ hierarchy: 'browse' });
+
+      expect(mockBrowseApi.load).not.toHaveBeenCalled();
+      expect(result.items).toHaveLength(0);
+    });
+
+    it('should not call load when list count is 0', async () => {
+      const browseResponse = {
+        action: 'list',
+        list: { title: 'Empty', level: 0, count: 0 },
+      };
+
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+
+      const result = await service.browse({ hierarchy: 'browse' });
+
+      expect(mockBrowseApi.load).not.toHaveBeenCalled();
+      expect(result.items).toHaveLength(0);
+      expect(result.count).toBe(0);
     });
 
     it('should throw CoreUnpairedError when browse unavailable', async () => {
       (mockRoonClient.getBrowse as jest.Mock).mockReturnValue(null);
 
-      const options: BrowseOptions = { hierarchy: 'browse' };
-      await expect(service.browse(options)).rejects.toThrow(CoreUnpairedError);
+      await expect(service.browse({ hierarchy: 'browse' })).rejects.toThrow(CoreUnpairedError);
     });
 
     it('should reject on browse API error', async () => {
-      mockBrowse.browse.mockImplementation((_params: any, callback: Function) => {
-        callback(new Error('Browse failed'));
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(new Error('Browse failed'));
       });
 
-      const options: BrowseOptions = { hierarchy: 'browse' };
-      await expect(service.browse(options)).rejects.toThrow('Browse failed');
+      await expect(service.browse({ hierarchy: 'browse' })).rejects.toThrow('Browse failed');
+    });
+
+    it('should pass item_key for drill-down navigation', async () => {
+      const browseResponse = {
+        action: 'list',
+        list: { title: 'Albums', level: 2, count: 1 },
+      };
+      const loadResponse = {
+        items: [{ title: 'Track 1', item_key: 't1', hint: 'action' }],
+        offset: 0,
+        list: { title: 'Albums', level: 2, count: 1 },
+      };
+
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+      mockBrowseApi.load.mockImplementation((_params: any, cb: Function) => {
+        cb(false, loadResponse);
+      });
+
+      await service.browse({ hierarchy: 'browse', itemKey: 'album_key' });
+
+      expect(mockBrowseApi.browse).toHaveBeenCalledWith(
+        expect.objectContaining({ item_key: 'album_key' }),
+        expect.any(Function)
+      );
+    });
+  });
+
+  describe('pop', () => {
+    it('should call browse with pop_levels then load items', async () => {
+      const browseResponse = {
+        action: 'list',
+        list: { title: 'Root', level: 0, count: 3 },
+      };
+      const loadResponse = {
+        items: [
+          { title: 'Item 1', item_key: 'k1', hint: 'list' },
+          { title: 'Item 2', item_key: 'k2', hint: 'list' },
+          { title: 'Item 3', item_key: 'k3', hint: 'list' },
+        ],
+        offset: 0,
+        list: { title: 'Root', level: 0, count: 3 },
+      };
+
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+      mockBrowseApi.load.mockImplementation((_params: any, cb: Function) => {
+        cb(false, loadResponse);
+      });
+
+      const options: BrowsePopOptions = { hierarchy: 'browse', levels: 2 };
+      const result = await service.pop(options);
+
+      // Pop uses browse() with pop_levels, NOT a separate pop method
+      expect(mockBrowseApi.browse).toHaveBeenCalledWith(
+        expect.objectContaining({ hierarchy: 'browse', pop_levels: 2 }),
+        expect.any(Function)
+      );
+      expect(result.items).toHaveLength(3);
+    });
+
+    it('should default to pop_levels 1', async () => {
+      const browseResponse = { action: 'list', list: { level: 0, count: 0 } };
+
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+
+      await service.pop({ hierarchy: 'browse' });
+
+      expect(mockBrowseApi.browse).toHaveBeenCalledWith(
+        expect.objectContaining({ pop_levels: 1 }),
+        expect.any(Function)
+      );
+    });
+  });
+
+  describe('load', () => {
+    it('should call load API and normalize items from top-level response', async () => {
+      const loadResponse = {
+        items: [
+          { title: 'Item A', item_key: 'a', hint: 'list' },
+        ],
+        offset: 0,
+        list: { title: 'Browse', level: 0, count: 5 },
+      };
+
+      mockBrowseApi.load.mockImplementation((_params: any, cb: Function) => {
+        cb(false, loadResponse);
+      });
+
+      const result = await service.load({ hierarchy: 'browse', offset: 0 });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].title).toBe('Item A');
+      expect(result.count).toBe(5);
     });
   });
 
   describe('search', () => {
     it('should return search results with inferred types', async () => {
-      const mockResponse = {
-        list: {
-          items: [
-            { title: 'Track 1', hint: 'track', item_key: 'key1' },
-            { title: 'Album 1', hint: 'album', item_key: 'key2' },
-          ],
-        },
+      const browseResponse = {
+        action: 'list',
+        list: { level: 0, count: 2 },
+      };
+      const loadResponse = {
+        items: [
+          { title: 'Track 1', hint: 'action', item_key: 'key1' },
+          { title: 'Album 1', hint: 'list', item_key: 'key2' },
+        ],
+        offset: 0,
+        list: { level: 0, count: 2 },
       };
 
-      mockBrowse.browse.mockImplementation((_params: any, callback: Function) => {
-        callback(null, mockResponse);
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+      mockBrowseApi.load.mockImplementation((_params: any, cb: Function) => {
+        cb(false, loadResponse);
       });
 
       const results = await service.search({ input: 'test' });
 
       expect(results).toHaveLength(2);
-      expect(results[0].resultType).toBe('track');
-      expect(results[1].resultType).toBe('album');
+      // hint "action" doesn't match any search type category
+      expect(results[0].resultType).toBe('unknown');
     });
   });
 });

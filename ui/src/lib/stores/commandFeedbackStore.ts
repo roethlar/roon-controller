@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 
-export type CommandSource = 'transport' | 'browse';
+export type CommandSource = 'transport' | 'browse' | 'queue';
 
 export interface CommandFeedback {
 	readonly source: CommandSource;

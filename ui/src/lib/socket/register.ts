@@ -4,9 +4,13 @@ import {
 	setCoreStatus,
 	setZonesSnapshot,
 	upsertZone,
+	removeZone,
 	setNowPlaying,
 	removeNowPlaying,
 	resetNowPlaying,
+	setQueueSnapshot,
+	clearQueue,
+	resetQueue,
 	setBrowseResult,
 	setSearchResults,
 	setBrowseError,
@@ -19,7 +23,8 @@ import type {
 	Zone,
 	BrowseResult,
 	SearchResult,
-	NowPlaying
+	NowPlaying,
+	ZoneQueue
 } from '@shared/types';
 
 interface CoreStatusEvent {
@@ -37,6 +42,10 @@ interface ZonesEvent {
 
 interface ZoneUpdatedEvent {
 	zone: Zone;
+}
+
+interface ZoneRemovedEvent {
+	zone_id: string;
 }
 
 interface CommandErrorEvent {
@@ -83,6 +92,16 @@ export function registerSocketHandlers(): CleanupFn {
 		upsertZone(payload.zone);
 	};
 
+	const handleZoneRemoved = (payload: ZoneRemovedEvent) => {
+		removeZone(payload.zone_id);
+		removeNowPlaying(payload.zone_id);
+		clearQueue(payload.zone_id);
+	};
+
+	const handleQueueUpdated = (payload: { queue: ZoneQueue }) => {
+		setQueueSnapshot(payload.queue);
+	};
+
 	const handleNowPlaying = (payload: { zone_id: string; now_playing: NowPlaying | null }) => {
 		if (payload.now_playing) {
 			setNowPlaying(payload.zone_id, payload.now_playing);
@@ -116,10 +135,19 @@ export function registerSocketHandlers(): CleanupFn {
 		});
 	};
 
+	const handleQueueError = (payload: CommandErrorEvent) => {
+		pushCommandFeedback({
+			source: 'queue',
+			command: payload.command,
+			message: payload.error
+		});
+	};
+
 	const handleDisconnect = () => {
 		setCoreStatus({ status: 'unpaired' });
 		setZonesSnapshot([]);
 		resetNowPlaying();
+		resetQueue();
 		resetBrowse();
 	};
 
@@ -127,11 +155,14 @@ export function registerSocketHandlers(): CleanupFn {
 		['core-status', handleCoreStatus],
 		['zones', handleZonesSnapshot],
 		['zone-updated', handleZoneUpdated],
+		['zone-removed', handleZoneRemoved],
 		['now-playing-updated', handleNowPlaying],
+		['queue-updated', handleQueueUpdated],
 		['browse-result', handleBrowseResult],
 		['search-result', handleSearchResult],
 		['transport:error', handleTransportError],
-		['browse:error', handleBrowseError]
+		['browse:error', handleBrowseError],
+		['queue:error', handleQueueError]
 	];
 
 	listeners.forEach(([event, handler]) => {

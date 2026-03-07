@@ -23,6 +23,12 @@ export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'loading';
 export type LoopMode = 'disabled' | 'loop' | 'loop_one';
 
 /**
+ * Loop mode request value accepted by Roon transport settings.
+ * "next" cycles to the next loop mode.
+ */
+export type LoopModeRequest = LoopMode | 'next';
+
+/**
  * Roon zone representation
  */
 export interface Zone {
@@ -53,8 +59,26 @@ export interface Zone {
   /** Whether seek is allowed */
   is_seek_allowed: boolean;
 
+  /** Number of items remaining in queue after current item */
+  queue_items_remaining?: number;
+
+  /** Remaining queue duration in seconds */
+  queue_time_remaining?: number;
+
+  /** Zone playback settings */
+  settings?: ZonePlaybackSettings;
+
   /** Current volume settings */
   outputs?: ZoneOutput[];
+}
+
+/**
+ * Playback settings at zone scope
+ */
+export interface ZonePlaybackSettings {
+  loop?: LoopMode;
+  shuffle?: boolean;
+  auto_radio?: boolean;
 }
 
 /**
@@ -141,6 +165,48 @@ export interface NowPlaying {
   shuffle?: boolean;
 }
 
+/**
+ * Queue entry for a zone
+ */
+export interface QueueItem {
+  /** Queue item identifier understood by Roon transport */
+  queue_item_id: number;
+
+  /** Length in seconds (if provided) */
+  length?: number;
+
+  /** Artwork key */
+  image_key?: string;
+
+  /** One-line display text */
+  one_line?: {
+    line1?: string;
+  };
+
+  /** Two-line display text */
+  two_line?: {
+    line1?: string;
+    line2?: string;
+  };
+
+  /** Three-line display text */
+  three_line?: {
+    line1?: string;
+    line2?: string;
+    line3?: string;
+  };
+}
+
+/**
+ * Queue snapshot for a zone
+ */
+export interface ZoneQueue {
+  zone_id: string;
+  items: QueueItem[];
+  max_item_count: number;
+  updated_at: string;
+}
+
 // ========================================
 // Browse Types (A.3 - Reserved for Codex)
 // ========================================
@@ -169,6 +235,12 @@ export interface BrowseOptions {
 
   /** Refresh the hierarchy */
   refresh?: boolean;
+
+  /** Independent session key to avoid interfering with other browse sessions */
+  multiSessionKey?: string;
+
+  /** Pop all levels to the hierarchy root before navigating */
+  popAll?: boolean;
 }
 
 /**
@@ -181,8 +253,8 @@ export interface BrowseLoadOptions {
   /** Zone or output identifier */
   zoneId?: string;
 
-  /** Item key to load */
-  itemKey: string;
+  /** Item key (unused by Roon load — kept for API compat) */
+  itemKey?: string;
 
   /** Result offset for pagination */
   offset?: number;
@@ -237,6 +309,9 @@ export interface BrowseItem {
 export interface BrowseResult {
   /** Result title */
   title?: string;
+
+  /** Result subtitle (e.g. album artist) */
+  subtitle?: string;
 
   /** Current hierarchy level */
   level: number;
@@ -304,6 +379,32 @@ export interface VolumeRequest {
 }
 
 /**
+ * Queue subscription request payload
+ */
+export interface QueueSubscribeRequest {
+  zone_id: string;
+  max_item_count?: number;
+}
+
+/**
+ * Queue play-from-here request payload
+ */
+export interface QueuePlayFromHereRequest {
+  zone_id: string;
+  queue_item_id: number;
+}
+
+/**
+ * Zone playback settings request payload
+ */
+export interface ZonePlaybackSettingsRequest {
+  zone_id: string;
+  shuffle?: boolean;
+  auto_radio?: boolean;
+  loop?: LoopModeRequest;
+}
+
+/**
  * Standard success response
  */
 export interface SuccessResponse {
@@ -342,6 +443,13 @@ export interface ZonesResponse {
  */
 export interface ZoneResponse {
   zone: Zone | null;
+}
+
+/**
+ * Queue response
+ */
+export interface QueueResponse {
+  queue: ZoneQueue;
 }
 
 // ========================================

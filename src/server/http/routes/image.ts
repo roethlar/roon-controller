@@ -34,7 +34,7 @@ export const createImageRouter = (imageService: ImageService): Router => {
         return res.status(400).json(response);
       }
 
-      const { stream, contentType } = await imageService.getImage(key, scale, width, height);
+      const { data, contentType } = await imageService.getImage(key, scale, width, height);
 
       // Set cache headers
       const cacheHeaders = imageService.getCacheHeaders();
@@ -43,7 +43,7 @@ export const createImageRouter = (imageService: ImageService): Router => {
       });
 
       res.set('Content-Type', contentType);
-      stream.pipe(res);
+      res.send(data);
     } catch (error) {
       next(error);
     }

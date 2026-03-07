@@ -77,12 +77,32 @@ export const startServer = (
 
     if (event.coreStatus === "unpaired") {
       zonesSubscribed = false;
+      transportService.resetState();
+      socketContext.io.emit("zones", { zones: [] });
     }
   });
 
   // Wire TransportService events to Socket.IO
   transportService.on("zone-updated", (data) => {
+    try {
+      transportService.subscribeQueue(data.zone.zone_id);
+    } catch (error) {
+      logger.warn(
+        { err: error, zone_id: data.zone.zone_id },
+        "Queue subscription deferred for zone"
+      );
+    }
+
     socketContext.io.emit("zone-updated", data);
+    socketContext.io.emit("zones", { zones: transportService.getZones() });
+  });
+
+  transportService.on("zone-removed", (data) => {
+    socketContext.io.emit("zone-removed", data);
+    socketContext.io.emit("now-playing-updated", {
+      zone_id: data.zone_id,
+      now_playing: null,
+    });
     socketContext.io.emit("zones", { zones: transportService.getZones() });
   });
 
@@ -90,13 +110,13 @@ export const startServer = (
     socketContext.io.emit("now-playing-updated", data);
   });
 
-  browseService.on("browse-result", (result) => {
-    socketContext.io.emit("browse-result", result);
+  transportService.on("queue-updated", (data) => {
+    socketContext.io.emit("queue-updated", data);
   });
 
-  browseService.on("search-result", (results) => {
-    socketContext.io.emit("search-result", results);
-  });
+  // Browse results are emitted per-socket in the socket handlers,
+  // not broadcast globally, so REST-initiated browse calls don't
+  // interfere with clients' navigation state.
 
   // Start all services
   roonClient.start();

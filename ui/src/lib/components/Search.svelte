@@ -1,162 +1,211 @@
 <script lang="ts">
-	import { browseStore, setBrowseLoading } from '$lib/stores/browseStore';
+	import { browseStore, setBrowseError, setBrowseLoading } from '$lib/stores/browseStore';
+	import { selectedZoneStore } from '$lib/stores/selectedZoneStore';
 	import { getSocket } from '$lib/socket/client';
-	import type { BrowseSearchOptions } from '@shared/types';
+	import type { BrowseSearchOptions, SearchResult } from '@shared/types';
+
+	let { onResultClick }: { onResultClick?: (result: SearchResult) => void } = $props();
 
 	let searchQuery = $state('');
 	let socket = $state(getSocket());
 
 	function search() {
-		if (!searchQuery.trim()) return;
+		const query = searchQuery.trim();
+		if (!query) {
+			return;
+		}
+
+		const liveSocket = socket ?? getSocket();
+		socket = liveSocket;
+
+		if (!liveSocket) {
+			setBrowseError('Realtime connection is unavailable.');
+			return;
+		}
 
 		const options: BrowseSearchOptions = {
-			input: searchQuery
+			input: query,
+			zoneId: $selectedZoneStore || undefined
 		};
 		setBrowseLoading('search');
-		socket.emit('browse:search', options);
+		liveSocket.emit('browse:search', options);
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter') {
+	function handleKeydown(event: KeyboardEvent) {
+		if (event.key === 'Enter') {
+			event.preventDefault();
 			search();
 		}
 	}
 </script>
 
-<div class="search-overlay">
-	<div class="search-box">
+<div class="search-shell">
+	<div class="search-row">
+		<label class="visually-hidden" for="library-search">Search library</label>
 		<input
+			id="library-search"
 			type="text"
 			bind:value={searchQuery}
 			onkeydown={handleKeydown}
-			placeholder="Search library..."
-			autofocus
+			placeholder="Search artists, albums, tracks"
+			spellcheck="false"
 		/>
-		<button onclick={search} disabled={!searchQuery.trim()}>Search</button>
+		<button type="button" onclick={search} disabled={!searchQuery.trim()}>Search</button>
 	</div>
 
-	{#if $browseStore.loading}
+	{#if $browseStore.loading && $browseStore.hierarchy === 'search'}
 		<p class="loading">Searching...</p>
-	{:else if $browseStore.error}
+	{:else if $browseStore.error && $browseStore.hierarchy === 'search'}
 		<div class="error">
 			<p>{$browseStore.error}</p>
 		</div>
 	{:else if $browseStore.lastSearch}
 		<div class="results">
-			<h3>{$browseStore.lastSearch.length} results</h3>
-			{#each $browseStore.lastSearch as result}
-				<div class="result-item">
+			<p class="result-count">{$browseStore.lastSearch.length} results</p>
+			{#each $browseStore.lastSearch.slice(0, 8) as result}
+				<button
+					type="button"
+					class="result-item"
+					disabled={!result.itemKey}
+					onclick={() => onResultClick?.(result)}
+				>
 					{#if result.imageKey}
-						<img src="/api/image/{result.imageKey}?scale=fit&width=60&height=60" alt={result.title} />
+						<img src="/api/image/{result.imageKey}?scale=fit&width=120&height=120" alt={result.title} />
+					{:else}
+						<div class="result-fallback">{result.resultType}</div>
 					{/if}
-					<div class="result-text">
-						<p class="result-title">{result.title}</p>
-						<p class="result-type">{result.resultType}</p>
+					<div class="result-meta">
+						<p class="title">{result.title}</p>
+						<p class="type">{result.resultType}</p>
 						{#if result.subtitle}
-							<p class="result-subtitle">{result.subtitle}</p>
+							<p class="subtitle">{result.subtitle}</p>
 						{/if}
 					</div>
-				</div>
+				</button>
 			{/each}
 		</div>
 	{/if}
 </div>
 
 <style>
-	.search-overlay {
-		max-width: 700px;
-		margin: 0 auto;
-		padding: 2rem;
-	}
-
-	.search-box {
+	.search-shell {
 		display: flex;
-		gap: 0.5rem;
-		margin-bottom: 2rem;
+		flex-direction: column;
+		gap: 0.8rem;
 	}
 
-	.search-box input {
+	.search-row {
+		display: flex;
+		gap: 0.45rem;
+	}
+
+	.search-row input {
 		flex: 1;
-		padding: 0.75rem;
-		font-size: 1rem;
-		border: 1px solid #ddd;
-		border-radius: 4px;
+		padding: 0.62rem 0.72rem;
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		background: var(--surface-2);
 	}
 
-	.search-box button {
-		padding: 0.75rem 1.5rem;
-		background: #007bff;
-		color: white;
-		border: none;
-		border-radius: 4px;
-		cursor: pointer;
+	.search-row button {
+		padding: 0.6rem 1rem;
+		border: 1px solid var(--accent);
+		border-radius: 10px;
+		background: linear-gradient(100deg, var(--accent), var(--accent-2));
+		color: #fff;
+		font-weight: 600;
 	}
 
-	.search-box button:disabled {
-		background: #ccc;
+	.search-row button:disabled {
+		opacity: 0.48;
 		cursor: not-allowed;
 	}
 
 	.loading {
-		text-align: center;
-		color: #666;
+		font-size: 0.88rem;
+		color: var(--text-soft);
 	}
 
 	.error {
-		padding: 1rem;
-		background: #fee;
-		border: 1px solid #fcc;
-		border-radius: 4px;
-		color: #c00;
+		padding: 0.65rem;
+		border-radius: 10px;
+		background: rgba(255, 124, 124, 0.1);
+		border: 1px solid rgba(255, 124, 124, 0.45);
+		color: #ffb3b3;
 	}
 
 	.results {
-		margin-top: 1rem;
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+		gap: 0.6rem;
+	}
+
+	.result-count {
+		grid-column: 1 / -1;
+		font-size: 0.8rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-soft);
 	}
 
 	.result-item {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		padding: 0.75rem;
-		border: 1px solid #ddd;
-		border-radius: 4px;
-		margin-bottom: 0.5rem;
-		background: white;
+		display: grid;
+		grid-template-columns: 52px 1fr;
+		gap: 0.55rem;
+		padding: 0.5rem;
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		background: var(--surface-2);
+		text-align: left;
+		color: var(--text);
 		cursor: pointer;
 	}
 
-	.result-item:hover {
-		background: #f8f9fa;
-		border-color: #007bff;
+	.result-item:hover:not(:disabled) {
+		border-color: var(--accent-2);
+	}
+
+	.result-item:disabled {
+		opacity: 0.65;
+		cursor: default;
+	}
+
+	.result-item img,
+	.result-fallback {
+		width: 52px;
+		height: 52px;
+		border-radius: 8px;
 	}
 
 	.result-item img {
-		width: 60px;
-		height: 60px;
 		object-fit: cover;
-		border-radius: 4px;
 	}
 
-	.result-text {
-		flex: 1;
+	.result-fallback {
+		display: grid;
+		place-items: center;
+		background: var(--surface-3);
+		font-size: 0.68rem;
+		text-transform: uppercase;
+		color: var(--text-soft);
 	}
 
-	.result-title {
-		font-weight: bold;
-		margin: 0;
+	.result-meta .title {
+		font-weight: 650;
+		line-height: 1.25;
 	}
 
-	.result-type {
-		color: #007bff;
-		font-size: 0.85rem;
-		margin: 0.25rem 0;
-		text-transform: capitalize;
+	.result-meta .type {
+		font-size: 0.72rem;
+		margin-top: 0.12rem;
+		text-transform: uppercase;
+		letter-spacing: 0.07em;
+		color: var(--text-soft);
 	}
 
-	.result-subtitle {
-		color: #666;
-		font-size: 0.9rem;
-		margin: 0.25rem 0 0 0;
+	.result-meta .subtitle {
+		margin-top: 0.2rem;
+		font-size: 0.8rem;
+		color: var(--text-soft);
 	}
 </style>

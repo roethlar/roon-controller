@@ -1,187 +1,655 @@
 <script lang="ts">
-	import { browseStore, setBrowseLoading } from '$lib/stores/browseStore';
+	import { onMount } from 'svelte';
+	import Search from '$lib/components/Search.svelte';
+	import { browseStore, setBrowseError, setBrowseLoading } from '$lib/stores/browseStore';
+	import { selectedZoneStore } from '$lib/stores/selectedZoneStore';
+	import { pushCommandFeedback, pendingSearchStore, browseNavStore } from '$lib/stores';
 	import { getSocket } from '$lib/socket/client';
-	import type { BrowseOptions, BrowseLoadOptions, BrowsePopOptions } from '@shared/types';
+	import { browse as apiBrowse } from '$lib/api/client';
+	import type { BrowseItem, BrowseOptions, BrowsePopOptions, SearchResult } from '@shared/types';
 
 	let socket = $state(getSocket());
+	let quickPlayInFlight = $state(false);
+	/** Options used to navigate forward to each level — used to restore on Back. */
+	let historyStack: BrowseOptions[] = $state([]);
+	/** Options available to re-navigate after pressing Back. */
+	let forwardStack: BrowseOptions[] = $state([]);
 
-	$effect(() => {
-		// Load library root on mount
+	onMount(() => {
+		socket = getSocket();
 		setBrowseLoading('browse');
 		browse({ hierarchy: 'browse' });
+
+		browseNavStore.set({
+			canBack: false,
+			canForward: false,
+			back: pop,
+			forward,
+			home: resetRoot
+		});
+
+		return () => {
+			browseNavStore.set({ canBack: false, canForward: false, back: noop, forward: noop, home: noop });
+		};
 	});
 
-	function browse(options: BrowseOptions) {
-		setBrowseLoading(options.hierarchy ?? 'browse');
-		socket.emit('browse:browse', options);
+	const noop = () => {};
+
+	// Keep nav store in sync with navigation state
+	$effect(() => {
+		browseNavStore.update((s) => ({
+			...s,
+			canBack: !!$browseStore.current && $browseStore.current.level > 0,
+			canForward: forwardStack.length > 0
+		}));
+	});
+
+	// React to search requests set by the play bar (track/artist links)
+	$effect(() => {
+		const query = $pendingSearchStore;
+		if (query) {
+			pendingSearchStore.set(null);
+			setBrowseLoading('search');
+			const liveSocket = socket ?? getSocket();
+			socket = liveSocket;
+			if (liveSocket) {
+				liveSocket.emit('browse:search', { input: query, zoneId: $selectedZoneStore || undefined });
+			}
+		}
+	});
+
+	function emitBrowse(event: string, payload: BrowseOptions | BrowsePopOptions) {
+		const liveSocket = socket ?? getSocket();
+		socket = liveSocket;
+
+		if (!liveSocket) {
+			setBrowseError('Realtime connection is unavailable.');
+			return;
+		}
+
+		liveSocket.emit(event, payload);
 	}
 
-	function load(itemKey: string) {
-		const options: BrowseLoadOptions = {
-			hierarchy: $browseStore.hierarchy,
-			itemKey
+	function browse(options: BrowseOptions) {
+		const scopedOptions: BrowseOptions = {
+			...options,
+			zoneId: options.zoneId ?? ($selectedZoneStore || undefined)
 		};
-		setBrowseLoading(options.hierarchy);
-		socket.emit('browse:load', options);
+
+		setBrowseLoading(scopedOptions.hierarchy ?? 'browse');
+		emitBrowse('browse:browse', scopedOptions);
 	}
 
 	function pop() {
+		// Move top of history to forward stack so Forward can replay it
+		const top = historyStack[historyStack.length - 1];
+		if (top) {
+			forwardStack = [...forwardStack, top];
+			historyStack = historyStack.slice(0, -1);
+		}
 		const options: BrowsePopOptions = {
-			hierarchy: $browseStore.hierarchy
+			hierarchy: $browseStore.hierarchy,
+			zoneId: $selectedZoneStore || undefined
 		};
 		setBrowseLoading(options.hierarchy);
-		socket.emit('browse:pop', options);
+		emitBrowse('browse:pop', options);
 	}
 
-	function handleItemClick(item: any) {
-		if (item.itemKey && item.isLoadable) {
-			load(item.itemKey);
+	/** Internal pop used by quickPlay — does not touch history/forward stacks. */
+	function popInternal() {
+		emitBrowse('browse:pop', {
+			hierarchy: $browseStore.hierarchy,
+			zoneId: $selectedZoneStore || undefined
+		});
+	}
+
+	function forward() {
+		if (forwardStack.length === 0) return;
+		const opts = forwardStack[forwardStack.length - 1];
+		forwardStack = forwardStack.slice(0, -1);
+		historyStack = [...historyStack, opts];
+		browse(opts);
+	}
+
+	function resetRoot() {
+		historyStack = [];
+		forwardStack = [];
+		browse({ hierarchy: 'browse', popAll: true });
+	}
+
+	/** Navigate into a list item (hierarchy drill-down). */
+	function navigate(item: BrowseItem) {
+		if (!item.itemKey) return;
+		const opts: BrowseOptions = {
+			hierarchy: $browseStore.hierarchy,
+			itemKey: item.itemKey,
+			zoneId: $selectedZoneStore || undefined
+		};
+		historyStack = [...historyStack, opts];
+		forwardStack = [];
+		browse(opts);
+	}
+
+	/** Open an item's action menu (e.g. Play Now / Play Next / Add to Queue). */
+	function openActionMenu(item: BrowseItem) {
+		if (!item.itemKey) return;
+		browse({
+			hierarchy: $browseStore.hierarchy,
+			itemKey: item.itemKey,
+			zoneId: $selectedZoneStore || undefined
+		});
+	}
+
+	function handleSearchResultClick(result: SearchResult) {
+		if (result.hint === 'action_list') {
+			void quickPlay(result);
+		} else {
+			navigate(result);
 		}
+	}
+
+	/** Search for an artist by name (from album subtitle). */
+	function searchArtist(name: string) {
+		const liveSocket = socket ?? getSocket();
+		socket = liveSocket;
+		if (!liveSocket) return;
+		setBrowseLoading('search');
+		liveSocket.emit('browse:search', { input: name, zoneId: $selectedZoneStore || undefined });
+	}
+
+	/**
+	 * Immediately play a track-level item without navigating into its action menu.
+	 * Uses a separate browse session (multiSessionKey) so main navigation is undisturbed.
+	 * Flow: browse(itemKey) → find first action ("Play Now") → browse(actionKey) → plays.
+	 */
+	async function quickPlay(item: BrowseItem) {
+		if (!item.itemKey) return;
+
+		const zoneId = $selectedZoneStore || undefined;
+		if (!zoneId) {
+			pushCommandFeedback({ source: 'browse', command: 'play', message: 'Select a zone to play.' });
+			return;
+		}
+
+		const hierarchyAtStart = $browseStore.hierarchy;
+		quickPlayInFlight = true;
+		try {
+			// Browse into the track to get its action list (Play Now, Play Next, etc.)
+			// Uses the main Roon session via REST — no socket broadcast with the current server setup.
+			const actionResult = await apiBrowse(fetch, {
+				hierarchy: hierarchyAtStart,
+				itemKey: item.itemKey,
+				zoneId
+			});
+
+			const playAction = actionResult.items.find((i) => i.isPlayable || i.hint === 'action');
+			if (!playAction?.itemKey) {
+				// No direct action — fall back to showing the action menu
+				navigate(item);
+				return;
+			}
+
+			// Execute Play Now
+			await apiBrowse(fetch, {
+				hierarchy: hierarchyAtStart,
+				itemKey: playAction.itemKey,
+				zoneId
+			});
+
+			// Only restore the album view if we were in the main browse hierarchy.
+			// In search context there's no album view to restore.
+			if (hierarchyAtStart === 'browse') {
+				popInternal();
+			}
+		} catch (err) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'play',
+				message: `Play failed: ${(err as Error).message}`
+			});
+		} finally {
+			quickPlayInFlight = false;
+		}
+	}
+
+	function handleItemClick(item: BrowseItem) {
+		if (!item.itemKey) return;
+
+		if (item.hint === 'action_list') {
+			void quickPlay(item);
+			return;
+		}
+
+		navigate(item);
+	}
+
+	/** True when the current level is a track listing (all items are action_list). */
+	const isTrackList = $derived(
+		!!$browseStore.current &&
+		$browseStore.current.items.length > 0 &&
+		$browseStore.current.items.every((i) => i.hint === 'action_list')
+	);
+
+	/**
+	 * In a mixed list (e.g. artist page): action_list items like "Play Artist" shown as pill buttons.
+	 * In a pure tracklist: album-level actions like "Play Album" (items not starting with a digit).
+	 */
+	const pageActions = $derived(
+		isTrackList
+			? $browseStore.current!.items.filter((i) => !/^\d/.test(i.title))
+			: ($browseStore.current?.items.filter((i) => i.hint === 'action_list') ?? [])
+	);
+
+	/** Individual tracks — items whose titles start with a track number like "1. Title". */
+	const trackItems = $derived(
+		isTrackList
+			? $browseStore.current!.items.filter((i) => /^\d/.test(i.title))
+			: []
+	);
+
+	/** Navigable/displayable items in non-tracklist views (excludes action_list items). */
+	const gridItems = $derived(
+		isTrackList
+			? []
+			: ($browseStore.current?.items.filter((i) => i.hint !== 'action_list') ?? [])
+	);
+
+	/** Extract the leading track number from a title like "3. Song Name" → "3" */
+	function trackNum(title: string, index: number): string {
+		return title.match(/^(\d+)\./)?.[1] ?? String(index + 1);
+	}
+
+	/** Strip the leading "N. " prefix from a track title. */
+	function trackTitle(title: string): string {
+		return title.replace(/^\d+\.\s*/, '');
 	}
 </script>
 
-<div class="library">
-	<h1>Library</h1>
+<div class="library-shell">
+	<section class="search-panel card">
+		<h2>Search</h2>
+		<Search onResultClick={handleSearchResultClick} />
+	</section>
 
-	{#if $browseStore.loading}
-		<p>Loading...</p>
-	{:else if $browseStore.error}
-		<div class="error">
-			<p>Error: {$browseStore.error}</p>
-		</div>
-	{:else if $browseStore.current}
-		<div class="browse-header">
-			<button onclick={pop} disabled={$browseStore.current.level <= 1}>← Back</button>
-			<h2>{$browseStore.current.title || 'Browse'}</h2>
-		</div>
-
-		<div class="breadcrumb">
-			Level: {$browseStore.current.level} | Items: {$browseStore.current.count}
-			{#if $browseStore.current.totalCount}
-				of {$browseStore.current.totalCount}
-			{/if}
-		</div>
-
-		<div class="items">
-			{#each $browseStore.current.items as item}
-				<div
-					class="item"
-					class:clickable={item.isLoadable}
-					onclick={() => handleItemClick(item)}
-					role="button"
-					tabindex="0"
-				>
-					{#if item.imageKey}
-						<img src="/api/image/{item.imageKey}?scale=fit&width=80&height=80" alt={item.title} />
-					{/if}
-					<div class="item-text">
-						<p class="item-title">{item.title}</p>
-						{#if item.subtitle}
-							<p class="item-subtitle">{item.subtitle}</p>
-						{/if}
-					</div>
-					{#if item.isLoadable}
-						<span class="arrow">→</span>
+	<section class="results-panel card">
+		{#if $browseStore.loading}
+			<p class="loading">Loading library data...</p>
+		{:else if $browseStore.error}
+			<div class="error">
+				<p>{$browseStore.error}</p>
+			</div>
+		{:else if $browseStore.current}
+			<div class="result-header">
+				<div>
+					<h2>{$browseStore.current.title || 'Browse'}</h2>
+					{#if $browseStore.current?.subtitle && !isTrackList}
+						<button
+							type="button"
+							class="artist-link"
+							onclick={() => searchArtist($browseStore.current!.subtitle!)}
+							title="Search for this artist"
+						>{$browseStore.current.subtitle}</button>
 					{/if}
 				</div>
-			{/each}
-		</div>
-	{:else}
-		<p>No content loaded</p>
-	{/if}
+				{#if pageActions.length > 0}
+					<div class="page-actions">
+						{#each pageActions as action}
+							<button
+								type="button"
+								class="album-action-btn"
+								onclick={() => handleItemClick(action)}
+								disabled={!action.itemKey || quickPlayInFlight}
+							>{action.title}</button>
+						{/each}
+					</div>
+				{/if}
+			</div>
+
+			{#if isTrackList}
+				{#if $browseStore.current?.subtitle}
+					<div class="album-header">
+						<button
+							type="button"
+							class="artist-link"
+							onclick={() => searchArtist($browseStore.current!.subtitle!)}
+							title="Search for this artist"
+						>{$browseStore.current.subtitle}</button>
+					</div>
+				{/if}
+				<ol class="track-list">
+					{#each trackItems as item, index}
+						<li class="track-row">
+							<span class="track-num">{trackNum(item.title, index)}</span>
+							<div class="track-info">
+								<span class="track-title">{trackTitle(item.title)}</span>
+								{#if item.subtitle}
+									<span class="track-sub">{item.subtitle}</span>
+								{/if}
+							</div>
+							<div class="track-actions">
+								<button
+									type="button"
+									class="track-play"
+									onclick={() => handleItemClick(item)}
+									disabled={!item.itemKey || quickPlayInFlight}
+									title="Play now"
+								>▶</button>
+								{#if item.itemKey}
+									<button
+										type="button"
+										class="track-more"
+										title="More options"
+										onclick={() => openActionMenu(item)}
+									>⋮</button>
+								{/if}
+							</div>
+						</li>
+					{/each}
+				</ol>
+			{:else}
+				<div class="items-grid">
+					{#each gridItems as item, index}
+						<div
+							class="item-wrapper"
+							style={`--delay: ${Math.min(index * 20, 240)}ms`}
+						>
+							<button
+								type="button"
+								class="item-card"
+								onclick={() => handleItemClick(item)}
+								disabled={!item.itemKey}
+								title={item.title}
+							>
+								<div class="item-art">
+									{#if item.imageKey}
+										<img src="/api/image/{item.imageKey}?scale=fit&width=320&height=320" alt={item.title} />
+									{/if}
+								</div>
+								<div class="item-meta">
+									<p class="title">{item.title}</p>
+									{#if item.subtitle}
+										<p class="subtitle">{item.subtitle}</p>
+									{/if}
+								</div>
+							</button>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		{:else}
+			<p class="loading">No content loaded.</p>
+		{/if}
+	</section>
 </div>
 
 <style>
-	.library {
-		max-width: 900px;
-		margin: 0 auto;
-		padding: 2rem;
+	.library-shell {
+		display: grid;
+		gap: 0.85rem;
+	}
+
+	.search-panel {
+		padding: 0.85rem;
+		background: var(--surface);
+	}
+
+	.search-panel h2 {
+		font-family: var(--font-display);
+		font-size: 0.95rem;
+		margin-bottom: 0.58rem;
+	}
+
+	.results-panel {
+		padding: 0.85rem;
+		background: var(--surface);
+	}
+
+	.loading {
+		color: var(--text-soft);
 	}
 
 	.error {
-		padding: 1rem;
-		background: #fee;
-		border: 1px solid #fcc;
-		border-radius: 4px;
-		color: #c00;
+		padding: 0.8rem;
+		background: rgba(255, 124, 124, 0.1);
+		border: 1px solid rgba(255, 124, 124, 0.4);
+		border-radius: 10px;
+		color: #ffb3b3;
 	}
 
-	.browse-header {
+	.result-header {
 		display: flex;
+		justify-content: space-between;
 		align-items: center;
-		gap: 1rem;
-		margin-bottom: 1rem;
+		gap: 0.8rem;
+		margin-bottom: 0.85rem;
+		flex-wrap: wrap;
 	}
 
-	.browse-header button {
-		padding: 0.5rem 1rem;
-		background: #007bff;
-		color: white;
+	.result-header h2 {
+		font-family: var(--font-display);
+		font-size: 1.2rem;
+	}
+
+	.page-actions {
+		display: flex;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	/* ── Album header (artist link in tracklist view) ── */
+	.album-header {
+		margin-bottom: 0.5rem;
+	}
+
+	.artist-link {
+		font-size: 0.88rem;
+		font-weight: 600;
+		color: var(--accent-2);
+		background: none;
 		border: none;
-		border-radius: 4px;
+		padding: 0;
 		cursor: pointer;
+		text-decoration: underline;
+		text-underline-offset: 3px;
 	}
 
-	.browse-header button:disabled {
-		background: #ccc;
+	.artist-link:hover {
+		opacity: 0.8;
+	}
+
+	.album-action-btn {
+		padding: 0.45rem 1rem;
+		border: 1px solid var(--accent);
+		border-radius: 20px;
+		background: transparent;
+		color: var(--accent);
+		font-size: 0.85rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background 120ms ease;
+	}
+
+	.album-action-btn:hover:not(:disabled) {
+		background: rgba(95, 109, 240, 0.15);
+	}
+
+	.album-action-btn:disabled {
+		opacity: 0.45;
 		cursor: not-allowed;
 	}
 
-	.breadcrumb {
-		color: #666;
-		margin-bottom: 1.5rem;
-		font-size: 0.9rem;
-	}
-
-	.items {
+	/* ── Track list (album view) ── */
+	.track-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
 	}
 
-	.item {
-		display: flex;
+	.track-row {
+		display: grid;
+		grid-template-columns: 2rem 1fr auto;
 		align-items: center;
-		gap: 1rem;
-		padding: 0.75rem;
-		border: 1px solid #ddd;
-		border-radius: 4px;
-		background: white;
+		gap: 0.6rem;
+		padding: 0.48rem 0.4rem;
+		border-radius: 8px;
 	}
 
-	.item.clickable {
+	.track-row:hover {
+		background: var(--surface-2);
+	}
+
+	.track-row + .track-row {
+		border-top: 1px solid var(--border);
+	}
+
+	.track-num {
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		color: var(--text-soft);
+		text-align: right;
+	}
+
+	.track-info {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+		min-width: 0;
+	}
+
+	.track-title {
+		font-weight: 580;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.track-sub {
+		font-size: 0.8rem;
+		color: var(--text-soft);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.track-actions {
+		display: flex;
+		gap: 0.28rem;
+		align-items: center;
+		opacity: 0;
+		transition: opacity 120ms ease;
+	}
+
+	.track-row:hover .track-actions,
+	.track-row:focus-within .track-actions {
+		opacity: 1;
+	}
+
+	.track-play,
+	.track-more {
+		border: 1px solid var(--border);
+		border-radius: 7px;
+		background: var(--surface-3);
+		color: var(--text);
 		cursor: pointer;
 	}
 
-	.item.clickable:hover {
-		background: #f8f9fa;
-		border-color: #007bff;
+	.track-play {
+		padding: 0.28rem 0.55rem;
+		font-size: 0.72rem;
 	}
 
-	.item img {
-		width: 60px;
-		height: 60px;
+	.track-more {
+		padding: 0.28rem 0.42rem;
+		font-size: 0.88rem;
+		line-height: 1;
+	}
+
+	.track-play:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+
+	@media (max-width: 600px) {
+		.track-actions {
+			opacity: 1;
+		}
+	}
+
+	/* ── Card grid ── */
+	.items-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+		gap: 0.62rem;
+	}
+
+	/* Wrapper enables the ⋮ button overlay on tracks */
+	.item-wrapper {
+		position: relative;
+		animation: rise-in 280ms ease both;
+		animation-delay: var(--delay);
+	}
+
+	.item-card {
+		width: 100%;
+		padding: 0.48rem;
+		border: 1px solid var(--border);
+		border-radius: 11px;
+		background: var(--surface-2);
+		text-align: left;
+		display: flex;
+		flex-direction: column;
+		gap: 0.55rem;
+		color: var(--text);
+	}
+
+	.item-card:hover:not(:disabled) {
+		border-color: var(--accent-2);
+		box-shadow: var(--shadow-soft);
+		transform: translateY(-1px);
+	}
+
+	.item-card:disabled {
+		opacity: 0.72;
+		cursor: default;
+	}
+
+	.item-art {
+		aspect-ratio: 1 / 1;
+		border-radius: 9px;
+		overflow: hidden;
+		background: var(--surface-3);
+		display: grid;
+		place-items: center;
+		font-size: 0.76rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--text-soft);
+	}
+
+	.item-art img {
+		width: 100%;
+		height: 100%;
 		object-fit: cover;
-		border-radius: 4px;
 	}
 
-	.item-text {
-		flex: 1;
+	.item-meta .title {
+		font-weight: 650;
+		line-height: 1.3;
 	}
 
-	.item-title {
-		font-weight: bold;
-		margin: 0;
+	.item-meta .subtitle {
+		margin-top: 0.15rem;
+		font-size: 0.82rem;
+		color: var(--text-soft);
+		line-height: 1.33;
 	}
 
-	.item-subtitle {
-		color: #666;
-		font-size: 0.9rem;
-		margin: 0.25rem 0 0 0;
-	}
-
-	.arrow {
-		color: #007bff;
-		font-size: 1.5rem;
+	@media (max-width: 820px) {
+		/* Always show track actions on touch */
+		.track-actions {
+			opacity: 1;
+		}
 	}
 </style>

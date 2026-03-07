@@ -7,7 +7,10 @@ import type {
 	CoreStatusResponse,
 	ErrorResponse,
 	SearchResult,
-	ZonesResponse
+	ZonesResponse,
+	ZoneQueue,
+	QueuePlayFromHereRequest,
+	ZonePlaybackSettingsRequest
 } from '@shared/types';
 
 export class ApiError extends Error {
@@ -80,6 +83,42 @@ export function browsePop(fetchFn: FetchLike, options: BrowsePopOptions): Promis
 
 export function browseSearch(fetchFn: FetchLike, options: BrowseSearchOptions): Promise<SearchResult[]> {
 	return request<SearchResult[]>(fetchFn, '/api/browse/search', {
+		method: 'POST',
+		body: JSON.stringify(options)
+	});
+}
+
+export async function fetchQueue(
+	fetchFn: FetchLike,
+	zoneId: string,
+	maxItems?: number
+): Promise<ZoneQueue> {
+	const maxItemsQuery =
+		typeof maxItems === 'number' && Number.isFinite(maxItems) && maxItems > 0
+			? `?maxItems=${Math.floor(maxItems)}`
+			: '';
+	const { queue } = await request<{ queue: ZoneQueue }>(
+		fetchFn,
+		`/api/transport/queue/${encodeURIComponent(zoneId)}${maxItemsQuery}`
+	);
+	return queue;
+}
+
+export function setTransportSettings(
+	fetchFn: FetchLike,
+	options: ZonePlaybackSettingsRequest
+): Promise<{ success: true }> {
+	return request<{ success: true }>(fetchFn, '/api/transport/settings', {
+		method: 'POST',
+		body: JSON.stringify(options)
+	});
+}
+
+export function playFromQueue(
+	fetchFn: FetchLike,
+	options: QueuePlayFromHereRequest
+): Promise<{ success: true }> {
+	return request<{ success: true }>(fetchFn, '/api/transport/queue/play-from-here', {
 		method: 'POST',
 		body: JSON.stringify(options)
 	});

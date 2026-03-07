@@ -44,8 +44,8 @@ export const createBrowseRouter = (browseService: BrowseService): Router => {
     try {
       const options = req.body as BrowseLoadOptions;
 
-      if (!options.hierarchy || !options.itemKey) {
-        const response: ErrorResponse = { error: 'hierarchy and itemKey required' };
+      if (!options.hierarchy) {
+        const response: ErrorResponse = { error: 'hierarchy required' };
         return res.status(400).json(response);
       }
 

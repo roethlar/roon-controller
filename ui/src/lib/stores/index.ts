@@ -1,6 +1,9 @@
 export { coreStore, isCorePaired, loadCoreStatus, setCoreStatus } from './coreStore';
 export { zonesStore, zoneMapStore, loadZones, setZonesSnapshot, upsertZone, removeZone } from './zonesStore';
 export { nowPlayingStore, nowPlayingList, setNowPlaying, removeNowPlaying, resetNowPlaying } from './nowPlayingStore';
+export { queueStore, setQueueSnapshot, clearQueue, resetQueue } from './queueStore';
+export { selectedZoneStore, setSelectedZone } from './selectedZoneStore';
+export { themeStore, initializeTheme, setTheme, toggleTheme } from './themeStore';
 export {
 	browseStore,
 	setBrowseResult,
@@ -14,6 +17,8 @@ export {
 	pushCommandFeedback,
 	clearCommandFeedback
 } from './commandFeedbackStore';
+export { pendingSearchStore } from './pendingSearchStore';
+export { browseNavStore } from './browseNavStore';
 
 import { loadCoreStatus } from './coreStore';
 import { loadZones } from './zonesStore';

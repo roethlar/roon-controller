@@ -4,6 +4,10 @@ import {
   TransportControlRequest,
   SeekRequest,
   VolumeRequest,
+  QueueSubscribeRequest,
+  QueuePlayFromHereRequest,
+  ZonePlaybackSettingsRequest,
+  QueueResponse,
   SuccessResponse,
   ErrorResponse,
 } from '../../../shared/types';
@@ -140,6 +144,103 @@ export const createTransportRouter = (transportService: TransportService): Route
 
       await transportService.setVolume(output_id, value);
 
+      const response: SuccessResponse = { success: true };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/transport/settings
+   * Update zone playback settings (shuffle/loop/auto-radio)
+   */
+  router.post('/settings', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { zone_id, shuffle, auto_radio, loop } = req.body as ZonePlaybackSettingsRequest;
+
+      if (!zone_id) {
+        const response: ErrorResponse = { error: 'zone_id required' };
+        return res.status(400).json(response);
+      }
+
+      if (shuffle === undefined && auto_radio === undefined && loop === undefined) {
+        const response: ErrorResponse = {
+          error: 'at least one of shuffle, auto_radio, or loop must be provided',
+        };
+        return res.status(400).json(response);
+      }
+
+      await transportService.setPlaybackSettings(zone_id, { shuffle, auto_radio, loop });
+
+      const response: SuccessResponse = { success: true };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * GET /api/transport/queue/:zoneId
+   * Subscribe to queue updates for zone and return current queue snapshot
+   */
+  router.get('/queue/:zoneId', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { zoneId } = req.params;
+      const maxItemsRaw = req.query.maxItems;
+      const maxItems =
+        typeof maxItemsRaw === 'string' && Number.isInteger(Number(maxItemsRaw))
+          ? Number(maxItemsRaw)
+          : undefined;
+
+      if (!zoneId) {
+        const response: ErrorResponse = { error: 'zoneId required' };
+        return res.status(400).json(response);
+      }
+
+      transportService.subscribeQueue(zoneId, maxItems);
+      const response: QueueResponse = { queue: transportService.getQueue(zoneId) };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/transport/queue/subscribe
+   * Subscribe to queue updates for a zone
+   */
+  router.post('/queue/subscribe', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { zone_id, max_item_count } = req.body as QueueSubscribeRequest;
+
+      if (!zone_id) {
+        const response: ErrorResponse = { error: 'zone_id required' };
+        return res.status(400).json(response);
+      }
+
+      transportService.subscribeQueue(zone_id, max_item_count);
+      const response: QueueResponse = { queue: transportService.getQueue(zone_id) };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /api/transport/queue/play-from-here
+   * Jump playback to a queue item
+   */
+  router.post('/queue/play-from-here', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { zone_id, queue_item_id } = req.body as QueuePlayFromHereRequest;
+
+      if (!zone_id || typeof queue_item_id !== 'number') {
+        const response: ErrorResponse = { error: 'zone_id and numeric queue_item_id required' };
+        return res.status(400).json(response);
+      }
+
+      await transportService.playFromHere(zone_id, queue_item_id);
       const response: SuccessResponse = { success: true };
       res.json(response);
     } catch (error) {

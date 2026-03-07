@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Logger } from "pino";
-import { Readable } from "stream";
 import { RoonClient } from "./RoonClient";
 import { CoreUnpairedError, ImageNotFoundError, RoonOperationError } from "./errors";
 
@@ -45,7 +44,7 @@ export class ImageService {
     scale?: "fit" | "fill" | "stretch",
     width?: number,
     height?: number
-  ): Promise<{ stream: Readable; contentType: string }> {
+  ): Promise<{ data: Buffer; contentType: string }> {
     this.ensureImage();
 
     // Validate width/height when scale is provided (Roon API requirement)
@@ -56,22 +55,21 @@ export class ImageService {
     }
 
     return new Promise((resolve, reject) => {
-      const options: any = { image_key: imageKey };
-
+      const options: Record<string, unknown> = {};
       if (scale) options.scale = scale;
       if (width) options.width = width;
       if (height) options.height = height;
 
-      this.image.get_image(options, (error: any, contentType: string, imageStream: any) => {
+      this.image.get_image(imageKey, options, (error: any, contentType: string, imageData: Buffer) => {
         if (error) {
           this.logger.error({ err: error, imageKey }, "getImage failed");
           reject(new RoonOperationError("getImage", error, { imageKey }));
-        } else if (!imageStream) {
+        } else if (!imageData) {
           this.logger.warn({ imageKey }, "Image not found");
           reject(new ImageNotFoundError(imageKey));
         } else {
           this.logger.debug({ imageKey, contentType }, "Image retrieved");
-          resolve({ stream: imageStream, contentType });
+          resolve({ data: imageData, contentType });
         }
       });
     });
