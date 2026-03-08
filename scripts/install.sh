@@ -120,7 +120,7 @@ fi
 # ── Deploy files ───────────────────────────────────────────────────────────────
 info "Deploying to $INSTALL_DIR..."
 
-mkdir -p "$INSTALL_DIR/config"
+mkdir -p "$INSTALL_DIR/config" "$INSTALL_DIR/data/image-cache" "$INSTALL_DIR/ui"
 
 # Copy built artefacts and manifests (not source, not node_modules)
 cp -r dist               "$INSTALL_DIR/"
