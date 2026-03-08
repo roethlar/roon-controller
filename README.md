@@ -2,6 +2,14 @@
 
 Web-based controller for a local Roon Core, built with Node.js + SvelteKit.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Browse](screenshots/browse-dark.png) | ![Albums](screenshots/albums.png) |
+| ![Artists](screenshots/artists.png) | ![Tracklist](screenshots/tracklist.png) |
+| ![Genres](screenshots/genres.png) | ![Light theme](screenshots/browse-light.png) |
+
 ## What Works
 
 - Browse and search library with alphabetic jump lists, quick-play, and artwork caching
