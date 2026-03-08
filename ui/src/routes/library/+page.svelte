@@ -282,6 +282,16 @@
 		return map;
 	});
 
+	function itemLetter(title: string): string {
+		const ch = title.charAt(0).toUpperCase();
+		return /[A-Z]/.test(ch) ? ch : '#';
+	}
+
+	function jumpId(item: BrowseItem, index: number): string | undefined {
+		const letter = itemLetter(item.title);
+		return jumpIndex.get(letter) === index ? `jump-${letter}` : undefined;
+	}
+
 	function jumpTo(letter: string) {
 		const el = document.getElementById(`jump-${letter}`);
 		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -390,8 +400,8 @@
 			{:else}
 				{#if listItems.length > 0}
 					<ul class="list-items">
-						{#each listItems as item}
-							<li>
+						{#each listItems as item, index}
+							<li id={jumpId(item, index)}>
 								<button
 									type="button"
 									class="list-item-btn"
@@ -413,6 +423,7 @@
 							<div
 								class="item-wrapper"
 								style={`--delay: ${Math.min(index * 20, 240)}ms`}
+								id={jumpId(item, index)}
 							>
 								<button
 									type="button"
@@ -478,6 +489,40 @@
 		border: 1px solid rgba(255, 124, 124, 0.4);
 		border-radius: 10px;
 		color: #ffb3b3;
+	}
+
+	/* ── Jump bar ── */
+	.jump-bar {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.2rem;
+		margin-bottom: 0.7rem;
+		position: sticky;
+		top: 0;
+		z-index: 5;
+		background: var(--surface);
+		padding: 0.4rem 0;
+	}
+
+	.jump-letter {
+		min-width: 1.7rem;
+		padding: 0.2rem 0;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--surface-2);
+		color: var(--text);
+		font-size: 0.75rem;
+		font-weight: 600;
+		font-family: var(--font-mono);
+		cursor: pointer;
+		text-align: center;
+		line-height: 1;
+	}
+
+	.jump-letter:hover {
+		background: var(--accent);
+		color: var(--bg);
+		border-color: var(--accent);
 	}
 
 	.result-header {

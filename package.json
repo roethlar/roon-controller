@@ -1,7 +1,7 @@
 {
   "name": "roon-controller",
   "version": "1.0.0",
-  "description": "",
+  "description": "Web-based controller for Roon music playback with real-time UI",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc --project tsconfig.json",
@@ -12,9 +12,9 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["roon", "music", "controller", "audio"],
+  "author": "Michael Coelho <mcoelho@gmail.com>",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "dotenv": "^17.2.3",

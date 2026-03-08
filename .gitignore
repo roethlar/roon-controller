@@ -1,6 +1,32 @@
-node_modules
-dist
-.env
-config/roon-token.json
-# *.log
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+ui/build/
+
+# Runtime data
+data/
+*.log
 config.json
+config/roon-token.json
+
+# Environment
+.env
+
+# OS / IDE
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Internal development
+comms/
+claudedocs/
+.serena/
+DEVLOG.md
+TODO.md
+codex_resume
+continueprompt.txt
+error.txt
