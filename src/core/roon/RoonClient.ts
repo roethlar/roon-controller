@@ -50,10 +50,10 @@ export class RoonClient extends EventEmitter {
     this.roon = new RoonApi({
       extension_id: "com.roonlabs.webcontroller",
       display_name: "Custom Roon Controller",
-      display_version: "0.1.0",
-      publisher: "HomeLab",
-      email: "support@example.com",
-      website: "https://example.com",
+      display_version: "1.0.0",
+      publisher: "Michael Coelho",
+      email: "mcoelho@gmail.com",
+      website: "https://github.com/mcoelho/roon-controller",
       token,
       log_level: this.options.logger.level ?? "info",
       save_config: (_roon: any, newToken: unknown) => {

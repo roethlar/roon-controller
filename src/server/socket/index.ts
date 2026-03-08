@@ -272,7 +272,7 @@ export const attachSocketServer = (
 
     socket.on(
       "queue:subscribe",
-      async (
+      (
         payload: QueueSubscribeRequest,
         ack?: (response: unknown) => void
       ) => {
@@ -298,7 +298,7 @@ export const attachSocketServer = (
 
     socket.on(
       "queue:get",
-      async (
+      (
         payload: QueueSubscribeRequest,
         ack?: (response: unknown) => void
       ) => {

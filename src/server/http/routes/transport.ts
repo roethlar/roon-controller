@@ -184,7 +184,7 @@ export const createTransportRouter = (transportService: TransportService): Route
    * GET /api/transport/queue/:zoneId
    * Subscribe to queue updates for zone and return current queue snapshot
    */
-  router.get('/queue/:zoneId', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/queue/:zoneId', (req: Request, res: Response, next: NextFunction) => {
     try {
       const { zoneId } = req.params;
       const maxItemsRaw = req.query.maxItems;
@@ -210,7 +210,7 @@ export const createTransportRouter = (transportService: TransportService): Route
    * POST /api/transport/queue/subscribe
    * Subscribe to queue updates for a zone
    */
-  router.post('/queue/subscribe', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/queue/subscribe', (req: Request, res: Response, next: NextFunction) => {
     try {
       const { zone_id, max_item_count } = req.body as QueueSubscribeRequest;
 

@@ -12,7 +12,12 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"
   },
-  "keywords": ["roon", "music", "controller", "audio"],
+  "keywords": [
+    "roon",
+    "music",
+    "controller",
+    "audio"
+  ],
   "author": "Michael Coelho <mcoelho@gmail.com>",
   "license": "MIT",
   "type": "commonjs",
@@ -37,6 +42,7 @@
     "pino-pretty": "^13.1.2",
     "ts-jest": "^29.4.5",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1"
   }
 }

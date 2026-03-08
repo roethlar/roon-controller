@@ -483,7 +483,6 @@ export class TransportService extends EventEmitter {
     for (const seekUpdate of data.zones_seek_changed) {
       const zoneId = seekUpdate.zone_id;
       const seekPosition = seekUpdate.seek_position;
-      const queue_time_remaining = seekUpdate.queue_time_remaining;
 
       // Update stored zone if exists
       const zone = this.subscriptions.get(zoneId);

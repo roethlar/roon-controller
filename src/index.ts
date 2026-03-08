@@ -2,7 +2,7 @@ import { ConfigError, loadConfig } from "./config/env";
 import { createLogger } from "./core/logger";
 import { startServer } from "./server/server";
 
-const bootstrap = async () => {
+const bootstrap = () => {
   try {
     const config = loadConfig();
     const logger = createLogger(config);
@@ -14,7 +14,7 @@ const bootstrap = async () => {
     const shutdown = (signal: string) => {
       logger.info({ signal }, "Received shutdown signal");
 
-      context.socketContext.io.close(() => {
+      void context.socketContext.io.close(() => {
         logger.info("Socket server closed");
       });
 
@@ -33,10 +33,8 @@ const bootstrap = async () => {
     process.on("SIGTERM", () => shutdown("SIGTERM"));
   } catch (error) {
     if (error instanceof ConfigError) {
-      // eslint-disable-next-line no-console
       console.error(`Configuration error: ${error.message}`);
     } else {
-      // eslint-disable-next-line no-console
       console.error("Fatal error during startup", error);
     }
     process.exit(1);
