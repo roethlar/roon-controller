@@ -63,7 +63,7 @@ Options: `--port PORT`, `--install-dir DIR` (default: `/opt/roon-controller`), `
 sudo ./scripts/install-macos.sh
 ```
 
-Options: `--port PORT`, `--install-dir DIR` (default: `/Library/RoonController`), `--reinstall`, `--no-start`
+Options: `--port PORT`, `--install-dir DIR` (default: `/opt/roon-controller`), `--reinstall`, `--no-start`
 
 Installs as a launchd daemon. Logs at `/Library/Logs/RoonController/`.
 
@@ -75,7 +75,7 @@ Requires [NSSM](https://nssm.cc/) (`winget install nssm` or `choco install nssm`
 .\scripts\install-windows.ps1
 ```
 
-Options: `-Port`, `-InstallDir` (default: `C:\RoonController`), `-Reinstall`, `-NoStart`
+Options: `-Port`, `-InstallDir` (default: `C:\Program Files\RoonController`), `-Reinstall`, `-NoStart`
 
 ### Docker
 

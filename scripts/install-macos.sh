@@ -8,7 +8,7 @@
 #
 # Options:
 #   --port PORT       HTTP port (default: 3333)
-#   --install-dir DIR Install path (default: /Library/RoonController)
+#   --install-dir DIR Install path (default: /opt/roon-controller)
 #   --no-start        Install but do not start the service
 #   --reinstall       Overwrite an existing installation
 #   --help            Show this message
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-INSTALL_DIR="/Library/RoonController"
+INSTALL_DIR="/opt/roon-controller"
 SERVICE_LABEL="com.roon.controller"
 PLIST_PATH="/Library/LaunchDaemons/${SERVICE_LABEL}.plist"
 LOG_DIR="/Library/Logs/RoonController"

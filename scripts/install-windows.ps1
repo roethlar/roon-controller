@@ -8,7 +8,7 @@
 .PARAMETER Port
     HTTP port (default: 3333)
 .PARAMETER InstallDir
-    Install path (default: C:\RoonController)
+    Install path (default: C:\Program Files\RoonController)
 .PARAMETER NoStart
     Install but do not start the service
 .PARAMETER Reinstall
@@ -20,7 +20,7 @@
 
 param(
     [int]$Port = 3333,
-    [string]$InstallDir = "C:\RoonController",
+    [string]$InstallDir = "$env:ProgramFiles\RoonController",
     [switch]$NoStart,
     [switch]$Reinstall
 )
