@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getSocket } from '$lib/socket/client';
-	import { selectedZoneStore, queueStore, pushCommandFeedback } from '$lib/stores';
+	import { selectedZoneStore, queueStore, setQueueSnapshot, pushCommandFeedback } from '$lib/stores';
 	import { zoneMapStore } from '$lib/stores/zonesStore';
 	import { nowPlayingStore } from '$lib/stores/nowPlayingStore';
 	import type { LoopModeRequest, QueueItem, ZonePlaybackSettingsRequest } from '@shared/types';
@@ -49,7 +49,10 @@
 		queueLoading = true;
 		try {
 			await new Promise<void>((resolve) => {
-				liveSocket.emit('queue:subscribe', { zone_id: zoneId }, () => {
+				liveSocket.emit('queue:subscribe', { zone_id: zoneId }, (response: { queue?: import('@shared/types').ZoneQueue }) => {
+					if (response?.queue) {
+						setQueueSnapshot(response.queue);
+					}
 					resolve();
 				});
 			});

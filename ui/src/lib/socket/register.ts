@@ -16,7 +16,8 @@ import {
 	setBrowseError,
 	resetBrowse,
 	pushCommandFeedback,
-	nowPlayingStore
+	nowPlayingStore,
+	updateSeekPosition
 } from '../stores';
 import type {
 	CoreStatusResponse,
@@ -102,6 +103,10 @@ export function registerSocketHandlers(): CleanupFn {
 		setQueueSnapshot(payload.queue);
 	};
 
+	const handleSeekChanged = (payload: { zone_id: string; seek_position: number }) => {
+		updateSeekPosition(payload.zone_id, payload.seek_position);
+	};
+
 	const handleNowPlaying = (payload: { zone_id: string; now_playing: NowPlaying | null }) => {
 		if (payload.now_playing) {
 			setNowPlaying(payload.zone_id, payload.now_playing);
@@ -156,6 +161,7 @@ export function registerSocketHandlers(): CleanupFn {
 		['zones', handleZonesSnapshot],
 		['zone-updated', handleZoneUpdated],
 		['zone-removed', handleZoneRemoved],
+		['seek-changed', handleSeekChanged],
 		['now-playing-updated', handleNowPlaying],
 		['queue-updated', handleQueueUpdated],
 		['browse-result', handleBrowseResult],

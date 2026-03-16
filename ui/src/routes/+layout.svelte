@@ -21,7 +21,7 @@
 	import { registerSocketHandlers } from '$lib/socket/register';
 	import { getSocket } from '$lib/socket/client';
 	import ErrorToast from '$lib/components/ErrorToast.svelte';
-	import type { TransportControlRequest } from '@shared/types';
+	import type { TransportControlRequest, SeekRequest } from '@shared/types';
 
 	let { children } = $props();
 
@@ -102,6 +102,28 @@
 	const canPlay = $derived(!!(activeZone?.is_play_allowed || activeZone?.is_pause_allowed));
 	const canPrev = $derived(!!activeZone?.is_previous_allowed);
 	const canNext = $derived(!!activeZone?.is_next_allowed);
+	const canSeek = $derived(!!activeZone?.is_seek_allowed);
+	const seekPosition = $derived(activeZone?.seek_position ?? 0);
+	const duration = $derived(nowPlaying?.duration ?? 0);
+	const progress = $derived(duration > 0 ? Math.min(seekPosition / duration, 1) : 0);
+
+	function formatTime(seconds: number): string {
+		if (!seconds || seconds < 0) return '0:00';
+		const whole = Math.floor(seconds);
+		const m = Math.floor(whole / 60);
+		const s = whole % 60;
+		return `${m}:${String(s).padStart(2, '0')}`;
+	}
+
+	function seekTo(e: MouseEvent) {
+		if (!canSeek || !duration || !$selectedZoneStore) return;
+		const bar = e.currentTarget as HTMLElement;
+		const rect = bar.getBoundingClientRect();
+		const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+		const seconds = Math.floor(fraction * duration);
+		const s = getLiveSocket();
+		if (s) s.emit('transport:seek', { zone_id: $selectedZoneStore, seconds } satisfies SeekRequest);
+	}
 
 	function searchInLibrary(query: string) {
 		pendingSearchStore.set(query);
@@ -180,6 +202,11 @@
 </div>
 
 <footer class="play-bar card" aria-label="Playback controls">
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="pb-progress-bar" class:seekable={canSeek} onclick={seekTo}>
+		<div class="pb-progress-fill" style="width: {progress * 100}%"></div>
+	</div>
 	<div class="pb-track">
 		<div class="pb-art">
 			{#if nowPlaying?.image_key}
@@ -197,6 +224,7 @@
 			{:else}
 				<p class="pb-sub"></p>
 			{/if}
+			<span class="pb-time">{formatTime(seekPosition)} / {formatTime(duration)}</span>
 		</div>
 	</div>
 
@@ -387,12 +415,42 @@
 		grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
 		align-items: center;
 		gap: 0.6rem;
-		padding: 0.5rem 1rem;
+		padding: 0 1rem 0.5rem;
 		background: var(--mini-player-bg);
 		border-color: var(--mini-player-border);
 		color: var(--mini-player-text);
 		margin: 0.4rem;
 		border-radius: 14px;
+		overflow: hidden;
+	}
+
+	.pb-progress-bar {
+		grid-column: 1 / -1;
+		height: 3px;
+		background: rgba(255, 255, 255, 0.1);
+		cursor: default;
+		margin-bottom: 0.3rem;
+	}
+
+	.pb-progress-bar.seekable {
+		cursor: pointer;
+	}
+
+	.pb-progress-bar.seekable:hover {
+		height: 5px;
+	}
+
+	.pb-progress-fill {
+		height: 100%;
+		background: linear-gradient(90deg, var(--accent), var(--accent-2));
+		transition: width 0.8s linear;
+	}
+
+	.pb-time {
+		font-size: 0.72rem;
+		font-family: var(--font-mono);
+		opacity: 0.55;
+		margin-top: 0.1rem;
 	}
 
 	.pb-track {

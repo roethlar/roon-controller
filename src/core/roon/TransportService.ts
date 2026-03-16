@@ -33,6 +33,11 @@ export interface QueueUpdatedEvent {
   queue: ZoneQueue;
 }
 
+export interface SeekChangedEvent {
+  zone_id: string;
+  seek_position: number;
+}
+
 /**
  * TransportService event declarations for TypeScript
  */
@@ -44,10 +49,12 @@ export declare interface TransportService {
   ): this;
   on(event: "zone-removed", listener: (data: ZoneRemovedEvent) => void): this;
   on(event: "queue-updated", listener: (data: QueueUpdatedEvent) => void): this;
+  on(event: "seek-changed", listener: (data: SeekChangedEvent) => void): this;
   emit(event: "zone-updated", data: ZoneUpdatedEvent): boolean;
   emit(event: "now-playing-updated", data: NowPlayingUpdatedEvent): boolean;
   emit(event: "zone-removed", data: ZoneRemovedEvent): boolean;
   emit(event: "queue-updated", data: QueueUpdatedEvent): boolean;
+  emit(event: "seek-changed", data: SeekChangedEvent): boolean;
 }
 
 /**
@@ -491,8 +498,7 @@ export class TransportService extends EventEmitter {
         this.subscriptions.set(zoneId, zone);
       }
 
-      // Emit seek update (lightweight, for progress bars)
-      this.logger.debug({ zone_id: zoneId, seek_position: seekPosition }, "Seek position updated");
+      this.emit("seek-changed", { zone_id: zoneId, seek_position: seekPosition });
     }
   }
 

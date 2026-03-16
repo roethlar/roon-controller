@@ -114,6 +114,10 @@ export const startServer = (
     socketContext.io.emit("queue-updated", data);
   });
 
+  transportService.on("seek-changed", (data) => {
+    socketContext.io.emit("seek-changed", data);
+  });
+
   // Browse results are emitted per-socket in the socket handlers,
   // not broadcast globally, so REST-initiated browse calls don't
   // interfere with clients' navigation state.

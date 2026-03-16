@@ -37,3 +37,13 @@ export function upsertZone(zone: Zone): void {
 export function removeZone(zoneId: string): void {
 	internalStore.update((current) => current.filter((zone) => zone.zone_id !== zoneId));
 }
+
+export function updateSeekPosition(zoneId: string, seekPosition: number): void {
+	internalStore.update((current) => {
+		const index = current.findIndex((z) => z.zone_id === zoneId);
+		if (index < 0) return current;
+		const next = [...current];
+		next[index] = { ...next[index], seek_position: seekPosition };
+		return next;
+	});
+}

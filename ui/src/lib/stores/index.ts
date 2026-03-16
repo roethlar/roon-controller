@@ -1,5 +1,5 @@
 export { coreStore, isCorePaired, loadCoreStatus, setCoreStatus } from './coreStore';
-export { zonesStore, zoneMapStore, loadZones, setZonesSnapshot, upsertZone, removeZone } from './zonesStore';
+export { zonesStore, zoneMapStore, loadZones, setZonesSnapshot, upsertZone, removeZone, updateSeekPosition } from './zonesStore';
 export { nowPlayingStore, nowPlayingList, setNowPlaying, removeNowPlaying, resetNowPlaying } from './nowPlayingStore';
 export { queueStore, setQueueSnapshot, clearQueue, resetQueue } from './queueStore';
 export { selectedZoneStore, setSelectedZone } from './selectedZoneStore';
