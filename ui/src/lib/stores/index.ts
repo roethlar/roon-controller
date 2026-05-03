@@ -7,9 +7,13 @@ export { themeStore, initializeTheme, setTheme, toggleTheme } from './themeStore
 export {
 	browseStore,
 	setBrowseResult,
+	appendBrowseItems,
 	setBrowseLoading,
 	setBrowseError,
+	setSearchLoading,
+	setSearchError,
 	setSearchResults,
+	clearSearchResults,
 	resetBrowse
 } from './browseStore';
 export {
@@ -19,6 +23,14 @@ export {
 } from './commandFeedbackStore';
 export { pendingSearchStore } from './pendingSearchStore';
 export { browseNavStore } from './browseNavStore';
+export { socketStatusStore, setSocketStatus, type SocketStatus } from './socketStatusStore';
+export {
+	browseHistoryStore,
+	pushHistory,
+	popHistory,
+	popForward,
+	resetHistory
+} from './browseHistoryStore';
 
 import { loadCoreStatus } from './coreStore';
 import { loadZones } from './zonesStore';

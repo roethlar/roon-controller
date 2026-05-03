@@ -3,6 +3,8 @@ import { writable } from 'svelte/store';
 
 export type ThemeMode = 'dark' | 'light';
 
+// Storage key is also referenced by the inline script in app.html; keep them
+// in sync if you rename it.
 const STORAGE_KEY = 'roon-controller-theme';
 
 function detectInitialTheme(): ThemeMode {
@@ -10,11 +12,19 @@ function detectInitialTheme(): ThemeMode {
 		return 'dark';
 	}
 
-	const stored = localStorage.getItem(STORAGE_KEY);
-	if (stored === 'dark' || stored === 'light') {
-		return stored;
+	try {
+		const stored = localStorage.getItem(STORAGE_KEY);
+		if (stored === 'dark' || stored === 'light') {
+			return stored;
+		}
+	} catch {
+		/* localStorage unavailable (private mode, blocked, etc.) */
 	}
 
+	// Honor the OS preference when nothing is stored.
+	if (window.matchMedia?.('(prefers-color-scheme: light)').matches) {
+		return 'light';
+	}
 	return 'dark';
 }
 
@@ -30,7 +40,11 @@ export function applyTheme(theme: ThemeMode): void {
 	}
 
 	document.documentElement.setAttribute('data-theme', theme);
-	localStorage.setItem(STORAGE_KEY, theme);
+	try {
+		localStorage.setItem(STORAGE_KEY, theme);
+	} catch {
+		/* localStorage unavailable */
+	}
 }
 
 export function setTheme(theme: ThemeMode): void {

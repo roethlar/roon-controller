@@ -1,6 +1,8 @@
 import path from "path";
 import fs from "fs";
 import express, { Application } from "express";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { Logger } from "pino";
 import { createHealthRouter } from "./routes/health";
 import { createCoreRouter } from "./routes/core";
@@ -13,6 +15,7 @@ import { RoonClient } from "../../core/roon/RoonClient";
 import { TransportService } from "../../core/roon/TransportService";
 import { BrowseService } from "../../core/roon/BrowseService";
 import { ImageService } from "../../core/roon/ImageService";
+import { ErrorResponse } from "../../shared/types";
 
 export const createHttpApp = (
   roonClient: RoonClient,
@@ -24,7 +27,57 @@ export const createHttpApp = (
   const app = express();
 
   app.disable("x-powered-by");
-  app.use(express.json());
+
+  // Helmet defaults are tuned for typical web apps. The CSP override:
+  //   - styleSrc 'unsafe-inline' for Svelte's scoped <style> blocks.
+  //   - scriptSrc 'unsafe-inline' for (a) SvelteKit's static-build boot
+  //     script that calls kit.start() and (b) the theme pre-hydration
+  //     script in app.html. Both are inline by design; using nonces would
+  //     require server-side template injection that the static adapter
+  //     doesn't support out of the box. For LAN-appliance use the marginal
+  //     defense lost is small relative to having a working page.
+  //   - same-origin image/connect (the SvelteKit static build calls
+  //     /api/* and /socket.io on the same host:port).
+  //   - upgradeInsecureRequests removed: this server is HTTP-only on the
+  //     LAN and modern browsers carve out RFC1918 from upgrade anyway,
+  //     but explicit removal avoids surprises behind a non-HTTPS proxy.
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", "data:", "blob:"],
+          connectSrc: ["'self'", "ws:", "wss:"],
+          fontSrc: ["'self'", "data:"],
+          objectSrc: ["'none'"],
+          frameAncestors: ["'self'"],
+          upgradeInsecureRequests: null,
+        },
+      },
+      crossOriginEmbedderPolicy: false,
+      crossOriginResourcePolicy: { policy: "same-site" },
+    })
+  );
+
+  app.use(express.json({ limit: "32kb" }));
+
+  // Rate limit /api/* — generous for normal use, low enough to throttle
+  // abusive clients on a LAN. Trust proxy not enabled by default; if the
+  // service is fronted by a reverse proxy that should be configured by
+  // setting TRUST_PROXY=true (handled below).
+  if (process.env.TRUST_PROXY === "true") {
+    app.set("trust proxy", 1);
+  }
+  const apiLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 600,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "Too many requests" } satisfies ErrorResponse,
+  });
+  app.use("/api", apiLimiter);
 
   app.use(createHealthRouter());
   app.use("/api/core", createCoreRouter(roonClient));
@@ -32,6 +85,14 @@ export const createHttpApp = (
   app.use("/api/transport", createTransportRouter(transportService));
   app.use("/api/browse", createBrowseRouter(browseService));
   app.use("/api/image", createImageRouter(imageService));
+
+  // Any unmatched /api/* request is an API miss — return JSON 404 instead of
+  // falling through to the SPA HTML, which would confuse the API client's
+  // response.json() parser.
+  app.use("/api", (_req, res) => {
+    const response: ErrorResponse = { error: "Not Found" };
+    res.status(404).json(response);
+  });
 
   // Serve the SvelteKit static build in production.
   // UI_BUILD_PATH can be set explicitly; defaults to sibling `ui/build/` dir.

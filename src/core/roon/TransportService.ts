@@ -181,24 +181,50 @@ export class TransportService extends EventEmitter {
   }
 
   /**
-   * Change volume for an output
+   * Change volume for an output.
+   *
+   * For type="number" / "db" outputs, `value` is an absolute volume in the
+   * output's native scale (from VolumeSettings.min to max).
+   * For type="incremental" outputs, `value` is a step delta (typically ±1)
+   * and is sent in Roon's `relative` mode since incremental controls have
+   * no readable level.
+   *
    * @param output_id - The output identifier
-   * @param value - Volume value in Roon's native scale (from VolumeSettings.min to max)
+   * @param value - Absolute target (number/db) or step delta (incremental)
    */
   public async setVolume(output_id: string, value: number): Promise<void> {
     this.ensureTransport();
 
+    const mode = this.resolveVolumeMode(output_id);
+
     return new Promise((resolve, reject) => {
-      this.transport.change_volume(output_id, "absolute", value, (error: any) => {
+      this.transport.change_volume(output_id, mode, value, (error: any) => {
         if (error) {
-          this.logger.error({ err: error, output_id, value }, "setVolume failed");
-          reject(new RoonOperationError("setVolume", error, { output_id, value }));
+          this.logger.error({ err: error, output_id, value, mode }, "setVolume failed");
+          reject(new RoonOperationError("setVolume", error, { output_id, value, mode }));
         } else {
-          this.logger.debug({ output_id, value }, "setVolume succeeded");
+          this.logger.debug({ output_id, value, mode }, "setVolume succeeded");
           resolve();
         }
       });
     });
+  }
+
+  /**
+   * Look up the volume mode appropriate for an output. Defaults to "absolute"
+   * when the output is unknown so legacy callers keep working.
+   */
+  private resolveVolumeMode(output_id: string): "absolute" | "relative" {
+    for (const zone of this.subscriptions.values()) {
+      const output = zone.outputs?.find((o) => o.output_id === output_id);
+      if (output?.volume?.type === "incremental") {
+        return "relative";
+      }
+      if (output) {
+        return "absolute";
+      }
+    }
+    return "absolute";
   }
 
   /**
@@ -286,6 +312,10 @@ export class TransportService extends EventEmitter {
       zone_id,
       targetCount,
       (response: any, data: any) => {
+        // Trace-level dump of raw Roon payload — set LOG_LEVEL=trace and
+        // exercise queue mutations (Play Next, remove, reorder) to capture
+        // the delta payload shape for positional-diff implementation.
+        this.logger.trace({ zone_id, response, data }, "subscribe_queue callback (raw)");
         this.handleQueueUpdate(zone_id, targetCount, response, data);
       }
     );
@@ -344,11 +374,19 @@ export class TransportService extends EventEmitter {
     this.ensureTransport();
 
     this.transport.subscribe_zones((response: any, data: any) => {
-      if (response === "Subscribed") {
-        this.logger.info("Subscribed to zone updates");
+      // Trace-level dump of raw Roon payload for queue-feature investigation.
+      // Set LOG_LEVEL=trace to capture and paste back for review.
+      this.logger.trace({ response, data }, "subscribe_zones callback (raw)");
+
+      if (response === "Subscribed" || response === "Changed") {
+        if (response === "Subscribed") {
+          this.logger.info("Subscribed to zone updates");
+        }
         this.handleZonesUpdate(data);
-      } else if (response === "Changed") {
-        this.handleZonesUpdate(data);
+        // Seek changes only appear on `Changed` payloads in practice, but
+        // calling this for both branches is harmless (it noops when
+        // `zones_seek_changed` is absent) and avoids a silent break if
+        // Roon ever bundles seek info into the initial snapshot.
         this.handleSeekChanged(data);
       } else if (response === "Unsubscribed") {
         this.logger.warn("Unsubscribed from zone updates");
@@ -395,6 +433,15 @@ export class TransportService extends EventEmitter {
       }
     }
     this.queueSubscriptions.clear();
+  }
+
+  /**
+   * Tear down all live subscriptions. Called from the process shutdown
+   * handler so the Roon Core does not keep stale callbacks queued for the
+   * extension after restart.
+   */
+  public shutdown(): void {
+    this.resetState();
   }
 
   /**
@@ -529,45 +576,22 @@ export class TransportService extends EventEmitter {
     let nextItems = [...existing.items];
 
     if (Array.isArray(data?.items)) {
-      nextItems = data.items.map((item: any) => this.normalizeQueueItem(item));
+      // Full snapshot (initial Subscribed response, or a re-sync). Trust
+      // Roon's order — `queue_item_id` is opaque, not a position, so
+      // sorting by it would silently misorder queues.
+      nextItems = this.normalizeQueueItems(data.items);
     }
 
-    if (Array.isArray(data?.items_changed)) {
-      for (const raw of data.items_changed) {
-        const item = this.normalizeQueueItem(raw);
-        const index = nextItems.findIndex((current) => current.queue_item_id === item.queue_item_id);
-        if (index >= 0) {
-          nextItems[index] = item;
-        } else {
-          nextItems.push(item);
-        }
+    // Positional deltas. Roon's actual wire format is `changes: [{...}]` with
+    // splice-style ops applied in order. The fields `items_added` /
+    // `items_changed` / `items_removed` referenced in some Roon docs are
+    // not what the transport service actually delivers (verified by capture
+    // against a live Core, May 2026).
+    if (Array.isArray(data?.changes)) {
+      for (const change of data.changes) {
+        nextItems = this.applyQueueChange(nextItems, change);
       }
     }
-
-    if (Array.isArray(data?.items_added)) {
-      for (const raw of data.items_added) {
-        const item = this.normalizeQueueItem(raw);
-        const exists = nextItems.some((current) => current.queue_item_id === item.queue_item_id);
-        if (!exists) {
-          nextItems.push(item);
-        }
-      }
-    }
-
-    if (Array.isArray(data?.items_removed)) {
-      const removedIds = new Set<number>();
-      for (const raw of data.items_removed) {
-        const id = this.extractQueueItemId(raw);
-        if (typeof id === "number") {
-          removedIds.add(id);
-        }
-      }
-      if (removedIds.size > 0) {
-        nextItems = nextItems.filter((item) => !removedIds.has(item.queue_item_id));
-      }
-    }
-
-    nextItems.sort((a, b) => a.queue_item_id - b.queue_item_id);
 
     const snapshot: ZoneQueue = {
       zone_id,
@@ -580,9 +604,78 @@ export class TransportService extends EventEmitter {
     this.emit("queue-updated", { queue: snapshot });
   }
 
-  private normalizeQueueItem(item: any): QueueItem {
+  /**
+   * Apply a single Roon queue-subscription change to the local array.
+   * Operations seen in practice:
+   *   - { operation: "insert", index, items: [...] } — splice items in at index
+   *   - { operation: "remove", index, count }       — splice `count` items out at index
+   *
+   * Malformed known operations (missing/invalid `index` or `count`) are
+   * skipped with a warn log rather than defaulted, because defaulting
+   * `index` to 0 would silently mutate the currently-playing row, and
+   * defaulting `count` to 1 would silently remove the wrong item.
+   */
+  private applyQueueChange(items: QueueItem[], change: any): QueueItem[] {
+    if (!change || typeof change.operation !== "string") return items;
+
+    if (change.operation !== "insert" && change.operation !== "remove") {
+      this.logger.warn({ change }, "Ignoring unknown queue change operation");
+      return items;
+    }
+
+    if (
+      typeof change.index !== "number" ||
+      !Number.isFinite(change.index) ||
+      change.index < 0
+    ) {
+      this.logger.warn({ change }, "Skipping queue change with invalid index");
+      return items;
+    }
+    const index = Math.floor(change.index);
+
+    if (change.operation === "insert") {
+      if (!Array.isArray(change.items)) {
+        this.logger.warn({ change }, "Skipping insert change with non-array items");
+        return items;
+      }
+      const incoming = this.normalizeQueueItems(change.items);
+      const next = [...items];
+      next.splice(index, 0, ...incoming);
+      return next;
+    }
+
+    // remove
+    if (
+      typeof change.count !== "number" ||
+      !Number.isFinite(change.count) ||
+      change.count <= 0
+    ) {
+      this.logger.warn({ change }, "Skipping remove change with invalid count");
+      return items;
+    }
+    const count = Math.floor(change.count);
+    const next = [...items];
+    next.splice(index, count);
+    return next;
+  }
+
+  private normalizeQueueItems(items: any[]): QueueItem[] {
+    const result: QueueItem[] = [];
+    for (const raw of items) {
+      const item = this.normalizeQueueItem(raw);
+      if (item) result.push(item);
+    }
+    return result;
+  }
+
+  private normalizeQueueItem(item: any): QueueItem | null {
+    const id = this.extractQueueItemId(item);
+    if (typeof id !== "number") {
+      this.logger.warn({ item }, "Dropping queue item without a valid queue_item_id");
+      return null;
+    }
     return {
-      queue_item_id: this.extractQueueItemId(item) ?? 0,
+      queue_item_id: id,
       length: typeof item?.length === "number" ? item.length : undefined,
       image_key: item?.image_key,
       one_line: item?.one_line,
@@ -710,11 +803,16 @@ export class TransportService extends EventEmitter {
   }
 
   /**
-   * Normalize volume settings
+   * Normalize volume settings. Preserves the Roon-reported type for
+   * "number", "db", and "incremental"; unknown types fall back to "number"
+   * (the safest default for absolute-volume calls).
    */
   private normalizeVolume(roonVolume: any): VolumeSettings {
+    const rawType = String(roonVolume?.type ?? "");
+    const type: VolumeSettings["type"] =
+      rawType === "db" ? "db" : rawType === "incremental" ? "incremental" : "number";
     return {
-      type: roonVolume.type === "number" ? "number" : "incremental",
+      type,
       min: roonVolume.min ?? 0,
       max: roonVolume.max ?? 100,
       value: roonVolume.value ?? 50,

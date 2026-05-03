@@ -1,6 +1,32 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { ImageService } from '../../../core/roon/ImageService';
+import { ImageService, ImageScale } from '../../../core/roon/ImageService';
 import { ErrorResponse } from '../../../shared/types';
+
+const VALID_SCALES: readonly ImageScale[] = ['fit', 'fill', 'stretch'] as const;
+const MAX_KEY_LENGTH = 256;
+const MAX_DIMENSION = 4096;
+
+function parseScale(raw: unknown): { ok: true; value?: ImageScale } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: 'scale must be a string' };
+  if ((VALID_SCALES as readonly string[]).includes(raw)) {
+    return { ok: true, value: raw as ImageScale };
+  }
+  return { ok: false, error: `scale must be one of: ${VALID_SCALES.join(', ')}` };
+}
+
+function parseDimension(raw: unknown, name: string):
+  | { ok: true; value?: number }
+  | { ok: false; error: string }
+{
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${name} must be a string` };
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_DIMENSION) {
+    return { ok: false, error: `${name} must be a positive integer ≤ ${MAX_DIMENSION}` };
+  }
+  return { ok: true, value: parsed };
+}
 
 /**
  * Create image streaming router
@@ -17,14 +43,32 @@ export const createImageRouter = (imageService: ImageService): Router => {
   router.get('/:key', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { key } = req.params;
-      const scale = req.query.scale as 'fit' | 'fill' | 'stretch' | undefined;
-      const width = req.query.width ? Number(req.query.width) : undefined;
-      const height = req.query.height ? Number(req.query.height) : undefined;
 
       if (!key) {
         const response: ErrorResponse = { error: 'image key required' };
         return res.status(400).json(response);
       }
+      if (key.length > MAX_KEY_LENGTH) {
+        const response: ErrorResponse = { error: `image key exceeds ${MAX_KEY_LENGTH} characters` };
+        return res.status(400).json(response);
+      }
+
+      const scaleResult = parseScale(req.query.scale);
+      if (!scaleResult.ok) {
+        return res.status(400).json({ error: scaleResult.error } satisfies ErrorResponse);
+      }
+      const widthResult = parseDimension(req.query.width, 'width');
+      if (!widthResult.ok) {
+        return res.status(400).json({ error: widthResult.error } satisfies ErrorResponse);
+      }
+      const heightResult = parseDimension(req.query.height, 'height');
+      if (!heightResult.ok) {
+        return res.status(400).json({ error: heightResult.error } satisfies ErrorResponse);
+      }
+
+      const scale = scaleResult.value;
+      const width = widthResult.value;
+      const height = heightResult.value;
 
       // Validate width/height requirements when scale is provided
       if (scale && (!width || !height)) {

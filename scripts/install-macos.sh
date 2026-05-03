@@ -121,6 +121,10 @@ info "Deploying to $INSTALL_DIR..."
 
 mkdir -p "$INSTALL_DIR/config" "$INSTALL_DIR/data/image-cache" "$INSTALL_DIR/ui" "$LOG_DIR"
 
+# Wipe build artefacts before re-copying so files removed in a newer build
+# don't survive as stale leftovers. config/ and data/ are NOT touched.
+rm -rf "$INSTALL_DIR/dist" "$INSTALL_DIR/ui/build"
+
 cp -R dist               "$INSTALL_DIR/"
 cp -R ui/build           "$INSTALL_DIR/ui/"
 cp    package.json       "$INSTALL_DIR/"
@@ -130,11 +134,16 @@ info "Installing production dependencies in $INSTALL_DIR..."
 "$NPM_BIN" ci --omit=dev --prefix "$INSTALL_DIR" --prefer-offline 2>&1 | sed 's/^/  /'
 
 # ── Environment file ───────────────────────────────────────────────────────────
+# launchd doesn't support EnvironmentFile, so the plist below carries the
+# real environment. This .env is documentation only — edits to it will not
+# affect the running service. To change runtime config, edit the plist's
+# EnvironmentVariables block and reload via `launchctl bootout`/`bootstrap`.
+# Keep this template in sync with .env.example at the repo root.
 ENV_FILE="$INSTALL_DIR/.env"
-if [[ -f "$ENV_FILE" && "$REINSTALL" == false ]]; then
+if [[ -f "$ENV_FILE" ]]; then
   warn ".env already exists — leaving it unchanged."
 else
-  info "Writing .env..."
+  info "Writing .env (documentation only — see plist for live config)..."
   cat > "$ENV_FILE" <<EOF
 NODE_ENV=production
 HOST=0.0.0.0
@@ -142,6 +151,9 @@ PORT=${PORT}
 LOG_LEVEL=info
 ROON_TOKEN_PATH=${INSTALL_DIR}/config/roon-token.json
 IMAGE_CACHE_PATH=${INSTALL_DIR}/data/image-cache
+IMAGE_CACHE_MAX_BYTES=10737418240
+# CLIENT_ORIGIN=http://roon.lan,http://192.168.1.10:${PORT}
+# TRUST_PROXY=true
 EOF
 fi
 
@@ -176,6 +188,8 @@ cat > "$PLIST_PATH" <<EOF
       <string>${INSTALL_DIR}/config/roon-token.json</string>
       <key>IMAGE_CACHE_PATH</key>
       <string>${INSTALL_DIR}/data/image-cache</string>
+      <key>IMAGE_CACHE_MAX_BYTES</key>
+      <string>10737418240</string>
     </dict>
 
     <key>WorkingDirectory</key>

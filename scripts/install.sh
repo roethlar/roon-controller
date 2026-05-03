@@ -21,6 +21,7 @@ INSTALL_DIR="/opt/roon-controller"
 SERVICE_USER="roon"
 SERVICE_NAME="roon-controller"
 PORT="3333"
+PORT_EXPLICIT=false
 START_SERVICE=true
 REINSTALL=false
 
@@ -34,7 +35,7 @@ die()     { echo -e "${RED}[install] ERROR:${NC} $*" >&2; exit 1; }
 # ── Argument parsing ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --port)        PORT="$2";         shift 2 ;;
+    --port)        PORT="$2"; PORT_EXPLICIT=true; shift 2 ;;
     --install-dir) INSTALL_DIR="$2";  shift 2 ;;
     --user)        SERVICE_USER="$2"; shift 2 ;;
     --no-start)    START_SERVICE=false; shift ;;
@@ -81,6 +82,49 @@ if [[ -d "$INSTALL_DIR" && "$REINSTALL" == false ]]; then
   die "$INSTALL_DIR already exists.  Use --reinstall to overwrite."
 fi
 
+# ── Resolve effective PORT against any existing .env ──────────────────────────
+# An existing .env is preserved so user customizations (CLIENT_ORIGIN,
+# tweaked LOG_LEVEL, etc.) survive --reinstall. But the PORT line gets
+# special handling so the summary below — and the actual systemd service —
+# agree about what port the service listens on.
+ENV_FILE="$INSTALL_DIR/.env"
+if [[ -f "$ENV_FILE" ]]; then
+  # Lookup must be tolerant of a .env without an active PORT= line. Under
+  # `set -euo pipefail`, a failed grep would abort the installer before
+  # the summary, so guard with `grep -q` and only run the parse pipeline
+  # when there's actually a match.
+  EXISTING_PORT=""
+  if grep -qE '^PORT=' "$ENV_FILE"; then
+    EXISTING_PORT=$(grep -E '^PORT=' "$ENV_FILE" | head -1 | cut -d= -f2 | tr -d '[:space:]')
+  fi
+
+  if [[ "$PORT_EXPLICIT" == true ]]; then
+    # Explicit --port wins — update the .env so the service actually uses it.
+    if [[ -n "$EXISTING_PORT" ]]; then
+      if [[ "$EXISTING_PORT" != "$PORT" ]]; then
+        info "Updating PORT in existing .env: ${EXISTING_PORT} → ${PORT}"
+        sed -i "s/^PORT=.*/PORT=${PORT}/" "$ENV_FILE"
+      fi
+    else
+      # No PORT= line in the existing .env. Append one — without this,
+      # the explicit --port would be silently dropped and the service
+      # would fall back to the app default.
+      info "Appending PORT=${PORT} to existing .env (no PORT= line found)"
+      # Make sure the file ends with a newline before appending so we
+      # don't merge our line onto the previous one.
+      if [[ -s "$ENV_FILE" && -n "$(tail -c 1 "$ENV_FILE")" ]]; then
+        echo "" >> "$ENV_FILE"
+      fi
+      echo "PORT=${PORT}" >> "$ENV_FILE"
+    fi
+  else
+    # No --port passed; honour the .env so summary/URL match reality.
+    if [[ -n "$EXISTING_PORT" ]]; then
+      PORT="$EXISTING_PORT"
+    fi
+  fi
+fi
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 echo
 info "Roon Controller installer"
@@ -122,6 +166,10 @@ info "Deploying to $INSTALL_DIR..."
 
 mkdir -p "$INSTALL_DIR/config" "$INSTALL_DIR/data/image-cache" "$INSTALL_DIR/ui"
 
+# Wipe build artefacts before re-copying so files removed in a newer build
+# don't survive as stale leftovers. config/ and data/ are NOT touched.
+rm -rf "$INSTALL_DIR/dist" "$INSTALL_DIR/ui/build"
+
 # Copy built artefacts and manifests (not source, not node_modules)
 cp -r dist               "$INSTALL_DIR/"
 cp -r ui/build           "$INSTALL_DIR/ui/"
@@ -133,18 +181,49 @@ info "Installing production dependencies in $INSTALL_DIR..."
 npm ci --omit=dev --prefix "$INSTALL_DIR" --prefer-offline 2>&1 | sed 's/^/  /'
 
 # ── Environment file ───────────────────────────────────────────────────────────
-ENV_FILE="$INSTALL_DIR/.env"
-if [[ -f "$ENV_FILE" && "$REINSTALL" == false ]]; then
-  warn ".env already exists — leaving it unchanged."
+# Keep this template in sync with .env.example at the repo root. PORT
+# resolution against any existing .env happened earlier so $PORT here is
+# the value that will end up in the file (and used by the service).
+if [[ -f "$ENV_FILE" ]]; then
+  warn ".env already exists — preserving (PORT was synced if --port was passed)."
 else
   info "Writing .env..."
   cat > "$ENV_FILE" <<EOF
 NODE_ENV=production
+
+# Server host/interface to bind to.
+# 0.0.0.0 makes the controller reachable on the LAN — appropriate for a
+# single-purpose home appliance. Set HOST=127.0.0.1 to restrict to
+# localhost (recommended when running behind a reverse proxy).
 HOST=0.0.0.0
+
+# HTTP port for the backend API and socket server.
 PORT=${PORT}
+
+# Pino log level (fatal|error|warn|info|debug|trace|silent).
+# Set to "trace" temporarily to capture raw Roon subscribe_zones and
+# subscribe_queue payloads for queue-debugging purposes.
 LOG_LEVEL=info
+
+# Location of the Roon pairing token.
 ROON_TOKEN_PATH=${INSTALL_DIR}/config/roon-token.json
+
+# Directory for cached artwork from Roon.
 IMAGE_CACHE_PATH=${INSTALL_DIR}/data/image-cache
+
+# Maximum size of the on-disk image cache in bytes. When exceeded, the
+# oldest entries (by mtime) are evicted down to ~90% of this cap.
+# Default: 10 GB.
+IMAGE_CACHE_MAX_BYTES=10737418240
+
+# Comma-separated list of allowed origins for Socket.IO CORS, or "*" for any.
+# Tighten this when fronting the controller with a reverse proxy or
+# exposing beyond the LAN.
+# CLIENT_ORIGIN=http://roon.lan,http://192.168.1.10:${PORT}
+
+# Set to "true" if running behind a reverse proxy so rate limits identify
+# clients by their forwarded IP rather than the proxy IP.
+# TRUST_PROXY=true
 EOF
 fi
 

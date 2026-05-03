@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getSocket } from '$lib/socket/client';
+	import { emitWithAck } from '$lib/socket/emit';
 	import { selectedZoneStore, queueStore, setQueueSnapshot, pushCommandFeedback } from '$lib/stores';
 	import { zoneMapStore } from '$lib/stores/zonesStore';
-	import { nowPlayingStore } from '$lib/stores/nowPlayingStore';
-	import type { LoopModeRequest, QueueItem, ZonePlaybackSettingsRequest } from '@shared/types';
+	import type { LoopModeRequest, QueueItem, ZoneQueue, ZonePlaybackSettingsRequest } from '@shared/types';
 
 	let socket = $state(getSocket());
 	let queueLoading = $state(false);
@@ -23,7 +23,6 @@
 
 	const activeZone = $derived($selectedZoneStore ? $zoneMapStore.get($selectedZoneStore) : undefined);
 	const activeQueue = $derived($selectedZoneStore ? $queueStore[$selectedZoneStore] : undefined);
-	const nowPlaying = $derived($selectedZoneStore ? $nowPlayingStore[$selectedZoneStore] : undefined);
 	const totalQueueSeconds = $derived((activeQueue?.items ?? []).reduce((sum, item) => sum + (item.length ?? 0), 0));
 
 	function getLiveSocket() {
@@ -48,14 +47,15 @@
 
 		queueLoading = true;
 		try {
-			await new Promise<void>((resolve) => {
-				liveSocket.emit('queue:subscribe', { zone_id: zoneId }, (response: { queue?: import('@shared/types').ZoneQueue }) => {
-					if (response?.queue) {
-						setQueueSnapshot(response.queue);
-					}
-					resolve();
-				});
-			});
+			const response = await emitWithAck<{ queue?: ZoneQueue }>(
+				liveSocket,
+				'queue:subscribe',
+				{ zone_id: zoneId },
+				{ feedback: { source: 'queue', command: 'queue:subscribe' } }
+			);
+			if (response.success && response.data?.queue) {
+				setQueueSnapshot(response.data.queue);
+			}
 		} finally {
 			queueLoading = false;
 		}
@@ -73,15 +73,12 @@
 
 		queueActionInFlight = true;
 		try {
-			await new Promise<void>((resolve) => {
-				liveSocket.emit(
-					'queue:play-from-here',
-					{ zone_id: $selectedZoneStore, queue_item_id: queueItemId },
-					() => {
-						resolve();
-					}
-				);
-			});
+			await emitWithAck(
+				liveSocket,
+				'queue:play-from-here',
+				{ zone_id: $selectedZoneStore, queue_item_id: queueItemId },
+				{ feedback: { source: 'queue', command: 'queue:play-from-here' } }
+			);
 		} finally {
 			queueActionInFlight = false;
 		}
@@ -99,11 +96,12 @@
 
 		settingsInFlight = true;
 		try {
-			await new Promise<void>((resolve) => {
-				liveSocket.emit('transport:settings', { zone_id: $selectedZoneStore, ...patch }, () => {
-					resolve();
-				});
-			});
+			await emitWithAck(
+				liveSocket,
+				'transport:settings',
+				{ zone_id: $selectedZoneStore, ...patch },
+				{ feedback: { source: 'transport', command: 'transport:settings' } }
+			);
 		} finally {
 			settingsInFlight = false;
 		}
@@ -155,10 +153,14 @@
 		return `${mins}m`;
 	}
 
-	function likelyCurrent(item: QueueItem): boolean {
-		const title = itemTitle(item).toLowerCase();
-		const current = (nowPlaying?.title || '').toLowerCase();
-		return Boolean(current && title && title.includes(current));
+	function isCurrentRow(index: number): boolean {
+		// Roon's queue subscription delivers items starting at the currently
+		// playing track (verified by capture against a live Core, May 2026).
+		// When a track is consumed, Roon issues a `remove` op at index 0 so
+		// the new index 0 is the new current track. Using the row index is
+		// reliable; the substring-match heuristic this replaces would
+		// mis-highlight whenever titles repeated.
+		return index === 0;
 	}
 </script>
 
@@ -208,8 +210,8 @@
 			<p class="placeholder-copy">Queue is empty for this zone.</p>
 		{:else}
 			<div class="queue-list">
-				{#each activeQueue.items as item}
-					<article class="queue-item" class:current={likelyCurrent(item)}>
+				{#each activeQueue.items as item, index}
+					<article class="queue-item" class:current={isCurrentRow(index)}>
 						<div class="item-art">
 							{#if item.image_key}
 								<img src="/api/image/{item.image_key}?scale=fit&width=120&height=120" alt={itemTitle(item)} />

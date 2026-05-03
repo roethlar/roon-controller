@@ -14,6 +14,14 @@ const bootstrap = () => {
     const shutdown = (signal: string) => {
       logger.info({ signal }, "Received shutdown signal");
 
+      // Tear down Roon subscriptions before closing transports so the Core
+      // doesn't queue stale callbacks for this extension while it restarts.
+      try {
+        context.transportService.shutdown();
+      } catch (error) {
+        logger.warn({ err: error }, "Error while stopping transport service");
+      }
+
       void context.socketContext.io.close(() => {
         logger.info("Socket server closed");
       });

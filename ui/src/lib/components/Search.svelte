@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { browseStore, setBrowseError, setBrowseLoading } from '$lib/stores/browseStore';
+	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
+	import { browseStore, setSearchError, setSearchLoading } from '$lib/stores/browseStore';
 	import { selectedZoneStore } from '$lib/stores/selectedZoneStore';
 	import { getSocket } from '$lib/socket/client';
 	import type { BrowseSearchOptions, SearchResult } from '@shared/types';
@@ -8,6 +9,14 @@
 
 	let searchQuery = $state('');
 	let socket = $state(getSocket());
+
+	/**
+	 * Per-group pagination state. Tracks how many items of each result type
+	 * are currently revealed; "Show more" bumps the count by PAGE_SIZE.
+	 */
+	const PAGE_SIZE = 12;
+	let pageSize: Record<string, number> = $state({});
+	let lastQueryDisplayed = $state<string | null>(null);
 
 	function search() {
 		const query = searchQuery.trim();
@@ -19,15 +28,17 @@
 		socket = liveSocket;
 
 		if (!liveSocket) {
-			setBrowseError('Realtime connection is unavailable.');
+			setSearchError('Realtime connection is unavailable.');
 			return;
 		}
 
 		const options: BrowseSearchOptions = {
 			input: query,
-			zoneId: $selectedZoneStore || undefined
+			zoneId: $selectedZoneStore || undefined,
+			multiSessionKey: SEARCH_SESSION_KEY,
+			popAll: true
 		};
-		setBrowseLoading('search');
+		setSearchLoading(query);
 		liveSocket.emit('browse:search', options);
 	}
 
@@ -36,6 +47,64 @@
 			event.preventDefault();
 			search();
 		}
+	}
+
+	// Reset per-group pagination whenever a new query lands.
+	$effect(() => {
+		const q = $browseStore.lastSearchQuery;
+		if (q !== lastQueryDisplayed) {
+			pageSize = {};
+			lastQueryDisplayed = q;
+		}
+	});
+
+	// Display order for resultType groups.
+	const TYPE_ORDER: ReadonlyArray<SearchResult['resultType']> = [
+		'artist',
+		'album',
+		'track',
+		'playlist',
+		'composer',
+		'genre',
+		'label',
+		'radio',
+		'unknown'
+	];
+
+	const TYPE_LABELS: Record<SearchResult['resultType'], string> = {
+		artist: 'Artists',
+		album: 'Albums',
+		track: 'Tracks',
+		playlist: 'Playlists',
+		composer: 'Composers',
+		genre: 'Genres',
+		label: 'Labels',
+		radio: 'Radio',
+		unknown: 'Other'
+	};
+
+	const grouped = $derived.by(() => {
+		const buckets = new Map<SearchResult['resultType'], SearchResult[]>();
+		for (const r of $browseStore.lastSearch ?? []) {
+			const list = buckets.get(r.resultType) ?? [];
+			list.push(r);
+			buckets.set(r.resultType, list);
+		}
+		return TYPE_ORDER.filter((t) => buckets.has(t)).map((t) => ({
+			type: t,
+			label: TYPE_LABELS[t],
+			items: buckets.get(t) ?? []
+		}));
+	});
+
+	function shownCount(type: string, total: number): number {
+		const current = pageSize[type] ?? PAGE_SIZE;
+		return Math.min(current, total);
+	}
+
+	function showMore(type: string) {
+		const current = pageSize[type] ?? PAGE_SIZE;
+		pageSize = { ...pageSize, [type]: current + PAGE_SIZE };
 	}
 </script>
 
@@ -53,35 +122,56 @@
 		<button type="button" onclick={search} disabled={!searchQuery.trim()}>Search</button>
 	</div>
 
-	{#if $browseStore.loading && $browseStore.hierarchy === 'search'}
+	{#if $browseStore.searchLoading}
 		<p class="loading">Searching...</p>
-	{:else if $browseStore.error && $browseStore.hierarchy === 'search'}
+	{:else if $browseStore.searchError}
 		<div class="error">
-			<p>{$browseStore.error}</p>
+			<p>{$browseStore.searchError}</p>
 		</div>
 	{:else if $browseStore.lastSearch}
 		<div class="results">
-			<p class="result-count">{$browseStore.lastSearch.length} results</p>
-			{#each $browseStore.lastSearch.slice(0, 8) as result}
-				<button
-					type="button"
-					class="result-item"
-					disabled={!result.itemKey}
-					onclick={() => onResultClick?.(result)}
-				>
-					{#if result.imageKey}
-						<img src="/api/image/{result.imageKey}?scale=fit&width=120&height=120" alt={result.title} />
-					{:else}
-						<div class="result-fallback">{result.resultType}</div>
-					{/if}
-					<div class="result-meta">
-						<p class="title">{result.title}</p>
-						<p class="type">{result.resultType}</p>
-						{#if result.subtitle}
-							<p class="subtitle">{result.subtitle}</p>
-						{/if}
+			<p class="result-count">
+				{$browseStore.lastSearch.length} results
+				{#if $browseStore.lastSearchQuery}
+					for <strong>"{$browseStore.lastSearchQuery}"</strong>
+				{/if}
+			</p>
+			{#each grouped as group}
+				<section class="group">
+					<header class="group-header">
+						<h3>{group.label}</h3>
+						<span class="group-count">
+							{shownCount(group.type, group.items.length)} of {group.items.length}
+						</span>
+					</header>
+					<div class="group-items">
+						{#each group.items.slice(0, shownCount(group.type, group.items.length)) as result}
+							<button
+								type="button"
+								class="result-item"
+								disabled={!result.itemKey}
+								onclick={() => onResultClick?.(result)}
+							>
+								{#if result.imageKey}
+									<img src="/api/image/{result.imageKey}?scale=fit&width=120&height=120" alt={result.title} />
+								{:else}
+									<div class="result-fallback">{result.resultType.charAt(0).toUpperCase()}</div>
+								{/if}
+								<div class="result-meta">
+									<p class="title">{result.title}</p>
+									{#if result.subtitle}
+										<p class="subtitle">{result.subtitle}</p>
+									{/if}
+								</div>
+							</button>
+						{/each}
 					</div>
-				</button>
+					{#if group.items.length > shownCount(group.type, group.items.length)}
+						<button type="button" class="show-more" onclick={() => showMore(group.type)}>
+							Show more {group.label.toLowerCase()}
+						</button>
+					{/if}
+				</section>
 			{/each}
 		</div>
 	{/if}
@@ -135,17 +225,53 @@
 	}
 
 	.results {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-		gap: 0.6rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.85rem;
 	}
 
 	.result-count {
-		grid-column: 1 / -1;
 		font-size: 0.8rem;
-		letter-spacing: 0.08em;
+		letter-spacing: 0.06em;
 		text-transform: uppercase;
 		color: var(--text-soft);
+	}
+
+	.result-count strong {
+		color: var(--text);
+		text-transform: none;
+		letter-spacing: 0;
+	}
+
+	.group {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+	}
+
+	.group-header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.6rem;
+	}
+
+	.group-header h3 {
+		font-family: var(--font-display);
+		font-size: 0.92rem;
+		margin: 0;
+	}
+
+	.group-count {
+		font-size: 0.72rem;
+		font-family: var(--font-mono);
+		color: var(--text-soft);
+	}
+
+	.group-items {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+		gap: 0.5rem;
 	}
 
 	.result-item {
@@ -185,8 +311,8 @@
 		display: grid;
 		place-items: center;
 		background: var(--surface-3);
-		font-size: 0.68rem;
-		text-transform: uppercase;
+		font-size: 1.2rem;
+		font-weight: 700;
 		color: var(--text-soft);
 	}
 
@@ -195,17 +321,25 @@
 		line-height: 1.25;
 	}
 
-	.result-meta .type {
-		font-size: 0.72rem;
-		margin-top: 0.12rem;
-		text-transform: uppercase;
-		letter-spacing: 0.07em;
-		color: var(--text-soft);
-	}
-
 	.result-meta .subtitle {
 		margin-top: 0.2rem;
 		font-size: 0.8rem;
 		color: var(--text-soft);
+	}
+
+	.show-more {
+		align-self: flex-start;
+		padding: 0.36rem 0.7rem;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		background: var(--surface-2);
+		color: var(--text);
+		font-size: 0.78rem;
+		cursor: pointer;
+	}
+
+	.show-more:hover {
+		background: var(--surface-3);
+		border-color: var(--accent-2);
 	}
 </style>

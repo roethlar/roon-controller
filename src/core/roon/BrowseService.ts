@@ -1,5 +1,4 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { EventEmitter } from "events";
 import { Logger } from "pino";
 
 import {
@@ -14,14 +13,6 @@ import {
 import { RoonClient } from "./RoonClient";
 import { CoreUnpairedError } from "./errors";
 
-export declare interface BrowseService {
-  on(event: "browse-result", listener: (result: BrowseResult) => void): this;
-  emit(event: "browse-result", result: BrowseResult): boolean;
-
-  on(event: "search-result", listener: (result: SearchResult[]) => void): this;
-  emit(event: "search-result", result: SearchResult[]): boolean;
-}
-
 /**
  * Wrapper around RoonApiBrowse providing normalized outputs.
  *
@@ -32,24 +23,26 @@ export declare interface BrowseService {
  * browse() returns list metadata (title, count, level) but NOT items.
  * A separate load() call is always required to retrieve actual items.
  * "Pop" is done via browse() with the pop_levels parameter.
+ *
+ * This service is request/response — it does not emit events. Socket
+ * handlers return per-socket results to avoid leaking one client's browse
+ * navigation into another's.
  */
-export class BrowseService extends EventEmitter {
+export class BrowseService {
   constructor(
     private readonly roonClient: RoonClient,
     private readonly logger: Logger
-  ) {
-    super();
-  }
+  ) {}
 
   /**
    * Navigate the browse hierarchy and return items.
    * Internally calls Roon browse() then load() to fetch items.
    */
   public async browse(options: BrowseOptions): Promise<BrowseResult> {
-    this.logger.info({ options }, "BrowseService browse invoked");
+    this.logger.debug({ options }, "BrowseService browse invoked");
     const browseResponse = await this.invokeBrowse(this.mapBrowseOptions(options));
 
-    const items = await this.loadItemsForList(browseResponse, options.hierarchy, options.offset);
+    const items = await this.loadItemsForList(browseResponse, options);
     const normalized = this.buildResult(browseResponse, items);
 
     this.logger.debug(
@@ -61,7 +54,6 @@ export class BrowseService extends EventEmitter {
       },
       "BrowseService browse result"
     );
-    this.emit("browse-result", normalized);
     return normalized;
   }
 
@@ -70,7 +62,7 @@ export class BrowseService extends EventEmitter {
    * Roon load() accepts: hierarchy, offset, count, level.
    */
   public async load(options: BrowseLoadOptions): Promise<BrowseResult> {
-    this.logger.info({ options }, "BrowseService load invoked");
+    this.logger.debug({ options }, "BrowseService load invoked");
     const loadResponse = await this.invokeLoad(this.mapLoadOptions(options));
 
     const normalized = this.normalizeLoadResponse(loadResponse);
@@ -83,7 +75,6 @@ export class BrowseService extends EventEmitter {
       },
       "BrowseService load result"
     );
-    this.emit("browse-result", normalized);
     return normalized;
   }
 
@@ -93,10 +84,16 @@ export class BrowseService extends EventEmitter {
    * then load() to fetch items at the resulting level.
    */
   public async pop(options: BrowsePopOptions): Promise<BrowseResult> {
-    this.logger.info({ options }, "BrowseService pop invoked");
+    this.logger.debug({ options }, "BrowseService pop invoked");
     const browseResponse = await this.invokeBrowse(this.mapPopOptions(options));
 
-    const items = await this.loadItemsForList(browseResponse, options.hierarchy, 0);
+    const items = await this.loadItemsForList(browseResponse, {
+      hierarchy: options.hierarchy,
+      zoneId: options.zoneId,
+      multiSessionKey: options.multiSessionKey,
+      offset: 0,
+      pageSize: options.pageSize,
+    });
     const normalized = this.buildResult(browseResponse, items);
 
     this.logger.debug(
@@ -108,7 +105,6 @@ export class BrowseService extends EventEmitter {
       },
       "BrowseService pop result"
     );
-    this.emit("browse-result", normalized);
     return normalized;
   }
 
@@ -116,13 +112,14 @@ export class BrowseService extends EventEmitter {
    * Perform a search using the browse hierarchy
    */
   public async search(options: BrowseSearchOptions): Promise<SearchResult[]> {
-    this.logger.info({ options }, "BrowseService search invoked");
+    this.logger.debug({ options }, "BrowseService search invoked");
     const browseOptions: BrowseOptions = {
       hierarchy: "search",
       zoneId: options.zoneId,
       input: options.input,
       offset: options.offset,
-      popAll: true,
+      multiSessionKey: options.multiSessionKey,
+      popAll: options.popAll ?? true,
     };
 
     const result = await this.browse(browseOptions);
@@ -131,7 +128,6 @@ export class BrowseService extends EventEmitter {
       { query: options.input, count: searchResults.length },
       "BrowseService search result"
     );
-    this.emit("search-result", searchResults);
     return searchResults;
   }
 
@@ -250,6 +246,14 @@ export class BrowseService extends EventEmitter {
         ? options.offset
         : 0;
 
+    if (typeof options.count === "number" && Number.isFinite(options.count)) {
+      params.count = options.count;
+    }
+
+    if (options.multiSessionKey) {
+      params.multi_session_key = options.multiSessionKey;
+    }
+
     return params;
   }
 
@@ -272,19 +276,27 @@ export class BrowseService extends EventEmitter {
       params.pop_levels = 1;
     }
 
+    if (options.multiSessionKey) {
+      params.multi_session_key = options.multiSessionKey;
+    }
+
     return params;
   }
 
   // ── Item Loading & Normalization ─────────────────────────────────────
 
+  private static readonly PAGE_SIZE = 100;
+
   /**
-   * After a browse() call, fetch items via load() if the response
-   * indicates a list with items to display.
+   * After a browse() call, fetch items via load(). By default loads one
+   * page (PAGE_SIZE items) starting from `options.offset`. Pass
+   * `pageSize: Infinity` to load the entire list (e.g. for small action
+   * lists or quickPlay lookups). Larger lists should be paged via
+   * `BrowseService.load()` from the client.
    */
   private async loadItemsForList(
     browseResponse: any,
-    hierarchy: string,
-    offset?: number
+    options: Pick<BrowseOptions, "hierarchy" | "zoneId" | "offset" | "multiSessionKey" | "pageSize">
   ): Promise<any[]> {
     if (browseResponse?.action !== "list") {
       return [];
@@ -295,27 +307,44 @@ export class BrowseService extends EventEmitter {
       return [];
     }
 
-    const totalCount = browseResponse?.list?.count ?? 0;
+    const totalCount = count;
     const startOffset =
-      typeof offset === "number" && Number.isFinite(offset) ? offset : 0;
+      typeof options.offset === "number" && Number.isFinite(options.offset) ? options.offset : 0;
+
+    const requestedPage =
+      options.pageSize === Infinity
+        ? totalCount
+        : typeof options.pageSize === "number" && options.pageSize > 0
+          ? Math.floor(options.pageSize)
+          : BrowseService.PAGE_SIZE;
+    const targetEnd = Math.min(totalCount, startOffset + requestedPage);
 
     this.logger.debug(
-      { hierarchy, totalCount, startOffset },
+      {
+        hierarchy: options.hierarchy,
+        totalCount,
+        startOffset,
+        targetEnd,
+        multiSessionKey: options.multiSessionKey,
+      },
       "Loading items for browse result"
     );
 
-    const batchSize = 100;
+    const batchSize = BrowseService.PAGE_SIZE;
     const allItems: any[] = [];
 
-    for (let off = startOffset; off < totalCount; off += batchSize) {
-      const loadResponse = await this.invokeLoad({
-        hierarchy,
+    for (let off = startOffset; off < targetEnd; off += batchSize) {
+      const requestCount = Math.min(batchSize, targetEnd - off);
+      const loadResponse = await this.invokeLoad(this.mapLoadOptions({
+        hierarchy: options.hierarchy,
+        zoneId: options.zoneId,
         offset: off,
-        count: Math.min(batchSize, totalCount - off),
-      });
+        count: requestCount,
+        multiSessionKey: options.multiSessionKey,
+      }));
       const batch = loadResponse?.items ?? [];
       allItems.push(...batch);
-      if (batch.length < Math.min(batchSize, totalCount - off)) break;
+      if (batch.length < requestCount) break;
     }
 
     return allItems;
@@ -379,10 +408,12 @@ export class BrowseService extends EventEmitter {
   }
 
   private inferSearchType(item: BrowseItem): SearchResult["resultType"] {
-    const hint = (item.hint ?? "").toLowerCase();
+    // Prefer itemType (semantic — e.g. "album", "artist") over hint
+    // (structural — e.g. "list", "action_list"). Roon search results almost
+    // always carry both; falling back to hint only matters for unusual items.
     const type = (item.itemType ?? "").toLowerCase();
-
-    const token = hint || type;
+    const hint = (item.hint ?? "").toLowerCase();
+    const token = type || hint;
 
     switch (token) {
       case "artist":

@@ -14,14 +14,21 @@
 		initializeTheme,
 		pushCommandFeedback,
 		pendingSearchStore,
-		browseNavStore
+		browseNavStore,
+		socketStatusStore
 	} from '$lib/stores';
 	import { goto } from '$app/navigation';
 	import { zonesStore, zoneMapStore } from '$lib/stores/zonesStore';
 	import { registerSocketHandlers } from '$lib/socket/register';
 	import { getSocket } from '$lib/socket/client';
+	import { emitWithAck } from '$lib/socket/emit';
 	import ErrorToast from '$lib/components/ErrorToast.svelte';
-	import type { TransportControlRequest, SeekRequest } from '@shared/types';
+	import type {
+		TransportControlRequest,
+		SeekRequest,
+		VolumeRequest,
+		ZoneOutput
+	} from '@shared/types';
 
 	let { children } = $props();
 
@@ -44,7 +51,8 @@
 		const zones = $zonesStore;
 		const selected = $selectedZoneStore;
 		if (zones.length === 0) {
-			if (selected) setSelectedZone('');
+			// Don't clear the persisted choice — the zone may reappear after a
+			// Roon Core reconnect. Just leave selected as-is so it rehydrates.
 			return;
 		}
 		if (!selected || !zones.some((z) => z.zone_id === selected)) {
@@ -57,7 +65,16 @@
 		{ path: '/queue', label: 'Queue' }
 	];
 
-	const connectedLabel = $derived($isCorePaired ? 'Connected' : 'Offline');
+	const connectedLabel = $derived(
+		$socketStatusStore === 'connecting'
+			? 'Connecting…'
+			: $socketStatusStore === 'disconnected'
+				? 'Disconnected'
+				: $isCorePaired
+					? 'Connected'
+					: 'Searching for Core…'
+	);
+	const connectedGood = $derived($socketStatusStore === 'connected' && $isCorePaired);
 	const activeZone = $derived($selectedZoneStore ? $zoneMapStore.get($selectedZoneStore) : undefined);
 	const nowPlaying = $derived(
 		$selectedZoneStore ? $nowPlayingList.find((t) => t.zone_id === $selectedZoneStore) : undefined
@@ -78,10 +95,9 @@
 		if (!s || commandInFlight) return;
 		commandInFlight = true;
 		try {
-			await new Promise<void>((resolve) => {
-				let done = false;
-				const timer = setTimeout(() => { if (!done) { done = true; resolve(); } }, 3000);
-				s.emit(event, payload, () => { if (!done) { done = true; clearTimeout(timer); resolve(); } });
+			await emitWithAck(s, event, payload, {
+				timeoutMs: 3000,
+				feedback: { source: 'transport', command: event }
 			});
 		} finally {
 			commandInFlight = false;
@@ -122,7 +138,43 @@
 		const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
 		const seconds = Math.floor(fraction * duration);
 		const s = getLiveSocket();
-		if (s) s.emit('transport:seek', { zone_id: $selectedZoneStore, seconds } satisfies SeekRequest);
+		if (s) {
+			void emitWithAck(s, 'transport:seek', { zone_id: $selectedZoneStore, seconds } satisfies SeekRequest, {
+				feedback: { source: 'transport', command: 'transport:seek' }
+			});
+		}
+	}
+
+	// Volume control. We target the first output that has a volume control —
+	// fixed-volume DACs (most of yours) report no volume settings, so the
+	// slider just hides. Multi-output zones still get a working slider for
+	// the first controllable endpoint.
+	const volumeOutput = $derived<ZoneOutput | undefined>(
+		activeZone?.outputs?.find((o) => o.volume !== undefined)
+	);
+	const volumeIsIncremental = $derived(volumeOutput?.volume?.type === 'incremental');
+
+	function sendVolume(value: number) {
+		const out = volumeOutput;
+		if (!out?.volume) return;
+		const s = getLiveSocket();
+		if (!s) return;
+		void emitWithAck(s, 'transport:volume', { output_id: out.output_id, value } satisfies VolumeRequest, {
+			feedback: { source: 'transport', command: 'transport:volume' }
+		});
+	}
+
+	function onVolumeSlide(e: Event) {
+		const target = e.currentTarget as HTMLInputElement;
+		const value = Number(target.value);
+		if (!Number.isFinite(value)) return;
+		sendVolume(value);
+	}
+
+	function onVolumeStep(delta: number) {
+		// For incremental outputs, send the step delta directly. The backend
+		// detects the type and switches to Roon's `relative` mode.
+		sendVolume(delta);
 	}
 
 	function searchInLibrary(query: string) {
@@ -138,8 +190,8 @@
 		</div>
 
 		<div class="status card">
-			<p class="status-value" class:good={$isCorePaired}>{connectedLabel}</p>
-			<p class="status-core">{$coreStore.core?.displayName ?? 'Searching…'}</p>
+			<p class="status-value" class:good={connectedGood}>{connectedLabel}</p>
+			<p class="status-core">{$coreStore.core?.displayName ?? '—'}</p>
 			<p class="status-version">{$coreStore.core?.displayVersion ?? ''}</p>
 		</div>
 
@@ -237,6 +289,28 @@
 	</div>
 
 	<div class="pb-right">
+		{#if volumeOutput?.volume}
+			{#if volumeIsIncremental}
+				<div class="vol-incremental" title="Volume ({volumeOutput.display_name})">
+					<button type="button" class="vol-step" onclick={() => onVolumeStep(-1)} aria-label="Volume down">−</button>
+					<span class="vol-icon">🔊</span>
+					<button type="button" class="vol-step" onclick={() => onVolumeStep(1)} aria-label="Volume up">+</button>
+				</div>
+			{:else}
+				<label class="vol-slider" title="Volume ({volumeOutput.display_name})">
+					<span class="vol-icon" aria-hidden="true">🔊</span>
+					<input
+						type="range"
+						min={volumeOutput.volume.min}
+						max={volumeOutput.volume.max}
+						step={volumeOutput.volume.step ?? 1}
+						value={volumeOutput.volume.value}
+						oninput={onVolumeSlide}
+						aria-label="Volume"
+					/>
+				</label>
+			{/if}
+		{/if}
 		<label class="visually-hidden" for="footer-zone">Zone</label>
 		<select
 			id="footer-zone"
@@ -579,6 +653,52 @@
 
 	.queue-btn:hover {
 		background: rgba(255, 255, 255, 0.18);
+	}
+
+	.vol-slider {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.25rem 0.5rem;
+		border-radius: 9px;
+		background: rgba(255, 255, 255, 0.08);
+		border: 1px solid rgba(255, 255, 255, 0.15);
+	}
+
+	.vol-slider input[type='range'] {
+		width: 100px;
+		accent-color: var(--accent);
+	}
+
+	.vol-incremental {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		padding: 0.25rem 0.4rem;
+		border-radius: 9px;
+		background: rgba(255, 255, 255, 0.08);
+		border: 1px solid rgba(255, 255, 255, 0.15);
+	}
+
+	.vol-step {
+		width: 1.6rem;
+		height: 1.6rem;
+		border-radius: 6px;
+		border: 1px solid rgba(255, 255, 255, 0.2);
+		background: rgba(255, 255, 255, 0.08);
+		color: inherit;
+		font-size: 0.95rem;
+		line-height: 1;
+		cursor: pointer;
+	}
+
+	.vol-step:hover {
+		background: rgba(255, 255, 255, 0.18);
+	}
+
+	.vol-icon {
+		font-size: 0.9rem;
+		opacity: 0.85;
 	}
 
 	/* ── Responsive ── */

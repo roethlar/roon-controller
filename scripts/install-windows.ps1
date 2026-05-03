@@ -107,6 +107,11 @@ foreach ($d in $dirs) {
     if (-not (Test-Path $full)) { New-Item -ItemType Directory -Path $full -Force | Out-Null }
 }
 
+# Wipe build artefacts before re-copying so files removed in a newer build
+# don't survive as stale leftovers. config\ and data\ are NOT touched.
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$InstallDir\dist"
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$InstallDir\ui\build"
+
 Copy-Item -Recurse -Force "dist"          "$InstallDir\"
 Copy-Item -Recurse -Force "ui\build"      "$InstallDir\ui\"
 Copy-Item -Force          "package.json"   "$InstallDir\"
@@ -117,11 +122,16 @@ Info "Installing production dependencies in $InstallDir..."
 if ($LASTEXITCODE -ne 0) { Die "Production dependency install failed." }
 
 # ── Environment file ───────────────────────────────────────────────────────────
+# NSSM doesn't read .env files. The AppEnvironmentExtra string below is the
+# real environment for the service. This .env is documentation only — edits
+# to it will not affect the running service. To change runtime config,
+# re-run this installer or `nssm set RoonController AppEnvironmentExtra ...`.
+# Keep this template in sync with .env.example at the repo root.
 $EnvFile = Join-Path $InstallDir ".env"
-if ((Test-Path $EnvFile) -and -not $Reinstall) {
+if (Test-Path $EnvFile) {
     Warn ".env already exists - leaving it unchanged."
 } else {
-    Info "Writing .env..."
+    Info "Writing .env (documentation only - see NSSM env for live config)..."
     @"
 NODE_ENV=production
 HOST=0.0.0.0
@@ -129,6 +139,9 @@ PORT=$Port
 LOG_LEVEL=info
 ROON_TOKEN_PATH=$InstallDir\config\roon-token.json
 IMAGE_CACHE_PATH=$InstallDir\data\image-cache
+IMAGE_CACHE_MAX_BYTES=10737418240
+# CLIENT_ORIGIN=http://roon.lan,http://192.168.1.10:$Port
+# TRUST_PROXY=true
 "@ | Set-Content -Path $EnvFile -Encoding UTF8
 }
 
@@ -147,8 +160,10 @@ Info "Installing Windows service via NSSM..."
 
 New-Item -ItemType Directory -Path (Join-Path $InstallDir "logs") -Force | Out-Null
 
-# Set environment variables for the service
-$envString = "NODE_ENV=production HOST=0.0.0.0 PORT=$Port LOG_LEVEL=info ROON_TOKEN_PATH=$InstallDir\config\roon-token.json IMAGE_CACHE_PATH=$InstallDir\data\image-cache"
+# Set environment variables for the service. Optional vars (CLIENT_ORIGIN,
+# TRUST_PROXY) are intentionally omitted — set them with
+# `nssm set RoonController AppEnvironmentExtra ...` if needed.
+$envString = "NODE_ENV=production HOST=0.0.0.0 PORT=$Port LOG_LEVEL=info ROON_TOKEN_PATH=$InstallDir\config\roon-token.json IMAGE_CACHE_PATH=$InstallDir\data\image-cache IMAGE_CACHE_MAX_BYTES=10737418240"
 & $NssmBin set $ServiceName AppEnvironmentExtra $envString
 
 # ── Start ──────────────────────────────────────────────────────────────────────

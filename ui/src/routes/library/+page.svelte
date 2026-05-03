@@ -1,24 +1,51 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 	import Search from '$lib/components/Search.svelte';
-	import { browseStore, setBrowseError, setBrowseLoading } from '$lib/stores/browseStore';
+	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
+	import {
+		browseStore,
+		setBrowseError,
+		setBrowseLoading,
+		setSearchLoading,
+		setBrowseResult,
+		appendBrowseItems
+	} from '$lib/stores/browseStore';
 	import { selectedZoneStore } from '$lib/stores/selectedZoneStore';
-	import { pushCommandFeedback, pendingSearchStore, browseNavStore } from '$lib/stores';
+	import {
+		pushCommandFeedback,
+		pendingSearchStore,
+		browseNavStore,
+		browseHistoryStore,
+		pushHistory,
+		popHistory,
+		popForward,
+		resetHistory
+	} from '$lib/stores';
 	import { getSocket } from '$lib/socket/client';
-	import { browse as apiBrowse } from '$lib/api/client';
-	import type { BrowseItem, BrowseOptions, BrowsePopOptions, SearchResult } from '@shared/types';
+	import { browse as apiBrowse, browseLoad as apiBrowseLoad } from '$lib/api/client';
+	import type {
+		BrowseItem,
+		BrowseOptions,
+		BrowsePopOptions,
+		BrowseResult,
+		SearchResult
+	} from '@shared/types';
+	import type { BrowseHistoryState } from '$lib/stores/browseHistoryStore';
 
 	let socket = $state(getSocket());
 	let quickPlayInFlight = $state(false);
-	/** Options used to navigate forward to each level — used to restore on Back. */
-	let historyStack: BrowseOptions[] = $state([]);
-	/** Options available to re-navigate after pressing Back. */
-	let forwardStack: BrowseOptions[] = $state([]);
+	let loadMoreInFlight = $state(false);
 
 	onMount(() => {
 		socket = getSocket();
-		setBrowseLoading('browse');
-		browse({ hierarchy: 'browse' });
+
+		// Restore navigation. Roon's browse and search hierarchies live in
+		// independent multi-sessions; we reset whichever one the saved
+		// history was rooted in, then replay each step. Resetting only the
+		// browse hierarchy would leave a search-derived restore walking a
+		// stale Roon search stack.
+		void restoreBrowse(get(browseHistoryStore));
 
 		browseNavStore.set({
 			canBack: false,
@@ -33,6 +60,83 @@
 		};
 	});
 
+	async function restoreBrowse(state: BrowseHistoryState): Promise<void> {
+		const { history, searchQuery } = state;
+		// The hierarchy we end up in is the hierarchy of the deepest saved
+		// step, or 'browse' if there's no history. Setting loading with the
+		// right hierarchy up front means the store stays consistent if the
+		// user navigates while the restore is still in flight.
+		const targetHierarchy = history.length > 0
+			? (history[history.length - 1].hierarchy || 'browse')
+			: 'browse';
+		setBrowseLoading(targetHierarchy);
+
+		try {
+			let last: BrowseResult;
+
+			if (targetHierarchy === 'search') {
+				if (!searchQuery) {
+					// Search history without a saved query is unrecoverable —
+					// the saved item_keys are only valid against a freshly
+					// seeded search session. Discard the broken history and
+					// fall back to the browse root.
+					resetHistory();
+					last = await apiBrowse(fetch, {
+						hierarchy: 'browse',
+						zoneId: $selectedZoneStore || undefined,
+						popAll: true
+					});
+					setBrowseResult(last, 'browse');
+					return;
+				}
+				// Re-seed the Roon search session by replaying the original
+				// query. This puts the search stack at the result-list level
+				// so the saved drill-down item_keys resolve correctly.
+				last = await apiBrowse(fetch, {
+					hierarchy: 'search',
+					input: searchQuery,
+					zoneId: $selectedZoneStore || undefined,
+					multiSessionKey: SEARCH_SESSION_KEY,
+					popAll: true
+				});
+				// Make the search query visible in the Search component again
+				// so subsequent result clicks know which query to reset to.
+				setSearchLoading(searchQuery);
+			} else {
+				last = await apiBrowse(fetch, {
+					hierarchy: 'browse',
+					zoneId: $selectedZoneStore || undefined,
+					popAll: true
+				});
+			}
+
+			// Walk each saved step. If any step fails (e.g. stale item_key
+			// after a Roon Core restart), stop where we are and surface a
+			// feedback toast — Home / Back are still functional from any
+			// partial state.
+			for (const step of history) {
+				const stepWithZone: BrowseOptions = {
+					...step,
+					zoneId: step.zoneId ?? ($selectedZoneStore || undefined),
+					hierarchy: step.hierarchy || 'browse'
+				};
+				try {
+					last = await apiBrowse(fetch, stepWithZone);
+				} catch (err) {
+					pushCommandFeedback({
+						source: 'browse',
+						command: 'browse:restore',
+						message: `Restore stopped at level ${last.level}: ${(err as Error).message}`
+					});
+					break;
+				}
+			}
+			setBrowseResult(last, targetHierarchy);
+		} catch (err) {
+			setBrowseError(`Restore failed: ${(err as Error).message}`);
+		}
+	}
+
 	const noop = () => {};
 
 	// Keep nav store in sync with navigation state
@@ -40,7 +144,7 @@
 		browseNavStore.update((s) => ({
 			...s,
 			canBack: !!$browseStore.current && $browseStore.current.level > 0,
-			canForward: forwardStack.length > 0
+			canForward: $browseHistoryStore.forward.length > 0
 		}));
 	});
 
@@ -49,11 +153,16 @@
 		const query = $pendingSearchStore;
 		if (query) {
 			pendingSearchStore.set(null);
-			setBrowseLoading('search');
+			setSearchLoading(query);
 			const liveSocket = socket ?? getSocket();
 			socket = liveSocket;
 			if (liveSocket) {
-				liveSocket.emit('browse:search', { input: query, zoneId: $selectedZoneStore || undefined });
+				liveSocket.emit('browse:search', {
+					input: query,
+					zoneId: $selectedZoneStore || undefined,
+					multiSessionKey: SEARCH_SESSION_KEY,
+					popAll: true
+				});
 			}
 		}
 	});
@@ -70,7 +179,11 @@
 		liveSocket.emit(event, payload);
 	}
 
-	function browse(options: BrowseOptions) {
+	function activeMultiSessionKey(): string | undefined {
+		return $browseStore.hierarchy === 'search' ? SEARCH_SESSION_KEY : undefined;
+	}
+
+	function browse(options: BrowseOptions, opts: { recordHistory?: boolean } = {}) {
 		const scopedOptions: BrowseOptions = {
 			...options,
 			zoneId: options.zoneId ?? ($selectedZoneStore || undefined)
@@ -78,18 +191,20 @@
 
 		setBrowseLoading(scopedOptions.hierarchy ?? 'browse');
 		emitBrowse('browse:browse', scopedOptions);
+
+		if (opts.recordHistory) {
+			// Capture the active search query alongside any search-derived
+			// step so a later restore can re-seed the Roon search session.
+			pushHistory(scopedOptions, $browseStore.lastSearchQuery);
+		}
 	}
 
 	function pop() {
-		// Move top of history to forward stack so Forward can replay it
-		const top = historyStack[historyStack.length - 1];
-		if (top) {
-			forwardStack = [...forwardStack, top];
-			historyStack = historyStack.slice(0, -1);
-		}
+		popHistory();
 		const options: BrowsePopOptions = {
 			hierarchy: $browseStore.hierarchy,
-			zoneId: $selectedZoneStore || undefined
+			zoneId: $selectedZoneStore || undefined,
+			multiSessionKey: activeMultiSessionKey()
 		};
 		setBrowseLoading(options.hierarchy);
 		emitBrowse('browse:pop', options);
@@ -99,22 +214,55 @@
 	function popInternal() {
 		emitBrowse('browse:pop', {
 			hierarchy: $browseStore.hierarchy,
-			zoneId: $selectedZoneStore || undefined
+			zoneId: $selectedZoneStore || undefined,
+			multiSessionKey: activeMultiSessionKey()
 		});
 	}
 
 	function forward() {
-		if (forwardStack.length === 0) return;
-		const opts = forwardStack[forwardStack.length - 1];
-		forwardStack = forwardStack.slice(0, -1);
-		historyStack = [...historyStack, opts];
-		browse(opts);
+		const next = popForward();
+		if (next) {
+			browse(next, { recordHistory: false });
+		}
 	}
 
 	function resetRoot() {
-		historyStack = [];
-		forwardStack = [];
-		browse({ hierarchy: 'browse', popAll: true });
+		resetHistory();
+		browse({ hierarchy: 'browse', popAll: true }, { recordHistory: false });
+	}
+
+	/**
+	 * Load the next page of items at the current level. Used by the
+	 * "Load more" / "Load all" buttons and the alphabetic jump bar fast-path.
+	 */
+	async function loadMore(opts: { all?: boolean } = {}): Promise<void> {
+		const current = $browseStore.current;
+		if (!current || loadMoreInFlight) return;
+		const total = current.totalCount ?? current.count;
+		const loaded = current.items.length;
+		if (loaded >= total) return;
+
+		loadMoreInFlight = true;
+		try {
+			const remaining = total - loaded;
+			const count = opts.all ? remaining : Math.min(100, remaining);
+			const next = await apiBrowseLoad(fetch, {
+				hierarchy: $browseStore.hierarchy,
+				zoneId: $selectedZoneStore || undefined,
+				offset: loaded,
+				count,
+				multiSessionKey: activeMultiSessionKey()
+			});
+			appendBrowseItems(next.items);
+		} catch (err) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'browse:load',
+				message: `Load failed: ${(err as Error).message}`
+			});
+		} finally {
+			loadMoreInFlight = false;
+		}
 	}
 
 	/** Navigate into a list item (hierarchy drill-down). */
@@ -123,11 +271,10 @@
 		const opts: BrowseOptions = {
 			hierarchy: $browseStore.hierarchy,
 			itemKey: item.itemKey,
-			zoneId: $selectedZoneStore || undefined
+			zoneId: $selectedZoneStore || undefined,
+			multiSessionKey: activeMultiSessionKey()
 		};
-		historyStack = [...historyStack, opts];
-		forwardStack = [];
-		browse(opts);
+		browse(opts, { recordHistory: true });
 	}
 
 	/** Open an item's action menu (e.g. Play Now / Play Next / Add to Queue). */
@@ -136,15 +283,16 @@
 		browse({
 			hierarchy: $browseStore.hierarchy,
 			itemKey: item.itemKey,
-			zoneId: $selectedZoneStore || undefined
+			zoneId: $selectedZoneStore || undefined,
+			multiSessionKey: activeMultiSessionKey()
 		});
 	}
 
 	function handleSearchResultClick(result: SearchResult) {
 		if (result.hint === 'action_list') {
-			void quickPlay(result);
+			void quickPlay(result, { hierarchy: 'search', multiSessionKey: SEARCH_SESSION_KEY, resetSearch: true });
 		} else {
-			navigate(result);
+			void navigateSearchResult(result);
 		}
 	}
 
@@ -153,8 +301,60 @@
 		const liveSocket = socket ?? getSocket();
 		socket = liveSocket;
 		if (!liveSocket) return;
+		setSearchLoading(name);
+		liveSocket.emit('browse:search', {
+			input: name,
+			zoneId: $selectedZoneStore || undefined,
+			multiSessionKey: SEARCH_SESSION_KEY,
+			popAll: true
+		});
+	}
+
+	async function resetSearchSession(): Promise<void> {
+		const query = $browseStore.lastSearchQuery;
+		if (!query) return;
+
+		await apiBrowse(fetch, {
+			hierarchy: 'search',
+			input: query,
+			zoneId: $selectedZoneStore || undefined,
+			multiSessionKey: SEARCH_SESSION_KEY,
+			popAll: true
+		});
+	}
+
+	async function navigateSearchResult(result: SearchResult): Promise<void> {
+		if (!result.itemKey) return;
+
 		setBrowseLoading('search');
-		liveSocket.emit('browse:search', { input: name, zoneId: $selectedZoneStore || undefined });
+		try {
+			await resetSearchSession();
+
+			// Each search-result click starts a new navigation thread:
+			//   - prior browse history is from a different Roon hierarchy
+			//   - prior search drill history is from a different sub-tree
+			// Restore-on-remount must replay only this thread, so reset
+			// before pushing. The store's hierarchy-switch guard would
+			// catch the browse-history case anyway, but doing it here
+			// makes the intent explicit and also covers within-search
+			// thread switches (a different result on the same query).
+			resetHistory();
+
+			const opts: BrowseOptions = {
+				hierarchy: 'search',
+				itemKey: result.itemKey,
+				zoneId: $selectedZoneStore || undefined,
+				multiSessionKey: SEARCH_SESSION_KEY
+			};
+			browse(opts, { recordHistory: true });
+		} catch (err) {
+			setBrowseError(`Browse failed: ${(err as Error).message}`);
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'search-result',
+				message: `Browse failed: ${(err as Error).message}`
+			});
+		}
 	}
 
 	/**
@@ -162,7 +362,10 @@
 	 * Uses a separate browse session (multiSessionKey) so main navigation is undisturbed.
 	 * Flow: browse(itemKey) → find first action ("Play Now") → browse(actionKey) → plays.
 	 */
-	async function quickPlay(item: BrowseItem) {
+	async function quickPlay(
+		item: BrowseItem,
+		options: { hierarchy?: string; multiSessionKey?: string; resetSearch?: boolean } = {}
+	) {
 		if (!item.itemKey) return;
 
 		const zoneId = $selectedZoneStore || undefined;
@@ -171,21 +374,39 @@
 			return;
 		}
 
-		const hierarchyAtStart = $browseStore.hierarchy;
+		const hierarchyAtStart = options.hierarchy ?? $browseStore.hierarchy;
 		quickPlayInFlight = true;
 		try {
-			// Browse into the track to get its action list (Play Now, Play Next, etc.)
-			// Uses the main Roon session via REST — no socket broadcast with the current server setup.
+			if (options.resetSearch) {
+				await resetSearchSession();
+			}
+
+			// Browse into the track to get its action list (Play Now, Play Next, etc.).
+			// REST keeps this helper from broadcasting intermediate action-list state.
 			const actionResult = await apiBrowse(fetch, {
 				hierarchy: hierarchyAtStart,
 				itemKey: item.itemKey,
-				zoneId
+				zoneId,
+				multiSessionKey: options.multiSessionKey
 			});
 
 			const playAction = actionResult.items.find((i) => i.isPlayable || i.hint === 'action');
 			if (!playAction?.itemKey) {
-				// No direct action — fall back to showing the action menu
-				navigate(item);
+				// quickPlay couldn't find a play action — fall back to
+				// rendering the action list. If the user got here from a
+				// search result (resetSearch=true), this is the same kind
+				// of "new navigation thread" reset as navigateSearchResult,
+				// so clear history before pushing.
+				if (options.resetSearch) {
+					resetHistory();
+				}
+				const fallbackOpts: BrowseOptions = {
+					hierarchy: hierarchyAtStart,
+					itemKey: item.itemKey,
+					zoneId,
+					multiSessionKey: options.multiSessionKey
+				};
+				browse(fallbackOpts, { recordHistory: true });
 				return;
 			}
 
@@ -193,7 +414,8 @@
 			await apiBrowse(fetch, {
 				hierarchy: hierarchyAtStart,
 				itemKey: playAction.itemKey,
-				zoneId
+				zoneId,
+				multiSessionKey: options.multiSessionKey
 			});
 
 			// Only restore the album view if we were in the main browse hierarchy.
@@ -216,7 +438,7 @@
 		if (!item.itemKey) return;
 
 		if (item.hint === 'action_list') {
-			void quickPlay(item);
+			void quickPlay(item, { multiSessionKey: activeMultiSessionKey() });
 			return;
 		}
 
@@ -292,9 +514,18 @@
 		return jumpIndex.get(letter) === index ? `jump-${letter}` : undefined;
 	}
 
-	function jumpTo(letter: string) {
+	async function jumpTo(letter: string) {
 		const el = document.getElementById(`jump-${letter}`);
-		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		if (el) {
+			el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			return;
+		}
+		// Letter not in the loaded slice yet — pull the rest, then jump.
+		await loadMore({ all: true });
+		// Wait one tick for derived state to flush.
+		await new Promise((r) => setTimeout(r, 0));
+		const after = document.getElementById(`jump-${letter}`);
+		if (after) after.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 
 	/** Extract the leading track number from a title like "3. Song Name" → "3" */
@@ -448,6 +679,21 @@
 								</button>
 							</div>
 						{/each}
+					</div>
+				{/if}
+				{#if $browseStore.current && !isTrackList && $browseStore.current.items.length < ($browseStore.current.totalCount ?? $browseStore.current.count)}
+					<div class="load-more-bar">
+						<span class="load-meta">
+							Showing {$browseStore.current.items.length} of {$browseStore.current.totalCount ?? $browseStore.current.count}
+						</span>
+						<div class="load-actions">
+							<button type="button" onclick={() => loadMore()} disabled={loadMoreInFlight}>
+								{loadMoreInFlight ? 'Loading…' : 'Load more'}
+							</button>
+							<button type="button" onclick={() => loadMore({ all: true })} disabled={loadMoreInFlight}>
+								Load all
+							</button>
+						</div>
 					</div>
 				{/if}
 			{/if}
@@ -828,5 +1074,48 @@
 		.track-actions {
 			opacity: 1;
 		}
+	}
+
+	/* ── Load more bar ── */
+	.load-more-bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.6rem;
+		padding: 0.7rem 0.4rem;
+		margin-top: 0.6rem;
+		border-top: 1px solid var(--border);
+	}
+
+	.load-meta {
+		font-size: 0.78rem;
+		color: var(--text-soft);
+		font-family: var(--font-mono);
+	}
+
+	.load-actions {
+		display: flex;
+		gap: 0.4rem;
+	}
+
+	.load-actions button {
+		padding: 0.42rem 0.85rem;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		background: var(--surface-2);
+		color: var(--text);
+		font-size: 0.82rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+
+	.load-actions button:hover:not(:disabled) {
+		background: var(--surface-3);
+		border-color: var(--accent-2);
+	}
+
+	.load-actions button:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 </style>

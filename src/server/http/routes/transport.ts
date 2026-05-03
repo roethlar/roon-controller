@@ -10,7 +10,14 @@ import {
   QueueResponse,
   SuccessResponse,
   ErrorResponse,
+  LoopModeRequest,
 } from '../../../shared/types';
+
+const VALID_LOOP_VALUES: readonly LoopModeRequest[] = ['disabled', 'loop', 'loop_one', 'next'];
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
 
 /**
  * Create transport control router
@@ -27,7 +34,7 @@ export const createTransportRouter = (transportService: TransportService): Route
     try {
       const { zone_id } = req.body as TransportControlRequest;
 
-      if (!zone_id) {
+      if (!zone_id || typeof zone_id !== 'string') {
         const response: ErrorResponse = { error: 'zone_id required' };
         return res.status(400).json(response);
       }
@@ -49,7 +56,7 @@ export const createTransportRouter = (transportService: TransportService): Route
     try {
       const { zone_id } = req.body as TransportControlRequest;
 
-      if (!zone_id) {
+      if (!zone_id || typeof zone_id !== 'string') {
         const response: ErrorResponse = { error: 'zone_id required' };
         return res.status(400).json(response);
       }
@@ -71,7 +78,7 @@ export const createTransportRouter = (transportService: TransportService): Route
     try {
       const { zone_id } = req.body as TransportControlRequest;
 
-      if (!zone_id) {
+      if (!zone_id || typeof zone_id !== 'string') {
         const response: ErrorResponse = { error: 'zone_id required' };
         return res.status(400).json(response);
       }
@@ -93,7 +100,7 @@ export const createTransportRouter = (transportService: TransportService): Route
     try {
       const { zone_id } = req.body as TransportControlRequest;
 
-      if (!zone_id) {
+      if (!zone_id || typeof zone_id !== 'string') {
         const response: ErrorResponse = { error: 'zone_id required' };
         return res.status(400).json(response);
       }
@@ -115,8 +122,12 @@ export const createTransportRouter = (transportService: TransportService): Route
     try {
       const { zone_id, seconds } = req.body as SeekRequest;
 
-      if (!zone_id || seconds === undefined) {
-        const response: ErrorResponse = { error: 'zone_id and seconds required' };
+      if (!zone_id || typeof zone_id !== 'string') {
+        const response: ErrorResponse = { error: 'zone_id required' };
+        return res.status(400).json(response);
+      }
+      if (!isFiniteNumber(seconds) || seconds < 0) {
+        const response: ErrorResponse = { error: 'seconds must be a finite, non-negative number' };
         return res.status(400).json(response);
       }
 
@@ -137,8 +148,12 @@ export const createTransportRouter = (transportService: TransportService): Route
     try {
       const { output_id, value } = req.body as VolumeRequest;
 
-      if (!output_id || value === undefined) {
-        const response: ErrorResponse = { error: 'output_id and value required' };
+      if (!output_id || typeof output_id !== 'string') {
+        const response: ErrorResponse = { error: 'output_id required' };
+        return res.status(400).json(response);
+      }
+      if (!isFiniteNumber(value)) {
+        const response: ErrorResponse = { error: 'value must be a finite number' };
         return res.status(400).json(response);
       }
 
@@ -159,7 +174,7 @@ export const createTransportRouter = (transportService: TransportService): Route
     try {
       const { zone_id, shuffle, auto_radio, loop } = req.body as ZonePlaybackSettingsRequest;
 
-      if (!zone_id) {
+      if (!zone_id || typeof zone_id !== 'string') {
         const response: ErrorResponse = { error: 'zone_id required' };
         return res.status(400).json(response);
       }
@@ -169,6 +184,18 @@ export const createTransportRouter = (transportService: TransportService): Route
           error: 'at least one of shuffle, auto_radio, or loop must be provided',
         };
         return res.status(400).json(response);
+      }
+
+      if (shuffle !== undefined && typeof shuffle !== 'boolean') {
+        return res.status(400).json({ error: 'shuffle must be boolean' } satisfies ErrorResponse);
+      }
+      if (auto_radio !== undefined && typeof auto_radio !== 'boolean') {
+        return res.status(400).json({ error: 'auto_radio must be boolean' } satisfies ErrorResponse);
+      }
+      if (loop !== undefined && !VALID_LOOP_VALUES.includes(loop)) {
+        return res.status(400).json({
+          error: `loop must be one of: ${VALID_LOOP_VALUES.join(', ')}`,
+        } satisfies ErrorResponse);
       }
 
       await transportService.setPlaybackSettings(zone_id, { shuffle, auto_radio, loop });
@@ -189,7 +216,7 @@ export const createTransportRouter = (transportService: TransportService): Route
       const { zoneId } = req.params;
       const maxItemsRaw = req.query.maxItems;
       const maxItems =
-        typeof maxItemsRaw === 'string' && Number.isInteger(Number(maxItemsRaw))
+        typeof maxItemsRaw === 'string' && Number.isInteger(Number(maxItemsRaw)) && Number(maxItemsRaw) > 0
           ? Number(maxItemsRaw)
           : undefined;
 
@@ -214,8 +241,12 @@ export const createTransportRouter = (transportService: TransportService): Route
     try {
       const { zone_id, max_item_count } = req.body as QueueSubscribeRequest;
 
-      if (!zone_id) {
+      if (!zone_id || typeof zone_id !== 'string') {
         const response: ErrorResponse = { error: 'zone_id required' };
+        return res.status(400).json(response);
+      }
+      if (max_item_count !== undefined && (!Number.isInteger(max_item_count) || max_item_count <= 0)) {
+        const response: ErrorResponse = { error: 'max_item_count must be a positive integer' };
         return res.status(400).json(response);
       }
 
@@ -235,8 +266,12 @@ export const createTransportRouter = (transportService: TransportService): Route
     try {
       const { zone_id, queue_item_id } = req.body as QueuePlayFromHereRequest;
 
-      if (!zone_id || typeof queue_item_id !== 'number') {
-        const response: ErrorResponse = { error: 'zone_id and numeric queue_item_id required' };
+      if (!zone_id || typeof zone_id !== 'string') {
+        const response: ErrorResponse = { error: 'zone_id required' };
+        return res.status(400).json(response);
+      }
+      if (!isFiniteNumber(queue_item_id)) {
+        const response: ErrorResponse = { error: 'queue_item_id must be a finite number' };
         return res.status(400).json(response);
       }
 

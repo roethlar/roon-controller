@@ -154,9 +154,13 @@ export class RoonClient extends EventEmitter {
       const filePath = path.resolve(this.options.tokenPath);
       const dir = path.dirname(filePath);
       if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
-      fs.writeFileSync(filePath, JSON.stringify(token, null, 2), "utf-8");
+      // Restrictive mode: token grants Roon control identity, treat as a secret.
+      fs.writeFileSync(filePath, JSON.stringify(token, null, 2), {
+        encoding: "utf-8",
+        mode: 0o600,
+      });
       this.options.logger.info({ filePath }, "Saved Roon pairing token");
     } catch (error) {
       this.options.logger.error({ err: error }, "Failed to save Roon token");

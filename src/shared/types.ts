@@ -97,10 +97,18 @@ export interface ZoneOutput {
 
 /**
  * Volume control settings
+ *
+ * Roon volume types:
+ *   - "number"      — absolute integer volume in [min, max]
+ *   - "db"          — absolute decibel volume in [min, max]
+ *   - "incremental" — relative-only control (no readable level); requests
+ *                     must use `relative` mode with a step delta
  */
+export type VolumeType = 'number' | 'db' | 'incremental';
+
 export interface VolumeSettings {
   /** Volume type */
-  type: 'number' | 'incremental';
+  type: VolumeType;
 
   /** Minimum volume value */
   min: number;
@@ -241,6 +249,13 @@ export interface BrowseOptions {
 
   /** Pop all levels to the hierarchy root before navigating */
   popAll?: boolean;
+
+  /**
+   * Maximum number of items to fetch in this call. The default is one
+   * page (100). Pass a larger number to load more in a single round trip,
+   * or `Infinity` to load the full list (used for small action lists).
+   */
+  pageSize?: number;
 }
 
 /**
@@ -258,6 +273,12 @@ export interface BrowseLoadOptions {
 
   /** Result offset for pagination */
   offset?: number;
+
+  /** Number of results to load */
+  count?: number;
+
+  /** Independent session key to avoid interfering with other browse sessions */
+  multiSessionKey?: string;
 }
 
 /**
@@ -267,11 +288,19 @@ export interface BrowsePopOptions {
   /** Roon browse hierarchy */
   hierarchy: string;
 
+  /**
+   * Maximum number of items to fetch after popping. See `BrowseOptions.pageSize`.
+   */
+  pageSize?: number;
+
   /** Zone or output identifier */
   zoneId?: string;
 
   /** Number of levels to pop (defaults to 1) */
   levels?: number;
+
+  /** Independent session key to avoid interfering with other browse sessions */
+  multiSessionKey?: string;
 }
 
 /**
@@ -341,6 +370,12 @@ export interface BrowseSearchOptions {
 
   /** Result offset for pagination */
   offset?: number;
+
+  /** Independent session key to avoid interfering with other browse sessions */
+  multiSessionKey?: string;
+
+  /** Pop all levels to the search root before searching */
+  popAll?: boolean;
 }
 
 /**

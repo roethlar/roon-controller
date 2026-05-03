@@ -21,6 +21,7 @@ const mockLogger = {
   warn: jest.fn(),
   error: jest.fn(),
   debug: jest.fn(),
+  trace: jest.fn(),
   level: 'info',
 } as unknown as Logger;
 
@@ -152,6 +153,103 @@ describe('BrowseService', () => {
         expect.any(Function)
       );
     });
+
+    it('should preserve zone and multi-session context when loading browse items', async () => {
+      const browseResponse = {
+        action: 'list',
+        list: { title: 'Search Result', level: 1, count: 1 },
+      };
+      const loadResponse = {
+        items: [{ title: 'Album 1', item_key: 'album1', hint: 'list' }],
+        offset: 0,
+        list: { title: 'Search Result', level: 1, count: 1 },
+      };
+
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+      mockBrowseApi.load.mockImplementation((_params: any, cb: Function) => {
+        cb(false, loadResponse);
+      });
+
+      await service.browse({
+        hierarchy: 'search',
+        itemKey: 'album_key',
+        zoneId: 'zone123',
+        multiSessionKey: 'library-search',
+      });
+
+      expect(mockBrowseApi.browse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hierarchy: 'search',
+          item_key: 'album_key',
+          zone_or_output_id: 'zone123',
+          multi_session_key: 'library-search',
+        }),
+        expect.any(Function)
+      );
+      expect(mockBrowseApi.load).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hierarchy: 'search',
+          zone_or_output_id: 'zone123',
+          multi_session_key: 'library-search',
+        }),
+        expect.any(Function)
+      );
+    });
+  });
+
+  describe('browse pagination', () => {
+    it('loads only the first page (PAGE_SIZE=100) by default for large lists', async () => {
+      const totalCount = 350;
+      const browseResponse = {
+        action: 'list',
+        list: { title: 'Big', level: 1, count: totalCount },
+      };
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+      // Each load() returns the requested batch; we just need to count calls.
+      mockBrowseApi.load.mockImplementation((params: any, cb: Function) => {
+        const items = Array.from({ length: params.count }, (_, i) => ({
+          title: `Item ${params.offset + i}`,
+          item_key: `k${params.offset + i}`,
+        }));
+        cb(false, { items, offset: params.offset, list: { count: totalCount, level: 1 } });
+      });
+
+      const result = await service.browse({ hierarchy: 'browse' });
+
+      // One browse() + one load() (first page only).
+      expect(mockBrowseApi.browse).toHaveBeenCalledTimes(1);
+      expect(mockBrowseApi.load).toHaveBeenCalledTimes(1);
+      expect(result.items).toHaveLength(100);
+      expect(result.totalCount).toBe(totalCount);
+    });
+
+    it('loads the entire list when pageSize is Infinity', async () => {
+      const totalCount = 250;
+      const browseResponse = {
+        action: 'list',
+        list: { title: 'Big', level: 1, count: totalCount },
+      };
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+      mockBrowseApi.load.mockImplementation((params: any, cb: Function) => {
+        const items = Array.from({ length: params.count }, (_, i) => ({
+          title: `Item ${params.offset + i}`,
+          item_key: `k${params.offset + i}`,
+        }));
+        cb(false, { items, offset: params.offset, list: { count: totalCount, level: 1 } });
+      });
+
+      const result = await service.browse({ hierarchy: 'browse', pageSize: Infinity });
+
+      // Three load() calls for 250 items at PAGE_SIZE=100.
+      expect(mockBrowseApi.load).toHaveBeenCalledTimes(3);
+      expect(result.items).toHaveLength(totalCount);
+    });
   });
 
   describe('pop', () => {
@@ -199,6 +297,25 @@ describe('BrowseService', () => {
 
       expect(mockBrowseApi.browse).toHaveBeenCalledWith(
         expect.objectContaining({ pop_levels: 1 }),
+        expect.any(Function)
+      );
+    });
+
+    it('should pass multi-session context when popping a browse stack', async () => {
+      const browseResponse = { action: 'list', list: { level: 0, count: 0 } };
+
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+
+      await service.pop({ hierarchy: 'search', multiSessionKey: 'library-search' });
+
+      expect(mockBrowseApi.browse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hierarchy: 'search',
+          pop_levels: 1,
+          multi_session_key: 'library-search',
+        }),
         expect.any(Function)
       );
     });
@@ -253,6 +370,50 @@ describe('BrowseService', () => {
       expect(results).toHaveLength(2);
       // hint "action" doesn't match any search type category
       expect(results[0].resultType).toBe('unknown');
+    });
+
+    it('should search in the provided multi-session context', async () => {
+      const browseResponse = {
+        action: 'list',
+        list: { level: 0, count: 1 },
+      };
+      const loadResponse = {
+        items: [{ title: 'Album 1', hint: 'list', item_key: 'key1' }],
+        offset: 0,
+        list: { level: 0, count: 1 },
+      };
+
+      mockBrowseApi.browse.mockImplementation((_params: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+      mockBrowseApi.load.mockImplementation((_params: any, cb: Function) => {
+        cb(false, loadResponse);
+      });
+
+      await service.search({
+        input: 'test',
+        zoneId: 'zone123',
+        multiSessionKey: 'library-search',
+      });
+
+      expect(mockBrowseApi.browse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hierarchy: 'search',
+          input: 'test',
+          zone_or_output_id: 'zone123',
+          multi_session_key: 'library-search',
+          pop_all: true,
+        }),
+        expect.any(Function)
+      );
+      expect(mockBrowseApi.load).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hierarchy: 'search',
+          zone_or_output_id: 'zone123',
+          multi_session_key: 'library-search',
+        }),
+        expect.any(Function)
+      );
     });
   });
 });

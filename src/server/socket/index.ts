@@ -13,236 +13,238 @@ import {
   QueuePlayFromHereRequest,
   ZonePlaybackSettingsRequest,
   QueueResponse,
-  ErrorResponse,
+  LoopModeRequest,
 } from "../../shared/types";
 import { TransportService } from "../../core/roon/TransportService";
 import { BrowseService } from "../../core/roon/BrowseService";
+import { RoonClient } from "../../core/roon/RoonClient";
+import { errorMessage } from "../util";
+
+const VALID_LOOP_VALUES: readonly LoopModeRequest[] = ["disabled", "loop", "loop_one", "next"];
 
 export interface SocketContext {
   io: SocketIOServer;
 }
 
 interface SocketDependencies {
+  roonClient: RoonClient;
   transportService: TransportService;
   browseService: BrowseService;
   logger: Logger;
 }
 
+/**
+ * Standardized ack response shape. Every socket command that accepts an ack
+ * callback MUST resolve it with one of these two shapes so the client can
+ * inspect success/failure uniformly.
+ */
+type AckResponse<T = undefined> =
+  | { success: true; data?: T }
+  | { success: false; error: string; code?: string };
+
+type AckFn = (response: unknown) => void;
+
 export const attachSocketServer = (
   httpServer: HttpServer,
   deps: SocketDependencies
 ): SocketContext => {
+  // CLIENT_ORIGIN: comma-separated allowlist of allowed origins, or "*" to
+  // allow any. Defaults to "*" for LAN-appliance use; tighten this to your
+  // SPA origin(s) when running behind a reverse proxy or on the public net.
+  const originRaw = process.env.CLIENT_ORIGIN ?? "*";
+  const origin: string | string[] =
+    originRaw === "*"
+      ? "*"
+      : originRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+
   const io = new SocketIOServer(httpServer, {
     cors: {
-      origin: process.env.CLIENT_ORIGIN ?? "*",
+      origin,
       methods: ["GET", "POST"],
     },
   });
 
-  const { transportService, browseService, logger } = deps;
+  const { roonClient, transportService, browseService, logger } = deps;
 
-  const emitTransportError = (
+  /**
+   * Send an error response. If an ack callback is provided, the error
+   * goes through the ack only; otherwise the topic-specific event fires.
+   *
+   * Sending through both would double-fire the client's feedback toast
+   * because `emitWithAck` (for ack-bearing emits) and `register.ts`
+   * (for passive event listeners) both push into commandFeedbackStore.
+   * Clients that need failure feedback must therefore either pass an
+   * ack or rely on the passive event — not both.
+   */
+  const sendError = (
     socket: Socket,
+    topic: "transport:error" | "browse:error" | "queue:error",
     command: string,
     message: string,
-    ack?: (response: unknown) => void
+    ack?: AckFn,
+    code?: string
   ) => {
-    const payload: ErrorResponse = { error: message };
     if (ack) {
-      ack({ error: message });
-    } else {
-      socket.emit("transport:error", { command, ...payload });
+      const ackPayload: AckResponse = code
+        ? { success: false, error: message, code }
+        : { success: false, error: message };
+      ack(ackPayload);
+      return;
+    }
+    socket.emit(topic, { command, error: message, ...(code ? { code } : {}) });
+  };
+
+  const sendSuccess = <T>(ack: AckFn | undefined, data?: T) => {
+    if (ack) {
+      const payload: AckResponse<T> =
+        data === undefined ? { success: true } : { success: true, data };
+      ack(payload);
     }
   };
 
-  const emitBrowseError = (
+  const handleAsync = async <T>(
     socket: Socket,
+    topic: "transport:error" | "browse:error" | "queue:error",
     command: string,
-    message: string,
-    ack?: (response: unknown) => void
+    ack: AckFn | undefined,
+    fn: () => Promise<T>,
+    onSuccess?: (value: T) => void
   ) => {
-    const payload: ErrorResponse = { error: message };
-    if (ack) {
-      ack({ error: message });
-    } else {
-      socket.emit("browse:error", { command, ...payload });
-    }
-  };
-
-  const emitQueueError = (
-    socket: Socket,
-    command: string,
-    message: string,
-    ack?: (response: unknown) => void
-  ) => {
-    const payload: ErrorResponse = { error: message };
-    if (ack) {
-      ack({ error: message });
-    } else {
-      socket.emit("queue:error", { command, ...payload });
+    try {
+      const value = await fn();
+      if (onSuccess) onSuccess(value);
+      else sendSuccess(ack, value);
+    } catch (error) {
+      logger.error({ err: error, command }, "Socket command failed");
+      sendError(socket, topic, command, errorMessage(error), ack);
     }
   };
 
   io.on("connection", (socket) => {
     logger.info({ clientId: socket.id }, "WebSocket client connected");
+
+    // Hydrate the new client with current state. Without this, a transient
+    // socket disconnect would leave the UI showing stale or empty state until
+    // the next Roon push.
+    socket.emit("core-status", {
+      coreStatus: roonClient.getCoreStatus(),
+      coreInfo: roonClient.getCoreInfo() ?? undefined,
+    });
     socket.emit("zones", { zones: transportService.getZones() });
-
-    // Hydrate now-playing state for all zones so client doesn't show
-    // empty playback info until the next Roon zone update event.
     for (const nowPlaying of transportService.getNowPlayingAll()) {
-      socket.emit("now-playing-updated", { zone_id: nowPlaying.zone_id, now_playing: nowPlaying });
+      socket.emit("now-playing-updated", {
+        zone_id: nowPlaying.zone_id,
+        now_playing: nowPlaying,
+      });
     }
-
-    const acknowledgeSuccess = (ack?: (response: unknown) => void): void => {
-      if (ack) {
-        ack({ success: true });
-      }
-    };
 
     socket.on(
       "transport:play-pause",
-      async (
-        payload: TransportControlRequest,
-        ack?: (response: unknown) => void
-      ) => {
+      async (payload: TransportControlRequest, ack?: AckFn) => {
         if (!payload?.zone_id) {
-          emitTransportError(socket, "transport:play-pause", "zone_id required", ack);
+          sendError(socket, "transport:error", "transport:play-pause", "zone_id required", ack);
           return;
         }
-
-        try {
-          await transportService.playPause(payload.zone_id);
-          acknowledgeSuccess(ack);
-        } catch (error) {
-          logger.error({ err: error }, "Socket playPause command failed");
-          emitTransportError(socket, "transport:play-pause", (error as Error).message, ack);
-        }
+        await handleAsync(socket, "transport:error", "transport:play-pause", ack, () =>
+          transportService.playPause(payload.zone_id)
+        );
       }
     );
 
     socket.on(
       "transport:next",
-      async (
-        payload: TransportControlRequest,
-        ack?: (response: unknown) => void
-      ) => {
+      async (payload: TransportControlRequest, ack?: AckFn) => {
         if (!payload?.zone_id) {
-          emitTransportError(socket, "transport:next", "zone_id required", ack);
+          sendError(socket, "transport:error", "transport:next", "zone_id required", ack);
           return;
         }
-
-        try {
-          await transportService.next(payload.zone_id);
-          acknowledgeSuccess(ack);
-        } catch (error) {
-          logger.error({ err: error }, "Socket next command failed");
-          emitTransportError(socket, "transport:next", (error as Error).message, ack);
-        }
+        await handleAsync(socket, "transport:error", "transport:next", ack, () =>
+          transportService.next(payload.zone_id)
+        );
       }
     );
 
     socket.on(
       "transport:previous",
-      async (
-        payload: TransportControlRequest,
-        ack?: (response: unknown) => void
-      ) => {
+      async (payload: TransportControlRequest, ack?: AckFn) => {
         if (!payload?.zone_id) {
-          emitTransportError(socket, "transport:previous", "zone_id required", ack);
+          sendError(socket, "transport:error", "transport:previous", "zone_id required", ack);
           return;
         }
-
-        try {
-          await transportService.previous(payload.zone_id);
-          acknowledgeSuccess(ack);
-        } catch (error) {
-          logger.error({ err: error }, "Socket previous command failed");
-          emitTransportError(socket, "transport:previous", (error as Error).message, ack);
-        }
+        await handleAsync(socket, "transport:error", "transport:previous", ack, () =>
+          transportService.previous(payload.zone_id)
+        );
       }
     );
 
     socket.on(
       "transport:stop",
-      async (
-        payload: TransportControlRequest,
-        ack?: (response: unknown) => void
-      ) => {
+      async (payload: TransportControlRequest, ack?: AckFn) => {
         if (!payload?.zone_id) {
-          emitTransportError(socket, "transport:stop", "zone_id required", ack);
+          sendError(socket, "transport:error", "transport:stop", "zone_id required", ack);
           return;
         }
-
-        try {
-          await transportService.stop(payload.zone_id);
-          acknowledgeSuccess(ack);
-        } catch (error) {
-          logger.error({ err: error }, "Socket stop command failed");
-          emitTransportError(socket, "transport:stop", (error as Error).message, ack);
-        }
+        await handleAsync(socket, "transport:error", "transport:stop", ack, () =>
+          transportService.stop(payload.zone_id)
+        );
       }
     );
 
     socket.on(
       "transport:seek",
-      async (
-        payload: SeekRequest,
-        ack?: (response: unknown) => void
-      ) => {
-        if (!payload?.zone_id || typeof payload.seconds !== "number") {
-          emitTransportError(
+      async (payload: SeekRequest, ack?: AckFn) => {
+        if (
+          !payload?.zone_id ||
+          typeof payload.seconds !== "number" ||
+          !Number.isFinite(payload.seconds) ||
+          payload.seconds < 0
+        ) {
+          sendError(
             socket,
+            "transport:error",
             "transport:seek",
-            "zone_id and numeric seconds required",
+            "zone_id and finite, non-negative seconds required",
             ack
           );
           return;
         }
-
-        try {
-          await transportService.seek(payload.zone_id, payload.seconds);
-          acknowledgeSuccess(ack);
-        } catch (error) {
-          logger.error({ err: error }, "Socket seek command failed");
-          emitTransportError(socket, "transport:seek", (error as Error).message, ack);
-        }
+        await handleAsync(socket, "transport:error", "transport:seek", ack, () =>
+          transportService.seek(payload.zone_id, payload.seconds)
+        );
       }
     );
 
     socket.on(
       "transport:volume",
-      async (
-        payload: VolumeRequest,
-        ack?: (response: unknown) => void
-      ) => {
-        if (!payload?.output_id || typeof payload.value !== "number") {
-          emitTransportError(
+      async (payload: VolumeRequest, ack?: AckFn) => {
+        if (
+          !payload?.output_id ||
+          typeof payload.value !== "number" ||
+          !Number.isFinite(payload.value)
+        ) {
+          sendError(
             socket,
+            "transport:error",
             "transport:volume",
-            "output_id and numeric value required",
+            "output_id and finite numeric value required",
             ack
           );
           return;
         }
-
-        try {
-          await transportService.setVolume(payload.output_id, payload.value);
-          acknowledgeSuccess(ack);
-        } catch (error) {
-          logger.error({ err: error }, "Socket volume command failed");
-          emitTransportError(socket, "transport:volume", (error as Error).message, ack);
-        }
+        await handleAsync(socket, "transport:error", "transport:volume", ack, () =>
+          transportService.setVolume(payload.output_id, payload.value)
+        );
       }
     );
 
     socket.on(
       "transport:settings",
-      async (
-        payload: ZonePlaybackSettingsRequest,
-        ack?: (response: unknown) => void
-      ) => {
+      async (payload: ZonePlaybackSettingsRequest, ack?: AckFn) => {
         if (!payload?.zone_id) {
-          emitTransportError(socket, "transport:settings", "zone_id required", ack);
+          sendError(socket, "transport:error", "transport:settings", "zone_id required", ack);
           return;
         }
 
@@ -251,199 +253,196 @@ export const attachSocketServer = (
           payload.auto_radio === undefined &&
           payload.loop === undefined
         ) {
-          emitTransportError(
+          sendError(
             socket,
+            "transport:error",
             "transport:settings",
             "at least one of shuffle, auto_radio, or loop must be provided",
             ack
           );
           return;
         }
-
-        try {
-          await transportService.setPlaybackSettings(payload.zone_id, payload);
-          acknowledgeSuccess(ack);
-        } catch (error) {
-          logger.error({ err: error }, "Socket settings command failed");
-          emitTransportError(socket, "transport:settings", (error as Error).message, ack);
+        if (payload.shuffle !== undefined && typeof payload.shuffle !== "boolean") {
+          sendError(socket, "transport:error", "transport:settings", "shuffle must be boolean", ack);
+          return;
         }
+        if (payload.auto_radio !== undefined && typeof payload.auto_radio !== "boolean") {
+          sendError(socket, "transport:error", "transport:settings", "auto_radio must be boolean", ack);
+          return;
+        }
+        if (payload.loop !== undefined && !VALID_LOOP_VALUES.includes(payload.loop)) {
+          sendError(
+            socket,
+            "transport:error",
+            "transport:settings",
+            `loop must be one of: ${VALID_LOOP_VALUES.join(", ")}`,
+            ack
+          );
+          return;
+        }
+
+        await handleAsync(socket, "transport:error", "transport:settings", ack, () =>
+          transportService.setPlaybackSettings(payload.zone_id, payload)
+        );
       }
     );
 
     socket.on(
       "queue:subscribe",
-      (
-        payload: QueueSubscribeRequest,
-        ack?: (response: unknown) => void
-      ) => {
+      (payload: QueueSubscribeRequest, ack?: AckFn) => {
         if (!payload?.zone_id) {
-          emitQueueError(socket, "queue:subscribe", "zone_id required", ack);
+          sendError(socket, "queue:error", "queue:subscribe", "zone_id required", ack);
           return;
         }
-
+        if (
+          payload.max_item_count !== undefined &&
+          (!Number.isInteger(payload.max_item_count) || payload.max_item_count <= 0)
+        ) {
+          sendError(
+            socket,
+            "queue:error",
+            "queue:subscribe",
+            "max_item_count must be a positive integer",
+            ack
+          );
+          return;
+        }
         try {
           transportService.subscribeQueue(payload.zone_id, payload.max_item_count);
           const response: QueueResponse = {
             queue: transportService.getQueue(payload.zone_id),
           };
-          if (ack) {
-            ack(response);
-          }
+          sendSuccess(ack, response);
         } catch (error) {
           logger.error({ err: error }, "Socket queue subscribe failed");
-          emitQueueError(socket, "queue:subscribe", (error as Error).message, ack);
+          sendError(socket, "queue:error", "queue:subscribe", errorMessage(error), ack);
         }
       }
     );
 
     socket.on(
       "queue:get",
-      (
-        payload: QueueSubscribeRequest,
-        ack?: (response: unknown) => void
-      ) => {
+      (payload: QueueSubscribeRequest, ack?: AckFn) => {
         if (!payload?.zone_id) {
-          emitQueueError(socket, "queue:get", "zone_id required", ack);
+          sendError(socket, "queue:error", "queue:get", "zone_id required", ack);
           return;
         }
-
         try {
           const response: QueueResponse = {
             queue: transportService.getQueue(payload.zone_id),
           };
-          if (ack) {
-            ack(response);
-          }
+          sendSuccess(ack, response);
         } catch (error) {
           logger.error({ err: error }, "Socket queue get failed");
-          emitQueueError(socket, "queue:get", (error as Error).message, ack);
+          sendError(socket, "queue:error", "queue:get", errorMessage(error), ack);
         }
       }
     );
 
     socket.on(
       "queue:play-from-here",
-      async (
-        payload: QueuePlayFromHereRequest,
-        ack?: (response: unknown) => void
-      ) => {
-        if (!payload?.zone_id || typeof payload.queue_item_id !== "number") {
-          emitQueueError(
+      async (payload: QueuePlayFromHereRequest, ack?: AckFn) => {
+        if (
+          !payload?.zone_id ||
+          typeof payload.queue_item_id !== "number" ||
+          !Number.isFinite(payload.queue_item_id)
+        ) {
+          sendError(
             socket,
+            "queue:error",
             "queue:play-from-here",
-            "zone_id and numeric queue_item_id required",
+            "zone_id and finite numeric queue_item_id required",
             ack
           );
           return;
         }
-
-        try {
-          await transportService.playFromHere(payload.zone_id, payload.queue_item_id);
-          acknowledgeSuccess(ack);
-        } catch (error) {
-          logger.error({ err: error }, "Socket queue play-from-here failed");
-          emitQueueError(socket, "queue:play-from-here", (error as Error).message, ack);
-        }
+        await handleAsync(socket, "queue:error", "queue:play-from-here", ack, () =>
+          transportService.playFromHere(payload.zone_id, payload.queue_item_id)
+        );
       }
     );
 
     socket.on(
       "browse:browse",
-      async (
-        options: BrowseOptions,
-        ack?: (response: unknown) => void
-      ) => {
+      async (options: BrowseOptions, ack?: AckFn) => {
         if (!options?.hierarchy) {
-          emitBrowseError(socket, "browse:browse", "hierarchy required", ack);
+          sendError(socket, "browse:error", "browse:browse", "hierarchy required", ack);
           return;
         }
-
-        try {
-          const result = await browseService.browse(options);
-          if (ack) {
-            ack(result);
-          } else {
-            socket.emit("browse-result", result);
+        await handleAsync(
+          socket,
+          "browse:error",
+          "browse:browse",
+          ack,
+          () => browseService.browse(options),
+          (result) => {
+            if (ack) sendSuccess(ack, result);
+            else socket.emit("browse-result", result);
           }
-        } catch (error) {
-          logger.error({ err: error }, "Socket browse command failed");
-          emitBrowseError(socket, "browse:browse", (error as Error).message, ack);
-        }
+        );
       }
     );
 
     socket.on(
       "browse:load",
-      async (
-        options: BrowseLoadOptions,
-        ack?: (response: unknown) => void
-      ) => {
+      async (options: BrowseLoadOptions, ack?: AckFn) => {
         if (!options?.hierarchy) {
-          emitBrowseError(socket, "browse:load", "hierarchy required", ack);
+          sendError(socket, "browse:error", "browse:load", "hierarchy required", ack);
           return;
         }
-
-        try {
-          const result = await browseService.load(options);
-          if (ack) {
-            ack(result);
-          } else {
-            socket.emit("browse-result", result);
+        await handleAsync(
+          socket,
+          "browse:error",
+          "browse:load",
+          ack,
+          () => browseService.load(options),
+          (result) => {
+            if (ack) sendSuccess(ack, result);
+            else socket.emit("browse-result", result);
           }
-        } catch (error) {
-          logger.error({ err: error }, "Socket browse load command failed");
-          emitBrowseError(socket, "browse:load", (error as Error).message, ack);
-        }
+        );
       }
     );
 
     socket.on(
       "browse:pop",
-      async (
-        options: BrowsePopOptions,
-        ack?: (response: unknown) => void
-      ) => {
+      async (options: BrowsePopOptions, ack?: AckFn) => {
         if (!options?.hierarchy) {
-          emitBrowseError(socket, "browse:pop", "hierarchy required", ack);
+          sendError(socket, "browse:error", "browse:pop", "hierarchy required", ack);
           return;
         }
-
-        try {
-          const result = await browseService.pop(options);
-          if (ack) {
-            ack(result);
-          } else {
-            socket.emit("browse-result", result);
+        await handleAsync(
+          socket,
+          "browse:error",
+          "browse:pop",
+          ack,
+          () => browseService.pop(options),
+          (result) => {
+            if (ack) sendSuccess(ack, result);
+            else socket.emit("browse-result", result);
           }
-        } catch (error) {
-          logger.error({ err: error }, "Socket browse pop command failed");
-          emitBrowseError(socket, "browse:pop", (error as Error).message, ack);
-        }
+        );
       }
     );
 
     socket.on(
       "browse:search",
-      async (
-        options: BrowseSearchOptions,
-        ack?: (response: unknown) => void
-      ) => {
+      async (options: BrowseSearchOptions, ack?: AckFn) => {
         if (!options?.input) {
-          emitBrowseError(socket, "browse:search", "input required", ack);
+          sendError(socket, "browse:error", "browse:search", "input required", ack);
           return;
         }
-
-        try {
-          const result = await browseService.search(options);
-          if (ack) {
-            ack(result);
-          } else {
-            socket.emit("search-result", result);
+        await handleAsync(
+          socket,
+          "browse:error",
+          "browse:search",
+          ack,
+          () => browseService.search(options),
+          (result) => {
+            if (ack) sendSuccess(ack, result);
+            else socket.emit("search-result", result);
           }
-        } catch (error) {
-          logger.error({ err: error }, "Socket browse search command failed");
-          emitBrowseError(socket, "browse:search", (error as Error).message, ack);
-        }
+        );
       }
     );
 

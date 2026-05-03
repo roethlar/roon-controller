@@ -7,17 +7,17 @@ import {
 	removeZone,
 	setNowPlaying,
 	removeNowPlaying,
-	resetNowPlaying,
 	setQueueSnapshot,
 	clearQueue,
-	resetQueue,
 	setBrowseResult,
 	setSearchResults,
 	setBrowseError,
-	resetBrowse,
+	setSearchError,
 	pushCommandFeedback,
 	nowPlayingStore,
-	updateSeekPosition
+	updateSeekPosition,
+	initializeStores,
+	setSocketStatus
 } from '../stores';
 import type {
 	CoreStatusResponse,
@@ -132,7 +132,11 @@ export function registerSocketHandlers(): CleanupFn {
 	};
 
 	const handleBrowseError = (payload: CommandErrorEvent) => {
-		setBrowseError(payload.error);
+		if (payload.command === 'browse:search') {
+			setSearchError(payload.error);
+		} else {
+			setBrowseError(payload.error);
+		}
 		pushCommandFeedback({
 			source: 'browse',
 			command: payload.command,
@@ -148,12 +152,48 @@ export function registerSocketHandlers(): CleanupFn {
 		});
 	};
 
-	const handleDisconnect = () => {
-		setCoreStatus({ status: 'unpaired' });
-		setZonesSnapshot([]);
-		resetNowPlaying();
-		resetQueue();
-		resetBrowse();
+	// A socket disconnect is NOT the same as a Roon core unpair. The core
+	// state is owned by the server; clearing it here would lie to the user
+	// during a transient WebSocket blip. On reconnect, the server re-emits
+	// `core-status`, `zones`, and `now-playing-updated` for hydration, and
+	// we additionally refetch via REST as a belt-and-braces backstop.
+	const handleConnect = () => {
+		setSocketStatus('connected');
+		void initializeStores(fetch);
+	};
+
+	const handleDisconnect = (reason: string) => {
+		// socket.io disconnect reasons split into auto-reconnecting vs not.
+		// 'io server disconnect' (server explicitly kicked us) and
+		// 'io client disconnect' (we called .disconnect()) do NOT
+		// auto-reconnect. Everything else (ping timeout, transport close,
+		// transport error) does, so reflect that as "connecting".
+		const noReconnect = reason === 'io server disconnect' || reason === 'io client disconnect';
+		setSocketStatus(noReconnect ? 'disconnected' : 'connecting');
+	};
+
+	const handleReconnectFailed = () => {
+		// Reconnection attempts exhausted — flip to a hard "disconnected".
+		setSocketStatus('disconnected');
+		pushCommandFeedback({
+			source: 'transport',
+			command: 'socket',
+			message: 'Connection lost. Refresh the page to reconnect.'
+		});
+	};
+
+	const handleConnectError = (error: Error) => {
+		// connect_error fires for the *current* attempt; socket.io keeps
+		// trying. Surface it once via the toast so a persistent failure is
+		// visible, but keep the status pill in "connecting" rather than
+		// flipping to a hard "disconnected" — that would be alarming during
+		// a transient network blip on a phone or laptop lid-close.
+		setSocketStatus('connecting');
+		pushCommandFeedback({
+			source: 'transport',
+			command: 'socket',
+			message: `Connection error: ${error.message}`
+		});
 	};
 
 	const listeners: Array<[string, (...args: any[]) => void]> = [
@@ -175,12 +215,24 @@ export function registerSocketHandlers(): CleanupFn {
 		socket.on(event, handler);
 	});
 
+	socket.on('connect', handleConnect);
 	socket.on('disconnect', handleDisconnect);
+	socket.on('connect_error', handleConnectError);
+	// reconnect_failed is on the manager, not the socket itself.
+	socket.io.on('reconnect_failed', handleReconnectFailed);
+
+	// `socket.connected` reflects the live state at registration time — set
+	// the store accordingly so we don't show "connecting" when the socket
+	// was already up before this handler attached.
+	setSocketStatus(socket.connected ? 'connected' : 'connecting');
 
 	return () => {
 		listeners.forEach(([event, handler]) => {
 			socket.off(event, handler);
 		});
+		socket.off('connect', handleConnect);
 		socket.off('disconnect', handleDisconnect);
+		socket.off('connect_error', handleConnectError);
+		socket.io.off('reconnect_failed', handleReconnectFailed);
 	};
 }

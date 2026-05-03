@@ -9,6 +9,7 @@ export interface AppConfig {
   readonly logLevel: LogLevel;
   readonly roonTokenPath: string;
   readonly imageCachePath: string;
+  readonly imageCacheMaxBytes: number;
 }
 
 export type LogLevel = "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
@@ -84,12 +85,25 @@ const parseImageCachePath = (value: string | undefined): string => {
   return path.resolve(rawPath);
 };
 
+const DEFAULT_IMAGE_CACHE_MAX_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
+
+const parseImageCacheMaxBytes = (value: string | undefined): number => {
+  const raw = coerceString(value);
+  if (!raw) return DEFAULT_IMAGE_CACHE_MAX_BYTES;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new ConfigError("IMAGE_CACHE_MAX_BYTES must be a positive number");
+  }
+  return Math.floor(parsed);
+};
+
 export const loadConfig = (): AppConfig => {
   const host = parseHost(process.env.HOST);
   const port = parsePort(process.env.PORT);
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
   const roonTokenPath = parseTokenPath(process.env.ROON_TOKEN_PATH);
   const imageCachePath = parseImageCachePath(process.env.IMAGE_CACHE_PATH);
+  const imageCacheMaxBytes = parseImageCacheMaxBytes(process.env.IMAGE_CACHE_MAX_BYTES);
 
   return {
     host,
@@ -97,5 +111,6 @@ export const loadConfig = (): AppConfig => {
     logLevel,
     roonTokenPath,
     imageCachePath,
+    imageCacheMaxBytes,
   };
 };

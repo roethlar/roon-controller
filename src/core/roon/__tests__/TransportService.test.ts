@@ -20,6 +20,7 @@ const mockLogger = {
   warn: jest.fn(),
   error: jest.fn(),
   debug: jest.fn(),
+  trace: jest.fn(),
   level: 'info',
 } as unknown as Logger;
 
@@ -222,6 +223,251 @@ describe('TransportService', () => {
         9000,
         expect.any(Function)
       );
+    });
+  });
+
+  describe('queue positional diffs', () => {
+    // Real Roon queue subscriptions deliver mutations as splice-style ops:
+    //   { changes: [{ operation: "insert"|"remove", index, items?, count? }] }
+    // (verified by capture against a live Core, May 2026). The fields
+    // items_added/items_changed/items_removed shown in older docs are NOT
+    // what the JS transport service actually delivers.
+
+    function captureSnapshot(
+      callback: { current: ((response: string, data: any) => void) | null }
+    ) {
+      mockTransport.subscribe_queue.mockImplementation(
+        (_zoneId: string, _maxItems: number, cb: any) => {
+          callback.current = cb;
+          cb('Subscribed', { items: [] });
+          return { unsubscribe: jest.fn() };
+        }
+      );
+    }
+
+    it('applies "insert" at the given index', () => {
+      const cb = { current: null as any };
+      captureSnapshot(cb);
+      service.subscribeQueue('zone1');
+
+      cb.current('Changed', {
+        changes: [
+          {
+            operation: 'insert',
+            index: 0,
+            items: [
+              { queue_item_id: 1, one_line: { line1: 'A' } },
+              { queue_item_id: 2, one_line: { line1: 'B' } },
+            ],
+          },
+        ],
+      });
+
+      expect(service.getQueue('zone1').items.map((i) => i.queue_item_id)).toEqual([1, 2]);
+    });
+
+    it('applies "remove" with count at the given index', () => {
+      const cb = { current: null as any };
+      captureSnapshot(cb);
+      service.subscribeQueue('zone1');
+
+      cb.current('Changed', {
+        changes: [
+          {
+            operation: 'insert',
+            index: 0,
+            items: [
+              { queue_item_id: 1, one_line: { line1: 'A' } },
+              { queue_item_id: 2, one_line: { line1: 'B' } },
+              { queue_item_id: 3, one_line: { line1: 'C' } },
+            ],
+          },
+        ],
+      });
+      cb.current('Changed', {
+        changes: [{ operation: 'remove', index: 0, count: 2 }],
+      });
+
+      expect(service.getQueue('zone1').items.map((i) => i.queue_item_id)).toEqual([3]);
+    });
+
+    it('applies "remove" then "insert" in a single payload (track consumed → next becomes current)', () => {
+      const cb = { current: null as any };
+      captureSnapshot(cb);
+      service.subscribeQueue('zone1');
+
+      cb.current('Changed', {
+        changes: [
+          {
+            operation: 'insert',
+            index: 0,
+            items: [
+              { queue_item_id: 100, one_line: { line1: 'Now Playing' } },
+              { queue_item_id: 101, one_line: { line1: 'Next' } },
+            ],
+          },
+        ],
+      });
+      // Track ends: Roon removes index 0, then inserts a new tail item.
+      cb.current('Changed', {
+        changes: [
+          { operation: 'remove', index: 0, count: 1 },
+          {
+            operation: 'insert',
+            index: 1,
+            items: [{ queue_item_id: 102, one_line: { line1: 'Tail' } }],
+          },
+        ],
+      });
+
+      expect(service.getQueue('zone1').items.map((i) => i.queue_item_id)).toEqual([101, 102]);
+    });
+
+    it('preserves insertion order with non-monotonic queue_item_ids', () => {
+      // After "Play Next" from another control point, IDs in the queue
+      // can be out of numeric order — but Roon's positional inserts still
+      // place them correctly. Confirms we do NOT re-sort by ID.
+      const cb = { current: null as any };
+      captureSnapshot(cb);
+      service.subscribeQueue('zone1');
+
+      cb.current('Changed', {
+        changes: [
+          {
+            operation: 'insert',
+            index: 0,
+            items: [
+              { queue_item_id: 100, one_line: { line1: 'First' } },
+              { queue_item_id: 102, one_line: { line1: 'Third' } },
+            ],
+          },
+        ],
+      });
+      cb.current('Changed', {
+        changes: [
+          {
+            operation: 'insert',
+            index: 1,
+            items: [{ queue_item_id: 42, one_line: { line1: 'Inserted next' } }],
+          },
+        ],
+      });
+
+      expect(service.getQueue('zone1').items.map((i) => i.queue_item_id)).toEqual([100, 42, 102]);
+    });
+
+    it('skips a known op with missing/invalid index instead of defaulting to 0', () => {
+      // Defaulting bad index to 0 would silently mutate the current track.
+      const cb = { current: null as any };
+      captureSnapshot(cb);
+      service.subscribeQueue('zone1');
+
+      cb.current('Changed', {
+        changes: [
+          {
+            operation: 'insert',
+            index: 0,
+            items: [
+              { queue_item_id: 1, one_line: { line1: 'Current' } },
+              { queue_item_id: 2, one_line: { line1: 'Next' } },
+            ],
+          },
+        ],
+      });
+      cb.current('Changed', {
+        changes: [{ operation: 'remove', count: 1 /* index missing */ }],
+      });
+
+      // Current row must not have been removed.
+      expect(service.getQueue('zone1').items.map((i) => i.queue_item_id)).toEqual([1, 2]);
+    });
+
+    it('skips a remove with missing/invalid count instead of defaulting to 1', () => {
+      const cb = { current: null as any };
+      captureSnapshot(cb);
+      service.subscribeQueue('zone1');
+
+      cb.current('Changed', {
+        changes: [
+          {
+            operation: 'insert',
+            index: 0,
+            items: [
+              { queue_item_id: 1, one_line: { line1: 'Current' } },
+              { queue_item_id: 2, one_line: { line1: 'Next' } },
+            ],
+          },
+        ],
+      });
+      cb.current('Changed', {
+        changes: [{ operation: 'remove', index: 0 /* count missing */ }],
+      });
+
+      expect(service.getQueue('zone1').items.map((i) => i.queue_item_id)).toEqual([1, 2]);
+    });
+
+    it('ignores unknown operations without corrupting the queue', () => {
+      const cb = { current: null as any };
+      captureSnapshot(cb);
+      service.subscribeQueue('zone1');
+
+      cb.current('Changed', {
+        changes: [
+          {
+            operation: 'insert',
+            index: 0,
+            items: [{ queue_item_id: 1, one_line: { line1: 'A' } }],
+          },
+        ],
+      });
+      cb.current('Changed', { changes: [{ operation: 'rotate-by-pi', index: 0 }] });
+
+      expect(service.getQueue('zone1').items.map((i) => i.queue_item_id)).toEqual([1]);
+    });
+  });
+
+  describe('queue ordering', () => {
+    it('preserves Roon-supplied snapshot order, even when queue_item_id is non-monotonic', () => {
+      // Simulates a queue where Roon delivers items in play order but the IDs
+      // are not numerically increasing (e.g. after a "Play Next" insert).
+      mockTransport.subscribe_queue.mockImplementation(
+        (_zoneId: string, _maxItems: number, callback: Function) => {
+          callback('Subscribed', {
+            items: [
+              { queue_item_id: 100, one_line: { line1: 'First' } },
+              { queue_item_id: 42, one_line: { line1: 'Inserted' } },
+              { queue_item_id: 101, one_line: { line1: 'Third' } },
+            ],
+          });
+          return { unsubscribe: jest.fn() };
+        }
+      );
+
+      service.subscribeQueue('zone123');
+      const queue = service.getQueue('zone123');
+
+      expect(queue.items.map((i) => i.queue_item_id)).toEqual([100, 42, 101]);
+    });
+
+    it('drops queue items missing a valid queue_item_id rather than collapsing them onto 0', () => {
+      mockTransport.subscribe_queue.mockImplementation(
+        (_zoneId: string, _maxItems: number, callback: Function) => {
+          callback('Subscribed', {
+            items: [
+              { queue_item_id: 5, one_line: { line1: 'Valid' } },
+              { one_line: { line1: 'Missing id' } },
+              { queue_item_id: 'nope', one_line: { line1: 'Bad type' } },
+            ],
+          });
+          return { unsubscribe: jest.fn() };
+        }
+      );
+
+      service.subscribeQueue('zone123');
+      const queue = service.getQueue('zone123');
+
+      expect(queue.items).toHaveLength(1);
+      expect(queue.items[0].queue_item_id).toBe(5);
     });
   });
 

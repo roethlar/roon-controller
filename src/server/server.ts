@@ -6,15 +6,16 @@ import { createHttpApp } from "./http/app";
 import { attachSocketServer, SocketContext } from "./socket";
 import { RoonClient } from "../core/roon/RoonClient";
 
+import { TransportService } from "../core/roon/TransportService";
+import { BrowseService } from "../core/roon/BrowseService";
+import { ImageService } from "../core/roon/ImageService";
+
 export interface ServerContext {
   readonly httpServer: http.Server;
   readonly socketContext: SocketContext;
   readonly roonClient: RoonClient;
+  readonly transportService: TransportService;
 }
-
-import { TransportService } from "../core/roon/TransportService";
-import { BrowseService } from "../core/roon/BrowseService";
-import { ImageService } from "../core/roon/ImageService";
 
 export const startServer = (
   config: AppConfig,
@@ -29,7 +30,12 @@ export const startServer = (
   // Instantiate services
   const transportService = new TransportService(roonClient, logger);
   const browseService = new BrowseService(roonClient, logger);
-  const imageService = new ImageService(roonClient, logger, config.imageCachePath);
+  const imageService = new ImageService(
+    roonClient,
+    logger,
+    config.imageCachePath,
+    config.imageCacheMaxBytes
+  );
 
   // Create HTTP app with services
   const app: Application = createHttpApp(
@@ -42,6 +48,7 @@ export const startServer = (
   const httpServer = http.createServer(app);
 
   const socketContext = attachSocketServer(httpServer, {
+    roonClient,
     transportService,
     browseService,
     logger,
@@ -82,7 +89,13 @@ export const startServer = (
     }
   });
 
-  // Wire TransportService events to Socket.IO
+  // Wire TransportService events to Socket.IO. The per-zone events
+  // (`zone-updated`, `zone-removed`) are sufficient for the client to keep
+  // its zone list in sync — `register.ts` calls upsertZone/removeZone on
+  // them. We do NOT also emit a full `zones` snapshot per per-zone update,
+  // because (a) it's quadratic broadcast traffic on Roon batches that
+  // touch every zone (e.g. seek ticks), and (b) the initial snapshot is
+  // already emitted on socket `connection`.
   transportService.on("zone-updated", (data) => {
     try {
       transportService.subscribeQueue(data.zone.zone_id);
@@ -94,7 +107,6 @@ export const startServer = (
     }
 
     socketContext.io.emit("zone-updated", data);
-    socketContext.io.emit("zones", { zones: transportService.getZones() });
   });
 
   transportService.on("zone-removed", (data) => {
@@ -103,7 +115,6 @@ export const startServer = (
       zone_id: data.zone_id,
       now_playing: null,
     });
-    socketContext.io.emit("zones", { zones: transportService.getZones() });
   });
 
   transportService.on("now-playing-updated", (data) => {
@@ -138,5 +149,6 @@ export const startServer = (
     httpServer,
     socketContext,
     roonClient,
+    transportService,
   };
 };
