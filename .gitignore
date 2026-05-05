@@ -28,3 +28,9 @@ claudedocs/
 codex_resume
 continueprompt.txt
 error.txt
+
+# Private capture artifacts — `scripts/capture-browse-tree.mjs
+# --include-content-samples` produces files with personal library
+# content that must never be committed.
+docs/roon-browse-tree-*-with-content.md
+docs/roon-browse-tree-*-with-content.json
