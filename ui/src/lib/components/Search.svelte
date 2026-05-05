@@ -5,7 +5,23 @@
 	import { getSocket } from '$lib/socket/client';
 	import type { BrowseSearchOptions, SearchResult } from '@shared/types';
 
-	let { onResultClick }: { onResultClick?: (result: SearchResult) => void } = $props();
+	type SearchMode = 'full' | 'input' | 'results';
+	let {
+		onResultClick,
+		onSubmit,
+		mode = 'full'
+	}: {
+		onResultClick?: (result: SearchResult) => void;
+		/**
+		 * Optional submit interceptor. When provided, the component calls
+		 * this with the query string and skips its own socket emission.
+		 * Lets the layout-level `<Search mode="input" />` redirect cross-route
+		 * submissions through `pendingSearchStore` + `goto('/library')` so
+		 * the user lands somewhere that actually renders the results.
+		 */
+		onSubmit?: (query: string) => void;
+		mode?: SearchMode;
+	} = $props();
 
 	let searchQuery = $state('');
 	let socket = $state(getSocket());
@@ -21,6 +37,14 @@
 	function search() {
 		const query = searchQuery.trim();
 		if (!query) {
+			return;
+		}
+
+		// Layout-level submit interceptor (header input). It routes the
+		// query through `pendingSearchStore` + `goto('/library')` so a
+		// search from /queue lands on /library where results render.
+		if (onSubmit) {
+			onSubmit(query);
 			return;
 		}
 
@@ -108,20 +132,23 @@
 	}
 </script>
 
-<div class="search-shell">
-	<div class="search-row">
-		<label class="visually-hidden" for="library-search">Search library</label>
-		<input
-			id="library-search"
-			type="text"
-			bind:value={searchQuery}
-			onkeydown={handleKeydown}
-			placeholder="Search artists, albums, tracks"
-			spellcheck="false"
-		/>
-		<button type="button" onclick={search} disabled={!searchQuery.trim()}>Search</button>
-	</div>
+<div class="search-shell" class:input-only={mode === 'input'}>
+	{#if mode !== 'results'}
+		<div class="search-row">
+			<label class="visually-hidden" for="library-search">Search library</label>
+			<input
+				id="library-search"
+				type="text"
+				bind:value={searchQuery}
+				onkeydown={handleKeydown}
+				placeholder="Search artists, albums, tracks"
+				spellcheck="false"
+			/>
+			<button type="button" onclick={search} disabled={!searchQuery.trim()}>Search</button>
+		</div>
+	{/if}
 
+	{#if mode !== 'input'}
 	{#if $browseStore.searchLoading}
 		<p class="loading">Searching...</p>
 	{:else if $browseStore.searchError}
@@ -175,6 +202,7 @@
 			{/each}
 		</div>
 	{/if}
+	{/if}
 </div>
 
 <style>
@@ -184,9 +212,23 @@
 		gap: 0.8rem;
 	}
 
+	.search-shell.input-only {
+		gap: 0;
+	}
+
 	.search-row {
 		display: flex;
 		gap: 0.45rem;
+	}
+
+	.search-shell.input-only .search-row input {
+		padding: 0.4rem 0.6rem;
+		font-size: 0.9rem;
+	}
+
+	.search-shell.input-only .search-row button {
+		padding: 0.4rem 0.85rem;
+		font-size: 0.85rem;
 	}
 
 	.search-row input {

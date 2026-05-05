@@ -131,6 +131,19 @@ describe('Search component', () => {
 		);
 	});
 
+	it('routes through onSubmit when provided, skipping the direct socket emit', async () => {
+		const onSubmit = vi.fn();
+		render(Search, { props: { onSubmit } });
+		const input = screen.getByPlaceholderText(/search artists, albums, tracks/i);
+		await userEvent.type(input, 'beatles');
+		await userEvent.click(screen.getByRole('button', { name: /^search$/i }));
+
+		// Layout's submit interceptor was called…
+		expect(onSubmit).toHaveBeenCalledWith('beatles');
+		// …and the component did NOT emit its own browse:search.
+		expect(fakeSocket.emit).not.toHaveBeenCalled();
+	});
+
 	it('does not emit when the query is whitespace', async () => {
 		render(Search);
 		const input = screen.getByPlaceholderText(/search artists, albums, tracks/i);

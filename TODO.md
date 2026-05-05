@@ -166,11 +166,34 @@
 - [x] Hierarchy commit deferred until match confirmed (initial impl polluted state on fallback — caught by test)
 - [x] 4 new Library page tests: miss → action-menu fallback, hit → search-hierarchy navigation w/ breadcrumb persisted, wrong-artist match rejected, unparseable title skips resolver
 
+## UX overhaul PR1 — sticky header + left-rail Explore (done — see DEVLOG)
+- [x] `exploreRailStore` with stable `labelPath` identity, ephemeral `cachedKey`/`cachedAncestorKeys` reserved
+- [x] Resolution via `multiSessionKey: 'explore-rail-discover'`, refetches on `core-status: paired`
+- [x] Excludes Settings (level 0) and Search (under Library)
+- [x] Empty-state detection at resolve for top-level entries
+- [x] Sticky workspace header with back/home/forward + Search (input mode) + theme toggle
+- [x] Sidebar: brand → Explore → footer (status + zone selector)
+- [x] Hamburger / off-canvas at <1020px
+- [x] Content width capped at 1440px
+- [x] Skeleton rail items during resolution
+- [x] Rail click does label-walk; cached-key fast path deferred
+- [x] Search component grew `mode` prop; Library renders `mode="results"`
+- [x] 7 new tests in `exploreRailStore.test.ts`, 1 in `Search.test.ts`; 83 → 91 UI total
+- [x] R7 follow-up: header `<Search>` routes through `onSubmit` (`pendingSearchStore` + `goto('/library')`) so cross-route submissions land on the page that renders results
+- [x] R7 follow-up: monotonic resolve token in `exploreRailStore` so stale rail-resolve completions can't overwrite newer ones
+
 ## Next Iteration (open)
-- [ ] Live verification on Roon Core: search → drill → back; remount restores deep search via breadcrumbs (Phase A); contextual `<album> by <artist>` rows jump to album page when resolver finds a match (Phase B); resolver-miss preserves action-menu fallback.
-- [ ] Manually verify queue protocol fix after redeploy: skip a track, Play Next from Roon iOS app, confirm rows update positionally.
-- [ ] **Redeploy required**: `sudo ./scripts/install.sh --reinstall` to pick up Phase A + Phase B.
-- [ ] If live evidence shows the album resolver clobbering search context is annoying, reconsider the side-multi-session approach (would require a follow-up session re-seed to navigate).
+- [ ] Live verification on Roon Core after PR1 redeploy:
+  - [ ] Rail entries render and respond to clicks
+  - [ ] Stale-key recovery on Core restart
+  - [ ] Sticky header behaves correctly under scroll
+  - [ ] Mobile viewport hamburger toggle
+- [ ] Live verification carryover from earlier PRs: search drill + remount (Phase A); `<album> by <artist>` resolver hits/misses (Phase B); composer/work flow doesn't auto-play; queue positional updates.
+- [ ] **Redeploy required**: `sudo ./scripts/install.sh --reinstall` to pick up PR1.
+- [ ] PR2 from the UX overhaul plan: now-playing overlay, album page polish.
+- [ ] PR3: zone grouping + standby/wake.
+- [ ] Cached-key fast path on rail clicks if label-walk latency is noticeable in practice.
+- [ ] Layout-integration tests (R7 residual risk): header search submission, rail click from /queue, mobile hamburger behavior.
 
 ## Documentation / Collaboration
 - [x] Maintain `DEVLOG.md`

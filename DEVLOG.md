@@ -1,6 +1,59 @@
 # Dev Log
 
-## 2026-05-05 (latest) — Album-jump resolver for "X by Y" contextual rows (Phase B)
+## 2026-05-05 (latest) — UX overhaul PR1: sticky header + left-rail Explore
+
+First of three planned PRs from `docs/UX_OVERHAUL_PLAN_2026-05-05.md`. Reclaims the wasted left-rail real estate by replacing the "Browse / Queue" link list with an Explore rail backed by Roon's top-level browse hierarchy. Search input and back/home/forward cluster move into a sticky workspace header that persists across routes.
+
+### Layout structure
+- **Sticky header** — back/home/forward (only on /library), search input, theme toggle. `position: sticky; top: 0; z-index: 5`.
+- **Sidebar** — brand block top, scrollable Explore rail middle, sidebar footer with status pill + zone selector. Sidebar width 200px (down from 240px).
+- **Workspace main** — caps content width at 1440px and centers (Q13 answer); right pane gets the full breathing room.
+- **Play bar** — unchanged structurally; lost the zone selector (now in sidebar footer) but still has Queue button.
+- **Narrow viewport** (<1020px): sidebar hides, hamburger button in header opens it as an off-canvas overlay with a tap-to-close scrim. Replaces the prior "stack rail above content" rule.
+
+### Explore rail (`exploreRailStore`)
+Stable identity is the **labelPath** (e.g. `["Library", "Albums"]`). Resolution algorithm runs at layout mount and on `core-status: paired` reconnect (no periodic polling):
+
+1. Browse root via REST through dedicated `multiSessionKey: 'explore-rail-discover'` so the user's main browse session is never disturbed by the popAll/drill pattern.
+2. For each level-0 item with `hint === 'list'` and not in the exclusion list (today: `Settings`), `popAll` and drill once to detect empty-state.
+3. For configured expansions (today: `Library`), surface each non-excluded list child as a nested rail entry. (`Search` excluded — top-bar search supersedes it.)
+4. Level-2 empty-state for nested entries is left undefined; resolved at first click if needed.
+
+Live capture confirmed the level-0 set: `Library, Playlists, My Live Radio, Genres, Settings`. The rail is fully data-driven — different Cores would yield different entries. No hardcoded label list.
+
+### Rail click handler (label-walk only for PR1)
+Always does the full label-walk: popAll, then for each label in labelPath, find by `title === label` in the current items, drill the fresh itemKey, push history with breadcrumb. The `cachedKey` / `cachedAncestorKeys` fields are reserved in the type but not populated; a future PR can add the cached-key fast path documented in the plan without changing the public shape.
+
+If the user is already on /library, `setBrowseResult` updates the right pane directly. If on /queue (or elsewhere), `goto('/library')` triggers Library's mount → `restoreBrowse` walks the freshly-pushed history through Phase A's flow and arrives at the same place.
+
+### Search relocation
+Search component grew two new props: `mode` (`'full'` | `'input'` | `'results'`) for layout placement, and `onSubmit?: (query) => void` so callers can intercept the submit. Layout renders `<Search mode="input" onSubmit={searchInLibrary} />` in the header; the interceptor pushes the query into `pendingSearchStore` and `goto('/library')`s if needed. Library page's `$effect` on `pendingSearchStore` then issues the actual `browse:search`. Library page renders `mode="results"` only when a search is loading/errored/landed.
+
+(R7: the first cut of PR1 omitted the interceptor, so `<Search mode="input" />` in the header just emitted `browse:search` directly. Cross-route searches updated `lastSearch` but never navigated to /library, leaving the user staring at /queue with results they couldn't see. Added the `onSubmit` prop and wired the layout to pass `searchInLibrary`. Search test added: when `onSubmit` is provided, the direct socket emit is skipped.)
+
+### Tests
+- **7 new** in `exploreRailStore.test.ts`: full-tree resolution exclusions, dedicated multiSessionKey on every call, error state, partial-failure resilience, invalidation, **stale-completion ignored after newer success**, **invalidate bumps token so in-flight resolve can't trample cleared state**.
+- **1 new** in `Search.test.ts`: `onSubmit` interceptor short-circuits the direct socket emit.
+- **All 83 existing** UI tests pass — 0 regressions. Layout overhaul kept all transport / volume / seek / theme / socket behavior unchanged; tests for those flows are unaffected.
+- Total UI tests: 83 → 91.
+
+### Validation
+- `npm --prefix ui test` — 91 passed.
+- `npm --prefix ui run check` — 0 errors / 0 warnings.
+- `npm --prefix ui run build` — pass.
+- `npm run lint` — clean.
+
+### R7 follow-ups (post-review fixes)
+1. **Header search routing** (P1) — described above; `onSubmit` prop added.
+2. **Resolve-token race protection** (P2) — `core-status: paired` can fire repeatedly during reconnect flap. Without protection, a slow-failing earlier `resolveExploreRail` could overwrite a fast-succeeding later one's entries with an error state — entries kept but masked by the stale error in the layout. Added a monotonic token: each call captures `++resolveToken` at start, only commits at the end if `myToken === resolveToken`. `invalidateExploreRail` also bumps the token so an in-flight resolve from before the invalidate can't rehydrate cleared state. Two new tests cover both races.
+3. **Layout-integration test gap** flagged by R7 — header search submission, rail click from /queue, and mobile hamburger behavior aren't covered by component-level tests yet. Adding them would require a layout test harness similar to the Library page integration tests; deferring as a follow-up rather than expanding PR1 scope.
+
+### Known follow-ups (not in PR1)
+- Cached-key fast path on rail clicks (label-walk works; just slower for nested entries — 2-3 calls instead of 1). Not perceptible on LAN.
+- Native-Roon-style "Search results for ..." landing page that takes over the right pane, vs. the current panel-above-browse layout.
+- Phase 2 (now-playing overlay) and Phase 3 (zone grouping + standby/wake) are separate PRs from the same plan.
+
+## 2026-05-05 — Album-jump resolver for "X by Y" contextual rows (Phase B)
 
 The action-list quickPlay guard stopped contextual rows like `On Ocean to Ocean by Tori Amos` from auto-playing, but the resulting UX was a play-action menu (`Play Now / Add Next / Queue / Start Radio`), not the album page the user actually wanted. This adds a best-effort album-jump resolver as a third branch in `handleItemClick`.
 

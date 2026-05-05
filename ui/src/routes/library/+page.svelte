@@ -817,10 +817,11 @@
 </script>
 
 <div class="library-shell">
-	<section class="search-panel card">
-		<h2>Search</h2>
-		<Search onResultClick={handleSearchResultClick} />
-	</section>
+	{#if $browseStore.searchLoading || $browseStore.searchError || $browseStore.lastSearch}
+		<section class="search-results-panel card">
+			<Search mode="results" onResultClick={handleSearchResultClick} />
+		</section>
+	{/if}
 
 	<section class="results-panel card">
 		{#if $browseStore.loading}
@@ -986,15 +987,9 @@
 		gap: 0.85rem;
 	}
 
-	.search-panel {
+	.search-results-panel {
 		padding: 0.85rem;
 		background: var(--surface);
-	}
-
-	.search-panel h2 {
-		font-family: var(--font-display);
-		font-size: 0.95rem;
-		margin-bottom: 0.58rem;
 	}
 
 	.results-panel {

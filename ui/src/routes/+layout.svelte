@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/stores';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { coreStore, isCorePaired } from '$lib/stores/coreStore';
 	import {
 		initializeStores,
@@ -15,14 +15,23 @@
 		pushCommandFeedback,
 		pendingSearchStore,
 		browseNavStore,
-		socketStatusStore
+		socketStatusStore,
+		exploreRailStore,
+		resolveExploreRail,
+		invalidateExploreRail,
+		pushHistory,
+		resetHistory,
+		type ExploreRailEntry
 	} from '$lib/stores';
+	import { browseStore, setBrowseLoading, setBrowseResult } from '$lib/stores/browseStore';
 	import { goto } from '$app/navigation';
 	import { zonesStore, zoneMapStore } from '$lib/stores/zonesStore';
 	import { registerSocketHandlers } from '$lib/socket/register';
 	import { getSocket } from '$lib/socket/client';
 	import { emitWithAck } from '$lib/socket/emit';
+	import { browse as apiBrowse } from '$lib/api/client';
 	import ErrorToast from '$lib/components/ErrorToast.svelte';
+	import Search from '$lib/components/Search.svelte';
 	import type {
 		TransportControlRequest,
 		SeekRequest,
@@ -34,6 +43,8 @@
 
 	let socket = $state(getSocket());
 	let commandInFlight = $state(false);
+	let railNavInFlight = $state(false);
+	let mobileNavOpen = $state(false);
 
 	onMount(() => {
 		socket = getSocket();
@@ -45,6 +56,22 @@
 			cleanupSocket();
 			clearCommandFeedback();
 		};
+	});
+
+	// Resolve the Explore rail at mount and whenever Roon Core (re)pairs.
+	// Cached itemKeys go stale on Core restart, so a reconnect must
+	// trigger a fresh resolve. `invalidateExploreRail` runs on un-pair to
+	// clear visibly-stale entries during the reconnect window.
+	$effect(() => {
+		const status = $coreStore.status;
+		// Read inside untrack so we don't loop on entries changes.
+		untrack(() => {
+			if (status === 'paired') {
+				void resolveExploreRail(fetch);
+			} else if (status === 'discovering' || status === 'unpaired') {
+				invalidateExploreRail();
+			}
+		});
 	});
 
 	$effect(() => {
@@ -60,11 +87,6 @@
 		}
 	});
 
-	const navItems = [
-		{ path: '/library', label: 'Browse' },
-		{ path: '/queue', label: 'Queue' }
-	];
-
 	const connectedLabel = $derived(
 		$socketStatusStore === 'connecting'
 			? 'Connecting…'
@@ -79,6 +101,23 @@
 	const nowPlaying = $derived(
 		$selectedZoneStore ? $nowPlayingList.find((t) => t.zone_id === $selectedZoneStore) : undefined
 	);
+
+	// Group rail entries by their parent label for sectioned rendering.
+	// Top-level entries have labelPath length 1; nested entries (today
+	// only Library children) have length 2 with the parent at index 0.
+	const railSections = $derived.by(() => {
+		const sections = new Map<string | null, ExploreRailEntry[]>();
+		for (const entry of $exploreRailStore.entries) {
+			const parent = entry.labelPath.length > 1 ? entry.labelPath[0] : null;
+			const list = sections.get(parent) ?? [];
+			list.push(entry);
+			sections.set(parent, list);
+		}
+		return sections;
+	});
+
+	const railTopLevel = $derived(railSections.get(null) ?? []);
+	const railLibrary = $derived(railSections.get('Library') ?? []);
 
 	function getLiveSocket() {
 		const s = socket ?? getSocket();
@@ -179,36 +218,184 @@
 
 	function searchInLibrary(query: string) {
 		pendingSearchStore.set(query);
-		goto('/library');
+		void goto('/library');
+	}
+
+	/**
+	 * Navigate the right pane to a rail entry. Always does a label-walk
+	 * (REST drill from root, matching by title at each level). PR1
+	 * intentionally skips the cached-key fast path documented in the
+	 * UX overhaul plan — label-walk is correct and 2-3 calls is fast on
+	 * LAN. The fast-path optimization can land in a follow-up PR.
+	 *
+	 * The walk pushes history with breadcrumbs as it goes, so a later
+	 * route remount can replay via Phase A's restore. If we're not on
+	 * /library, the goto kicks Library's mount, which calls
+	 * restoreBrowse — that flow re-walks via the persisted history and
+	 * delivers the result through the normal browseStore path.
+	 */
+	async function navigateToRailEntry(entry: ExploreRailEntry): Promise<void> {
+		if (railNavInFlight) return;
+		railNavInFlight = true;
+		mobileNavOpen = false;
+
+		const onLibrary = $page.url.pathname === '/library';
+		const zoneId = $selectedZoneStore || undefined;
+
+		try {
+			if (onLibrary) {
+				setBrowseLoading('browse');
+			}
+			resetHistory();
+
+			let cur = await apiBrowse(fetch, {
+				hierarchy: 'browse',
+				zoneId,
+				popAll: true
+			});
+
+			for (const label of entry.labelPath) {
+				const match = cur.items.find((it) => it.title === label);
+				if (!match?.itemKey) {
+					pushCommandFeedback({
+						source: 'browse',
+						command: 'rail',
+						message: `Rail entry "${label}" no longer in results — refreshing.`
+					});
+					// Stale label set; refresh the rail and bail.
+					void resolveExploreRail(fetch);
+					return;
+				}
+				cur = await apiBrowse(fetch, {
+					hierarchy: 'browse',
+					zoneId,
+					itemKey: match.itemKey
+				});
+				pushHistory(
+					{ hierarchy: 'browse', itemKey: match.itemKey, zoneId },
+					undefined,
+					{
+						title: label,
+						subtitle: match.subtitle,
+						imageKey: match.imageKey,
+						itemType: match.itemType
+					}
+				);
+			}
+
+			if (onLibrary) {
+				// Push the result into the browseStore so the right pane
+				// updates without a route remount.
+				setBrowseResult(cur, 'browse');
+			} else {
+				// goto /library; mount runs restoreBrowse which walks the
+				// freshly-pushed history and arrives at the same place.
+				void goto('/library');
+			}
+		} catch (err) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'rail',
+				message: `Rail navigation failed: ${(err as Error).message}`
+			});
+		} finally {
+			railNavInFlight = false;
+		}
+	}
+
+	function toggleMobileNav() {
+		mobileNavOpen = !mobileNavOpen;
 	}
 </script>
 
-<div class="shell">
-	<aside class="sidebar">
+<div class="shell" class:mobile-nav-open={mobileNavOpen}>
+	<aside class="sidebar" class:open={mobileNavOpen}>
 		<div class="brand-block">
 			<p class="eyebrow">Roon Controller</p>
 		</div>
 
-		<div class="status card">
-			<p class="status-value" class:good={connectedGood}>{connectedLabel}</p>
-			<p class="status-core">{$coreStore.core?.displayName ?? '—'}</p>
-			<p class="status-version">{$coreStore.core?.displayVersion ?? ''}</p>
-		</div>
+		<nav class="explore" aria-label="Explore">
+			{#if $exploreRailStore.loading && $exploreRailStore.entries.length === 0}
+				<div class="rail-skeleton">
+					<span class="skel-row"></span>
+					<span class="skel-row"></span>
+					<span class="skel-row"></span>
+					<span class="skel-row"></span>
+				</div>
+			{:else if $exploreRailStore.error}
+				<p class="rail-error">{$exploreRailStore.error}</p>
+			{:else}
+				{#if railLibrary.length > 0}
+					<div class="rail-section">
+						<h3 class="rail-section-header">Library</h3>
+						{#each railLibrary as entry}
+							<button
+								type="button"
+								class="rail-link"
+								class:muted={entry.isEmpty}
+								disabled={railNavInFlight}
+								onclick={() => navigateToRailEntry(entry)}
+							>{entry.label}</button>
+						{/each}
+					</div>
+				{/if}
 
-		<nav class="nav card" aria-label="Primary">
-			{#each navItems as item}
-				<a
-					href={item.path}
-					class="nav-link"
-					class:active={$page.url.pathname === item.path}
-					data-sveltekit-preload-data="hover"
-				>{item.label}</a>
-			{/each}
+				{#if railTopLevel.length > 0}
+					<div class="rail-section">
+						{#each railTopLevel as entry}
+							<button
+								type="button"
+								class="rail-link top"
+								class:muted={entry.isEmpty}
+								disabled={railNavInFlight}
+								onclick={() => navigateToRailEntry(entry)}
+							>{entry.label}</button>
+						{/each}
+					</div>
+				{/if}
+			{/if}
 		</nav>
+
+		<div class="sidebar-footer">
+			<div class="status card">
+				<p class="status-value" class:good={connectedGood}>{connectedLabel}</p>
+				<p class="status-core">{$coreStore.core?.displayName ?? '—'}</p>
+				<p class="status-version">{$coreStore.core?.displayVersion ?? ''}</p>
+			</div>
+
+			<label class="visually-hidden" for="sidebar-zone">Zone</label>
+			<select
+				id="sidebar-zone"
+				class="zone-select"
+				value={$selectedZoneStore}
+				onchange={(e) => setSelectedZone((e.target as HTMLSelectElement).value)}
+			>
+				{#if $zonesStore.length === 0}
+					<option value="">No zones</option>
+				{:else}
+					{#each $zonesStore as zone}
+						<option value={zone.zone_id}>{zone.display_name}</option>
+					{/each}
+				{/if}
+			</select>
+		</div>
 	</aside>
+
+	{#if mobileNavOpen}
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="sidebar-scrim" onclick={toggleMobileNav}></div>
+	{/if}
 
 	<section class="workspace">
 		<header class="workspace-header">
+			<button
+				type="button"
+				class="hamburger"
+				aria-label="Toggle navigation"
+				onclick={toggleMobileNav}
+			>☰</button>
+
 			{#if $page.url.pathname === '/library'}
 				<div class="nav-btns">
 					<button
@@ -236,8 +423,13 @@
 					>→</button>
 				</div>
 			{:else}
-				<span></span>
+				<span class="nav-spacer"></span>
 			{/if}
+
+			<div class="header-search">
+				<Search mode="input" onSubmit={searchInLibrary} />
+			</div>
+
 			<button
 				type="button"
 				class="theme-toggle"
@@ -311,20 +503,6 @@
 				</label>
 			{/if}
 		{/if}
-		<label class="visually-hidden" for="footer-zone">Zone</label>
-		<select
-			id="footer-zone"
-			value={$selectedZoneStore}
-			onchange={(e) => setSelectedZone((e.target as HTMLSelectElement).value)}
-		>
-			{#if $zonesStore.length === 0}
-				<option value="">No zones</option>
-			{:else}
-				{#each $zonesStore as zone}
-					<option value={zone.zone_id}>{zone.display_name}</option>
-				{/each}
-			{/if}
-		</select>
 		<a href="/queue" class="queue-btn" data-sveltekit-preload-data="hover">Queue</a>
 	</div>
 </footer>
@@ -334,7 +512,7 @@
 <style>
 	.shell {
 		display: grid;
-		grid-template-columns: 240px 1fr;
+		grid-template-columns: 200px 1fr;
 		min-height: calc(100vh - 76px);
 	}
 
@@ -342,11 +520,12 @@
 	.sidebar {
 		background: var(--sidebar-bg);
 		color: var(--sidebar-text);
-		padding: 1rem 0.85rem;
+		padding: 1rem 0.75rem;
 		display: flex;
 		flex-direction: column;
-		gap: 0.75rem;
+		gap: 0.6rem;
 		border-right: 1px solid var(--sidebar-border);
+		min-height: 0;
 	}
 
 	.brand-block {
@@ -361,20 +540,109 @@
 		font-family: var(--font-display);
 	}
 
-	.status,
-	.nav {
-		background: var(--sidebar-card-bg);
-		border-color: var(--sidebar-card-border);
+	.explore {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+	}
+
+	.rail-section {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+
+	.rail-section-header {
+		font-size: 0.7rem;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		opacity: 0.55;
+		margin: 0.4rem 0.5rem 0.2rem;
+		font-family: var(--font-display);
+	}
+
+	.rail-link {
+		display: block;
+		text-align: left;
+		padding: 0.45rem 0.7rem;
+		border-radius: 8px;
+		background: transparent;
+		border: 1px solid transparent;
 		color: var(--sidebar-text);
+		font-size: 0.88rem;
+		cursor: pointer;
+		transition: background 120ms ease;
+	}
+
+	.rail-link.top {
+		font-weight: 500;
+	}
+
+	.rail-link:hover:not(:disabled) {
+		background: var(--sidebar-hover-bg);
+	}
+
+	.rail-link:disabled {
+		opacity: 0.45;
+		cursor: default;
+	}
+
+	.rail-link.muted {
+		opacity: 0.5;
+	}
+
+	.rail-skeleton {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		padding: 0.5rem;
+	}
+
+	.skel-row {
+		height: 1.1rem;
+		border-radius: 6px;
+		background: linear-gradient(
+			90deg,
+			rgba(255, 255, 255, 0.05) 0%,
+			rgba(255, 255, 255, 0.12) 50%,
+			rgba(255, 255, 255, 0.05) 100%
+		);
+		animation: rail-shimmer 1.4s linear infinite;
+	}
+
+	@keyframes rail-shimmer {
+		0% { background-position: -100px 0; }
+		100% { background-position: 200px 0; }
+	}
+
+	.rail-error {
+		font-size: 0.8rem;
+		color: var(--text-soft);
+		padding: 0.5rem;
+	}
+
+	.sidebar-footer {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		padding-top: 0.4rem;
+		border-top: 1px solid var(--sidebar-border);
 	}
 
 	.status {
-		padding: 0.75rem;
+		background: var(--sidebar-card-bg);
+		border-color: var(--sidebar-card-border);
+		color: var(--sidebar-text);
+		padding: 0.55rem 0.65rem;
+		border-radius: 9px;
 	}
 
 	.status-value {
 		font-weight: 700;
-		font-size: 0.88rem;
+		font-size: 0.82rem;
 	}
 
 	.status-value.good {
@@ -382,39 +650,29 @@
 	}
 
 	.status-core {
-		margin-top: 0.3rem;
+		margin-top: 0.2rem;
 		font-weight: 600;
-		font-size: 0.9rem;
+		font-size: 0.82rem;
 	}
 
 	.status-version {
-		font-size: 0.78rem;
-		opacity: 0.68;
-		margin-top: 0.1rem;
+		font-size: 0.72rem;
+		opacity: 0.62;
+		margin-top: 0.05rem;
 	}
 
-	.nav {
-		padding: 0.4rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.28rem;
-	}
-
-	.nav-link {
-		display: block;
-		padding: 0.58rem 0.65rem;
-		border-radius: 9px;
+	.zone-select {
+		padding: 0.4rem 0.55rem;
+		border-radius: 8px;
+		border: 1px solid var(--sidebar-card-border);
+		background: var(--sidebar-card-bg);
 		color: var(--sidebar-text);
-		font-size: 0.9rem;
+		font-size: 0.85rem;
+		width: 100%;
 	}
 
-	.nav-link:hover {
-		background: var(--sidebar-hover-bg);
-	}
-
-	.nav-link.active {
-		background: var(--sidebar-active-bg);
-		border: 1px solid var(--sidebar-active-border);
+	.sidebar-scrim {
+		display: none;
 	}
 
 	/* ── Workspace ── */
@@ -422,19 +680,40 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
+		min-width: 0;
 	}
 
 	.workspace-header {
 		display: flex;
-		justify-content: space-between;
 		align-items: center;
-		padding: 0.55rem 0.9rem;
+		gap: 0.6rem;
+		padding: 0.5rem 0.9rem;
 		border-bottom: 1px solid var(--border);
+		background: var(--surface-1);
+		position: sticky;
+		top: 0;
+		z-index: 5;
+	}
+
+	.hamburger {
+		display: none;
+		font-size: 1.1rem;
+		line-height: 1;
+		padding: 0.3rem 0.55rem;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		background: var(--surface-2);
+		color: var(--text);
+		cursor: pointer;
 	}
 
 	.nav-btns {
 		display: flex;
 		gap: 0.2rem;
+	}
+
+	.nav-spacer {
+		width: 0;
 	}
 
 	.nav-btn {
@@ -460,6 +739,11 @@
 		cursor: default;
 	}
 
+	.header-search {
+		flex: 1;
+		max-width: 480px;
+	}
+
 	.theme-toggle {
 		font-size: 1.1rem;
 		line-height: 1;
@@ -478,6 +762,9 @@
 
 	.workspace-main {
 		padding: 0.9rem;
+		max-width: 1440px;
+		width: 100%;
+		margin: 0 auto;
 		animation: rise-in 320ms ease;
 	}
 
@@ -630,16 +917,6 @@
 		justify-content: flex-end;
 	}
 
-	.pb-right select {
-		padding: 0.38rem 0.5rem;
-		border-radius: 9px;
-		border: 1px solid rgba(255, 255, 255, 0.18);
-		background: rgba(255, 255, 255, 0.1);
-		color: inherit;
-		font-size: 0.85rem;
-		max-width: 160px;
-	}
-
 	.queue-btn {
 		padding: 0.38rem 0.8rem;
 		border-radius: 9px;
@@ -708,16 +985,38 @@
 		}
 
 		.sidebar {
-			padding-bottom: 0.6rem;
+			position: fixed;
+			top: 0;
+			left: 0;
+			bottom: 76px;
+			width: 240px;
+			z-index: 12;
+			transform: translateX(-100%);
+			transition: transform 220ms ease;
 		}
 
-		.nav {
-			flex-direction: row;
+		.sidebar.open {
+			transform: translateX(0);
+			box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
 		}
 
-		.nav-link {
-			flex: 1;
-			text-align: center;
+		.sidebar-scrim {
+			display: block;
+			position: fixed;
+			inset: 0;
+			background: rgba(0, 0, 0, 0.5);
+			z-index: 11;
+			animation: scrim-fade 200ms ease;
+		}
+
+		@keyframes scrim-fade {
+			from { opacity: 0; }
+			to { opacity: 1; }
+		}
+
+		.hamburger {
+			display: grid;
+			place-items: center;
 		}
 	}
 
@@ -732,8 +1031,7 @@
 			justify-content: flex-start;
 		}
 
-		.pb-right select {
-			flex: 1;
+		.header-search {
 			max-width: none;
 		}
 	}

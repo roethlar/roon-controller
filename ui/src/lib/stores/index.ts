@@ -34,6 +34,13 @@ export {
 	type BrowseBreadcrumb,
 	type BrowseHistoryStep
 } from './browseHistoryStore';
+export {
+	exploreRailStore,
+	resolveExploreRail,
+	invalidateExploreRail,
+	type ExploreRailEntry,
+	type ExploreRailState
+} from './exploreRailStore';
 
 import { loadCoreStatus } from './coreStore';
 import { loadZones } from './zonesStore';
