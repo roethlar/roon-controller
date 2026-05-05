@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
-import type { BrowseResult, BrowseItem } from '@shared/types';
+import type { BrowseResult, BrowseItem, SearchResult } from '@shared/types';
 
 // ---------------- Mocks ----------------
 //
@@ -41,7 +41,7 @@ vi.mock('$app/navigation', () => ({
 // Import after mocks so the page picks them up.
 import LibraryPage from '../+page.svelte';
 import { browseHistoryStore, resetHistory, pushHistory } from '$lib/stores/browseHistoryStore';
-import { browseStore, setSearchLoading } from '$lib/stores/browseStore';
+import { browseStore, resetBrowse, setSearchLoading, setSearchResults } from '$lib/stores/browseStore';
 import { setSelectedZone } from '$lib/stores/selectedZoneStore';
 
 // ---------------- Helpers ----------------
@@ -71,10 +71,20 @@ function makeItem(over: Partial<BrowseItem> = {}): BrowseItem {
 	};
 }
 
+function makeSearchResult(
+	over: Partial<SearchResult> & { resultType: SearchResult['resultType'] }
+): SearchResult {
+	return {
+		...makeItem(over),
+		resultType: over.resultType
+	};
+}
+
 beforeEach(() => {
 	apiBrowse.mockReset();
 	apiBrowseLoad.mockReset();
 	fakeSocket.emit.mockReset();
+	resetBrowse();
 	resetHistory();
 	setSelectedZone('');
 	// Default: any apiBrowse call returns an empty browse root.
@@ -121,19 +131,24 @@ describe('Library page — mount restore', () => {
 		);
 	});
 
-	it('with search-rooted history + saved query, re-seeds search then walks', async () => {
+	it('with search-rooted history + saved query, re-seeds search root and clears stale drill steps', async () => {
 		pushHistory(
 			{ hierarchy: 'search', itemKey: 's1', multiSessionKey: 'library-search' },
 			'beatles'
 		);
 
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 0 })); // re-seed
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 })); // s1 drill
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				title: 'Search',
+				items: [makeItem({ title: 'Artists', itemKey: 'fresh-artists' })]
+			})
+		); // re-seed
 
 		render(LibraryPage);
 
 		await waitFor(() => {
-			expect(apiBrowse).toHaveBeenCalledTimes(2);
+			expect(apiBrowse).toHaveBeenCalledTimes(1);
 		});
 
 		expect(apiBrowse.mock.calls[0][1]).toEqual(
@@ -144,13 +159,9 @@ describe('Library page — mount restore', () => {
 				multiSessionKey: 'library-search'
 			})
 		);
-		expect(apiBrowse.mock.calls[1][1]).toEqual(
-			expect.objectContaining({
-				hierarchy: 'search',
-				itemKey: 's1',
-				multiSessionKey: 'library-search'
-			})
-		);
+		expect(apiBrowse.mock.calls.some(([, opts]) => opts.itemKey === 's1')).toBe(false);
+		expect(await screen.findByText('Artists')).toBeInTheDocument();
+		expect(get(browseHistoryStore).history).toEqual([]);
 	});
 
 	it('with search-rooted history but no saved query, falls back to browse root and clears history', async () => {
@@ -214,6 +225,248 @@ describe('Library page — mount restore', () => {
 		expect(await screen.findByText('Albums')).toBeInTheDocument();
 		expect(await screen.findByText('Artists')).toBeInTheDocument();
 	});
+
+	describe('search-rooted history with breadcrumbs', () => {
+		// Re-walks a deep search drill after re-seed by matching saved
+		// breadcrumbs against the freshly-loaded results at each level.
+		// Persisted itemKeys are stale (Roon mints new ones on every search
+		// re-seed), so each successful drill must use the FRESH key from
+		// the just-loaded result list — not the persisted one.
+
+		it('replays a one-step search drill via breadcrumb match using the FRESH itemKey', async () => {
+			pushHistory(
+				{ hierarchy: 'search', itemKey: 'stale-album-key', multiSessionKey: 'library-search' },
+				'beatles',
+				{ title: 'Abbey Road', subtitle: 'The Beatles', itemType: 'album' }
+			);
+
+			// 1st apiBrowse: re-seed search; returns the same album under a
+			// fresh itemKey.
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 0,
+					title: 'Search',
+					items: [
+						makeItem({
+							title: 'Abbey Road',
+							subtitle: 'The Beatles',
+							itemKey: 'fresh-album-key',
+							itemType: 'album'
+						}),
+						makeItem({
+							title: 'Other Album',
+							subtitle: 'The Beatles',
+							itemKey: 'fresh-other-key',
+							itemType: 'album'
+						})
+					]
+				})
+			);
+			// 2nd apiBrowse: drill into the album (after breadcrumb match).
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 1,
+					title: 'Abbey Road',
+					items: [makeItem({ title: '1. Come Together', itemKey: 't1', hint: 'action_list' })]
+				})
+			);
+
+			render(LibraryPage);
+			await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+
+			// Re-seed used the saved query.
+			expect(apiBrowse.mock.calls[0][1]).toEqual(
+				expect.objectContaining({ hierarchy: 'search', input: 'beatles', popAll: true })
+			);
+			// Drill used the FRESH itemKey, not the persisted stale one.
+			expect(apiBrowse.mock.calls[1][1]).toEqual(
+				expect.objectContaining({ itemKey: 'fresh-album-key' })
+			);
+			expect(
+				apiBrowse.mock.calls.some(([, opts]) => opts.itemKey === 'stale-album-key')
+			).toBe(false);
+
+			// Persisted history was rewritten with the fresh itemKey so a
+			// later Forward (after Back) doesn't send Roon stale keys.
+			await tick();
+			const persisted = get(browseHistoryStore).history;
+			expect(persisted).toHaveLength(1);
+			expect(persisted[0].itemKey).toBe('fresh-album-key');
+		});
+
+		it('walks two drill levels in sequence', async () => {
+			pushHistory(
+				{ hierarchy: 'search', itemKey: 'stale-album-key', multiSessionKey: 'library-search' },
+				'beatles',
+				{ title: 'Abbey Road', subtitle: 'The Beatles', itemType: 'album' }
+			);
+			pushHistory(
+				{ hierarchy: 'search', itemKey: 'stale-track-key', multiSessionKey: 'library-search' },
+				'beatles',
+				{ title: '1. Come Together', itemType: 'track' }
+			);
+
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 0,
+					items: [
+						makeItem({
+							title: 'Abbey Road',
+							subtitle: 'The Beatles',
+							itemKey: 'fresh-album-key',
+							itemType: 'album'
+						})
+					]
+				})
+			);
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 1,
+					items: [
+						makeItem({
+							title: '1. Come Together',
+							itemKey: 'fresh-track-key',
+							itemType: 'track',
+							hint: 'action_list'
+						})
+					]
+				})
+			);
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 2,
+					items: [makeItem({ title: 'Play Now', itemKey: 'pn', hint: 'action' })]
+				})
+			);
+
+			render(LibraryPage);
+			await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
+
+			expect(apiBrowse.mock.calls[1][1]).toEqual(
+				expect.objectContaining({ itemKey: 'fresh-album-key' })
+			);
+			expect(apiBrowse.mock.calls[2][1]).toEqual(
+				expect.objectContaining({ itemKey: 'fresh-track-key' })
+			);
+
+			await tick();
+			const persisted = get(browseHistoryStore).history;
+			expect(persisted.map((s) => s.itemKey)).toEqual(['fresh-album-key', 'fresh-track-key']);
+		});
+
+		it('stops walking when a breadcrumb no longer matches any current item', async () => {
+			pushHistory(
+				{ hierarchy: 'search', itemKey: 'stale-album-key', multiSessionKey: 'library-search' },
+				'beatles',
+				{ title: 'Abbey Road', subtitle: 'The Beatles', itemType: 'album' }
+			);
+
+			// Re-seed returns a different album — breadcrumb won't match.
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 0,
+					items: [
+						makeItem({
+							title: 'Let It Be',
+							subtitle: 'The Beatles',
+							itemKey: 'fresh-let-it-be',
+							itemType: 'album'
+						})
+					]
+				})
+			);
+
+			render(LibraryPage);
+			await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+			await tick();
+
+			// No drill call, history truncated, feedback toast pushed.
+			expect(apiBrowse).toHaveBeenCalledTimes(1);
+			expect(get(browseHistoryStore).history).toEqual([]);
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message).toMatch(/Abbey Road.*no longer/);
+		});
+
+		it('stops at the deepest matched step when a later breadcrumb fails', async () => {
+			pushHistory(
+				{ hierarchy: 'search', itemKey: 'stale-a', multiSessionKey: 'library-search' },
+				'beatles',
+				{ title: 'Abbey Road', subtitle: 'The Beatles', itemType: 'album' }
+			);
+			pushHistory(
+				{ hierarchy: 'search', itemKey: 'stale-t', multiSessionKey: 'library-search' },
+				'beatles',
+				{ title: '1. Come Together', itemType: 'track' }
+			);
+
+			// Re-seed returns Abbey Road (first breadcrumb matches).
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 0,
+					items: [
+						makeItem({
+							title: 'Abbey Road',
+							subtitle: 'The Beatles',
+							itemKey: 'fresh-a',
+							itemType: 'album'
+						})
+					]
+				})
+			);
+			// Drill into album returns DIFFERENT tracks (second breadcrumb fails).
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 1,
+					items: [
+						makeItem({
+							title: '1. Something Else',
+							itemKey: 'wrong-track',
+							itemType: 'track',
+							hint: 'action_list'
+						})
+					]
+				})
+			);
+
+			render(LibraryPage);
+			await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+			await tick();
+
+			// History truncated to just the album (the deepest successful step).
+			const persisted = get(browseHistoryStore).history;
+			expect(persisted).toHaveLength(1);
+			expect(persisted[0].itemKey).toBe('fresh-a');
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message).toMatch(/Come Together.*no longer/);
+		});
+
+		it('legacy steps without breadcrumb stop replay (no remap possible)', async () => {
+			// pushHistory with no breadcrumb — represents a step persisted
+			// before the v3 schema (sanitized in by the store but with no
+			// way to recover its key).
+			pushHistory(
+				{ hierarchy: 'search', itemKey: 'stale', multiSessionKey: 'library-search' },
+				'beatles'
+			);
+
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 0,
+					items: [makeItem({ title: 'Anything', itemKey: 'fresh' })]
+				})
+			);
+
+			render(LibraryPage);
+			await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+			await tick();
+
+			// Stops at search root, history cleared, toast surfaced.
+			expect(apiBrowse).toHaveBeenCalledTimes(1);
+			expect(get(browseHistoryStore).history).toEqual([]);
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message).toMatch(/breadcrumb/);
+		});
+	});
 });
 
 describe('Library page — navigation actions', () => {
@@ -235,6 +488,164 @@ describe('Library page — navigation actions', () => {
 			expect.objectContaining({ hierarchy: 'browse', itemKey: 'albums' })
 		);
 		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual(['albums']);
+	});
+
+	it('clicking a search result re-seeds search and browses the fresh item key', async () => {
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+
+		setSearchLoading('tori amos');
+		setSearchResults([
+			makeSearchResult({
+				resultType: 'album',
+				itemType: 'album',
+				title: 'Little Earthquakes',
+				subtitle: 'Tori Amos',
+				itemKey: 'old-search-key'
+			})
+		]);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Little Earthquakes',
+						subtitle: 'Tori Amos',
+						itemType: 'album',
+						itemKey: 'fresh-search-key'
+					})
+				]
+			})
+		);
+		await tick();
+
+		screen.getByText('Little Earthquakes').closest('button')?.click();
+
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
+			expect.objectContaining({
+				hierarchy: 'search',
+				input: 'tori amos',
+				popAll: true,
+				multiSessionKey: 'library-search'
+			})
+		);
+		await waitFor(() => {
+			expect(fakeSocket.emit).toHaveBeenCalledWith(
+				'browse:browse',
+				expect.objectContaining({
+					hierarchy: 'search',
+					itemKey: 'fresh-search-key',
+					multiSessionKey: 'library-search'
+				})
+			);
+		});
+		expect(fakeSocket.emit).not.toHaveBeenCalledWith(
+			'browse:browse',
+			expect.objectContaining({ itemKey: 'old-search-key' })
+		);
+		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual(['fresh-search-key']);
+	});
+
+	it('search track quickPlay re-seeds search before action lookup', async () => {
+		setSelectedZone('zone-living-room');
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+
+		setSearchLoading('tori amos');
+		setSearchResults([
+			makeSearchResult({
+				resultType: 'track',
+				itemType: 'track',
+				title: 'Cornflake Girl',
+				subtitle: 'Tori Amos',
+				itemKey: 'old-track-key',
+				hint: 'action_list'
+			})
+		]);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Cornflake Girl',
+						subtitle: 'Tori Amos',
+						itemType: 'track',
+						itemKey: 'fresh-track-key',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [makeItem({ title: 'Play Now', itemKey: 'play-now-key', hint: 'action', isPlayable: true })]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
+		await tick();
+
+		screen.getByText('Cornflake Girl').closest('button')?.click();
+
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(4));
+		expect(apiBrowse.mock.calls[2][1]).toEqual(
+			expect.objectContaining({
+				hierarchy: 'search',
+				itemKey: 'fresh-track-key',
+				zoneId: 'zone-living-room',
+				multiSessionKey: 'library-search'
+			})
+		);
+		expect(apiBrowse.mock.calls[2][1]).not.toEqual(
+			expect.objectContaining({ itemKey: 'old-track-key' })
+		);
+	});
+
+	it('navigates non-track action_list search results instead of quick-playing them', async () => {
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+
+		setSearchLoading('tori amos');
+		setSearchResults([
+			makeSearchResult({
+				resultType: 'album',
+				itemType: 'album',
+				title: 'Boys for Pele',
+				subtitle: 'Tori Amos',
+				itemKey: 'old-album-key',
+				hint: 'action_list'
+			})
+		]);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Boys for Pele',
+						subtitle: 'Tori Amos',
+						itemType: 'album',
+						itemKey: 'fresh-album-key',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+		await tick();
+
+		screen.getByText('Boys for Pele').closest('button')?.click();
+
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+		await waitFor(() => {
+			expect(fakeSocket.emit).toHaveBeenCalledWith(
+				'browse:browse',
+				expect.objectContaining({
+					hierarchy: 'search',
+					itemKey: 'fresh-album-key',
+					multiSessionKey: 'library-search'
+				})
+			);
+		});
 	});
 
 	it('Home (browseNavStore.home) resets history and re-pops to root', async () => {
@@ -380,6 +791,155 @@ describe('Library page — quickPlay', () => {
 		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual(['track-key']);
 	});
 
+	it('falls back to action-menu navigation when the album resolver finds no match', async () => {
+		const playWork = makeItem({ title: 'Play Work', itemKey: 'play-work-key', hint: 'action_list' });
+		const albumRef = makeItem({
+			title: 'On Ocean to Ocean by Tori Amos',
+			subtitle: 'Tori Amos',
+			itemKey: 'album-ref-key',
+			hint: 'action_list'
+		});
+		setUpRoot([playWork, albumRef]);
+		// Resolver search returns no album match — fallback path triggers.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [makeItem({ title: 'Unrelated', itemType: 'album', itemKey: 'other' })]
+			})
+		);
+
+		// Leave zone unselected. If this path accidentally uses quickPlay,
+		// it will bail before emitting because quickPlay requires a zone.
+		setSelectedZone('');
+		render(LibraryPage);
+		const btn = await screen.findByRole('button', { name: 'On Ocean to Ocean by Tori Amos' });
+		btn.click();
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+		await tick();
+
+		// 1st apiBrowse = mount popAll. 2nd apiBrowse = resolver search.
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
+			expect.objectContaining({ hierarchy: 'search', input: 'On Ocean to Ocean' })
+		);
+		// Resolver missed; falls back to navigate(item) → emits browse:browse
+		// with the contextual row's own itemKey, opening Roon's action menu.
+		expect(fakeSocket.emit).toHaveBeenCalledWith(
+			'browse:browse',
+			expect.objectContaining({ hierarchy: 'browse', itemKey: 'album-ref-key' })
+		);
+		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual(['album-ref-key']);
+	});
+
+	it('jumps to the resolved album when the search match is a real album result', async () => {
+		const albumRef = makeItem({
+			title: 'On Ocean to Ocean by Tori Amos',
+			itemKey: 'stale-context-key',
+			hint: 'action_list'
+		});
+		setUpRoot([albumRef]);
+		// Resolver search returns the album under a fresh search itemKey.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'On Ocean to Ocean',
+						subtitle: 'Tori Amos',
+						itemKey: 'fresh-album-key',
+						itemType: 'album'
+					})
+				]
+			})
+		);
+
+		setSelectedZone('zone-a');
+		render(LibraryPage);
+		const btn = await screen.findByRole('button', { name: 'On Ocean to Ocean by Tori Amos' });
+		btn.click();
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+		await tick();
+
+		// Resolver re-seeded the main search session with the album title.
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
+			expect.objectContaining({
+				hierarchy: 'search',
+				input: 'On Ocean to Ocean',
+				multiSessionKey: 'library-search'
+			})
+		);
+		// Navigation goes through search hierarchy with the FRESH key.
+		expect(fakeSocket.emit).toHaveBeenCalledWith(
+			'browse:browse',
+			expect.objectContaining({ hierarchy: 'search', itemKey: 'fresh-album-key' })
+		);
+		// History records the album step with its breadcrumb (so a future
+		// remount can re-walk via breadcrumb).
+		const persisted = get(browseHistoryStore).history;
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0].itemKey).toBe('fresh-album-key');
+		expect(persisted[0].breadcrumb).toEqual(
+			expect.objectContaining({ title: 'On Ocean to Ocean', subtitle: 'Tori Amos', itemType: 'album' })
+		);
+	});
+
+	it('rejects an album match whose subtitle does not contain the parsed artist', async () => {
+		// Same album title, different artist — must not be confused.
+		const albumRef = makeItem({
+			title: 'Greatest Hits by Tori Amos',
+			itemKey: 'stale',
+			hint: 'action_list'
+		});
+		setUpRoot([albumRef]);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Greatest Hits',
+						subtitle: 'Queen',
+						itemKey: 'wrong-album',
+						itemType: 'album'
+					})
+				]
+			})
+		);
+
+		setSelectedZone('zone-a');
+		render(LibraryPage);
+		const btn = await screen.findByRole('button', { name: 'Greatest Hits by Tori Amos' });
+		btn.click();
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+		await tick();
+
+		// Wrong-artist match was rejected → fallback to navigate(item).
+		expect(fakeSocket.emit).toHaveBeenCalledWith(
+			'browse:browse',
+			expect.objectContaining({ hierarchy: 'browse', itemKey: 'stale' })
+		);
+	});
+
+	it('skips the resolver entirely for non-parseable titles (no "by")', async () => {
+		const row = makeItem({
+			title: 'Some Bonus Track',
+			itemKey: 'bonus-key',
+			hint: 'action_list'
+		});
+		setUpRoot([row]);
+
+		setSelectedZone('zone-a');
+		render(LibraryPage);
+		const btn = await screen.findByRole('button', { name: 'Some Bonus Track' });
+		btn.click();
+		await tick();
+
+		// Only the mount popAll — no resolver search.
+		expect(apiBrowse).toHaveBeenCalledTimes(1);
+		expect(fakeSocket.emit).toHaveBeenCalledWith(
+			'browse:browse',
+			expect.objectContaining({ itemKey: 'bonus-key' })
+		);
+	});
+
 	it('pushes a feedback toast and skips REST calls when no zone is selected', async () => {
 		const track = makeItem({ title: 'Play Album', itemKey: 'track-key', hint: 'action_list' });
 		setUpRoot([track]);
@@ -399,31 +959,46 @@ describe('Library page — quickPlay', () => {
 		expect(get(commandFeedbackStore)?.message).toMatch(/select a zone/i);
 	});
 
-	it('does not pop the album view when starting in the search hierarchy', async () => {
-		// Set up a search-rooted state so $browseStore.hierarchy === 'search'.
-		// Then click an action_list item to trigger quickPlay; the popInternal
-		// branch only runs when hierarchyAtStart === 'browse'.
-		pushHistory(
-			{ hierarchy: 'search', itemKey: 's1', multiSessionKey: 'library-search' },
-			'beatles'
-		);
-		// Mount: re-seed search + walk drill step. Drill returns one action_list track.
-		const track = makeItem({ title: 'Play Album', itemKey: 'track-key', hint: 'action_list' });
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 0 })); // search re-seed
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 1, items: [track] })); // drill
-		// quickPlay action lookup + execute
+	it('does not pop the album view after quickPlay from a search result', async () => {
+		setSelectedZone('zone-living-room');
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1)); // mount popAll
+
+		setSearchLoading('beatles');
+		setSearchResults([
+			makeSearchResult({
+				resultType: 'track',
+				itemType: 'track',
+				title: 'Play Album',
+				subtitle: 'The Beatles',
+				itemKey: 'old-track-key',
+				hint: 'action_list'
+			})
+		]);
 		apiBrowse.mockResolvedValueOnce(
 			listResult({
-				level: 2,
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Play Album',
+						subtitle: 'The Beatles',
+						itemType: 'track',
+						itemKey: 'fresh-track-key',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
 				items: [makeItem({ title: 'Play Now', itemKey: 'pn', hint: 'action', isPlayable: true })]
 			})
 		);
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 2 }));
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
 
-		setSelectedZone('zone-living-room');
-		render(LibraryPage);
-		const btn = await screen.findByRole('button', { name: 'Play Album' });
-		btn.click();
+		await tick();
+		screen.getByText('Play Album').closest('button')?.click();
 		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(4));
 		await tick();
 
@@ -446,6 +1021,46 @@ describe('Library page — quickPlay', () => {
 
 		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
 		expect(get(commandFeedbackStore)?.message).toMatch(/Roon timed out/);
+	});
+
+	it('quick-plays explicit "Play …" rows even when Roon supplies a non-track itemType', async () => {
+		// Regression for the C-5 follow-up: shouldQuickPlayActionList must
+		// not block on a non-track itemType when the title is an explicit
+		// play action. Roon may label `Play Work` with itemType `work` or
+		// `action`; either should still trigger the action lookup +
+		// Play Now flow, not fall through to navigate().
+		const playWork = makeItem({
+			title: 'Play Work',
+			itemKey: 'work-key',
+			hint: 'action_list',
+			itemType: 'work'
+		});
+		setUpRoot([playWork]);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [
+					makeItem({ title: 'Play Now', itemKey: 'pn', hint: 'action', isPlayable: true })
+				]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
+
+		setSelectedZone('zone-living-room');
+		render(LibraryPage);
+		const btn = await screen.findByRole('button', { name: 'Play Work' });
+		btn.click();
+
+		// 3 calls = mount popAll + action lookup + Play Now execute.
+		// If the regression resurfaced, only the mount popAll would fire
+		// and `browse:browse` would emit instead.
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
+			expect.objectContaining({ itemKey: 'work-key' })
+		);
+		expect(apiBrowse.mock.calls[2][1]).toEqual(
+			expect.objectContaining({ itemKey: 'pn' })
+		);
 	});
 });
 
@@ -593,5 +1208,160 @@ describe('Library page — restore robustness', () => {
 		await tick();
 		const current = get(browseStore).current;
 		expect(current?.level).toBe(1);
+	});
+});
+
+describe('Library page — track-list classification', () => {
+	function setUpRoot(items: BrowseItem[]) {
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 2, items }));
+	}
+
+	it('renders itemType=track items as a track list even without numeric prefixes', async () => {
+		// Classical movements with no leading digit. Pre-itemType code
+		// classified these as page actions because the regex saw no digit.
+		const items = [
+			makeItem({
+				title: 'Allegro',
+				itemKey: 't1',
+				hint: 'action_list',
+				itemType: 'track'
+			}),
+			makeItem({
+				title: 'Andante',
+				itemKey: 't2',
+				hint: 'action_list',
+				itemType: 'track'
+			}),
+			makeItem({
+				title: 'Play Album',
+				itemKey: 'pa',
+				hint: 'action_list'
+			})
+		];
+		setUpRoot(items);
+
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		await tick();
+
+		// Tracks rendered in an <ol class="track-list">
+		const trackList = document.querySelector('ol.track-list');
+		expect(trackList).not.toBeNull();
+		expect(trackList!.querySelectorAll('li.track-row')).toHaveLength(2);
+
+		// "Play Album" rendered as a page action pill, not a track.
+		expect(screen.getByRole('button', { name: 'Play Album' })).toBeTruthy();
+		expect(screen.queryByText('Allegro')).toBeTruthy();
+	});
+
+	it('falls back to leading-digit regex when items omit itemType', async () => {
+		// Legacy fixture: action_list rows whose only signal of "track-ness"
+		// is a numbered title. The fallback path must still render them in
+		// the track list.
+		const items = [
+			makeItem({ title: '1. First Song', itemKey: 't1', hint: 'action_list' }),
+			makeItem({ title: '2. Second Song', itemKey: 't2', hint: 'action_list' }),
+			makeItem({ title: 'Play Album', itemKey: 'pa', hint: 'action_list' })
+		];
+		setUpRoot(items);
+
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		await tick();
+
+		const trackList = document.querySelector('ol.track-list');
+		expect(trackList).not.toBeNull();
+		expect(trackList!.querySelectorAll('li.track-row')).toHaveLength(2);
+		expect(screen.getByRole('button', { name: 'Play Album' })).toBeTruthy();
+	});
+
+	it('does NOT treat a Work page (action_list-only, no tracks) as a track list', async () => {
+		// Live regression: Composers → Tori Amos → 29 Years returns a Work
+		// page where every item is action_list but none is a real track.
+		// The contextual nav row "On Ocean to Ocean by Tori Amos" must not
+		// be force-numbered into a track row.
+		const items = [
+			makeItem({
+				title: 'Play Work',
+				itemKey: 'pw',
+				hint: 'action_list'
+			}),
+			makeItem({
+				title: 'On Ocean to Ocean by Tori Amos',
+				itemKey: 'al',
+				hint: 'action_list'
+			})
+		];
+		setUpRoot(items);
+
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		await tick();
+
+		// No track list rendered; both items are page actions.
+		expect(document.querySelector('ol.track-list')).toBeNull();
+		expect(screen.getByRole('button', { name: 'Play Work' })).toBeTruthy();
+		expect(screen.getByRole('button', { name: 'On Ocean to Ocean by Tori Amos' })).toBeTruthy();
+	});
+
+	it('classifies itemType case-insensitively (Track / TRACKS still render as tracks)', async () => {
+		// Defensive: BrowseService passes Roon's `item_type` through raw,
+		// and `inferSearchType` already lowercases for comparison. Mirror
+		// that style so a non-canonical casing doesn't silently demote a
+		// track row into a pill button.
+		const items = [
+			makeItem({
+				title: 'First Movement',
+				itemKey: 't1',
+				hint: 'action_list',
+				itemType: 'Track'
+			}),
+			makeItem({
+				title: 'Second Movement',
+				itemKey: 't2',
+				hint: 'action_list',
+				itemType: 'TRACKS'
+			})
+		];
+		setUpRoot(items);
+
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		await tick();
+
+		const trackList = document.querySelector('ol.track-list');
+		expect(trackList).not.toBeNull();
+		expect(trackList!.querySelectorAll('li.track-row')).toHaveLength(2);
+	});
+
+	it('itemType wins over leading-digit regex (numbered title with non-track itemType is a page action)', async () => {
+		// Hypothetical: a page action with a numbered label like "1 hour
+		// continuous mix" that Roon flags as a non-track item. Pre-refactor
+		// the regex would have promoted it into the track list.
+		const items = [
+			makeItem({
+				title: '1. Track One',
+				itemKey: 't1',
+				hint: 'action_list',
+				itemType: 'track'
+			}),
+			makeItem({
+				title: '1 Hour Continuous Mix',
+				itemKey: 'mix',
+				hint: 'action_list',
+				itemType: 'action'
+			})
+		];
+		setUpRoot(items);
+
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		await tick();
+
+		const trackList = document.querySelector('ol.track-list');
+		expect(trackList).not.toBeNull();
+		expect(trackList!.querySelectorAll('li.track-row')).toHaveLength(1);
+		// The non-track itemType row is a page action, not a track row.
+		expect(screen.getByRole('button', { name: '1 Hour Continuous Mix' })).toBeTruthy();
 	});
 });

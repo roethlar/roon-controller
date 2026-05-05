@@ -29,7 +29,10 @@ export {
 	pushHistory,
 	popHistory,
 	popForward,
-	resetHistory
+	resetHistory,
+	replaceHistory,
+	type BrowseBreadcrumb,
+	type BrowseHistoryStep
 } from './browseHistoryStore';
 
 import { loadCoreStatus } from './coreStore';

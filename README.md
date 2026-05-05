@@ -13,7 +13,7 @@ Web-based controller for a local Roon Core, built with Node.js + SvelteKit.
 ## What Works
 
 - Browse and search library with alphabetic jump lists, quick-play, and artwork caching
-- Search result drill-down uses an isolated Roon browse session to avoid corrupting normal browse state
+- Search result drill-down uses an isolated Roon browse session and remaps fresh result keys after re-seeding
 - Real-time zone and now-playing updates via Socket.IO (hydrated on page load)
 - Transport controls: play/pause, previous/next, seek, volume
 - Queue: per-zone subscription, track listing with artwork, play-from-here, shuffle/loop/auto-radio

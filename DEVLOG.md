@@ -1,6 +1,201 @@
 # Dev Log
 
-## 2026-05-03 (latest) — PORT lookup safety + append-on-missing
+## 2026-05-05 (latest) — Album-jump resolver for "X by Y" contextual rows (Phase B)
+
+The action-list quickPlay guard stopped contextual rows like `On Ocean to Ocean by Tori Amos` from auto-playing, but the resulting UX was a play-action menu (`Play Now / Add Next / Queue / Start Radio`), not the album page the user actually wanted. This adds a best-effort album-jump resolver as a third branch in `handleItemClick`.
+
+### Flow
+- `handleItemClick` for a non-quickPlay action_list row now calls `parseAlbumByArtist(item.title)`.
+- A successful parse triggers `resolveAlbumOrNavigate(item)`:
+  1. Re-seed the user's main search session (`SEARCH_SESSION_KEY`) with the parsed album title. (Side effect: the search panel reflects this lookup.)
+  2. Scan results for an `itemType === 'album'` match whose title equals the parsed album (case-insensitive) AND whose subtitle contains the parsed artist (case-insensitive substring — handles `"Tori Amos"` matching `"Tori Amos"` or `"Tori Amos / Various"`).
+  3. On match: commit the hierarchy switch (`setSearchLoading`, `resetHistory`), `browse()` to the album with the FRESH search itemKey + breadcrumb. Mirrors `navigateSearchResult` semantics.
+  4. On miss / search error: fall back to `navigate(item)` (the historical action-menu behavior).
+- Unparseable titles skip the resolver entirely — zero added latency for normal browse rows.
+
+### Hierarchy-switch ordering bug caught during test
+First implementation called `setBrowseLoading('search')` upfront. When the resolver missed and fell back to `navigate(item)`, the store's hierarchy was already `'search'`, so navigate sent the contextual row's browse-hierarchy itemKey against the search session — wrong session for the key. Fixed by deferring the hierarchy commit until after a confirmed match: `setBrowseLoading()` (no hierarchy arg) shows the spinner without changing context; only the success path calls `setSearchLoading(parsed.album)`.
+
+### Tests
+- 4 new Library page tests covering: resolver-miss → action-menu fallback, resolver-match → search-hierarchy navigation with breadcrumb persisted, wrong-artist match rejection, unparseable title skips the resolver.
+- The pre-existing `On Ocean to Ocean by Tori Amos` test was rewritten to mock the resolver search; it now explicitly verifies the fallback path rather than implicitly asserting "no resolver exists."
+
+### Trade-offs / known limitations
+- The resolver clobbers the user's main search query (the search panel now shows the album title). The cleaner alternative — a dedicated side multi-session — was rejected because the resulting itemKey is only valid in that session, forcing a second re-seed before navigation.
+- Title parsing only handles the `<album> by <artist>` pattern. Other contextual formats (`Performed by X`, `From <album>`, etc.) skip the resolver and use the historical action-menu navigation.
+- Match strictness: title must equal exactly (case-insensitive); subtitle must contain artist as a substring. Multi-artist subtitles work; missing-subtitle albums won't match (intentional — without an artist anchor, false matches are likely).
+- Live verification still required — without a live Roon Core I can't confirm Roon's search-by-album always returns the target album as a top-level result. If it doesn't, the fallback path keeps behavior unchanged from before this resolver shipped.
+
+## 2026-05-05 — Robust deep search restore via breadcrumb metadata (Phase A)
+
+Search-rooted browse history previously dropped all drill-down steps on route remount because the persisted `item_key`s are stale (Roon mints fresh keys on every search re-seed). The user landed at the search root and lost their album/track context. Phase A persists `title/subtitle/imageKey/itemType` per step and uses it to remap stale keys against freshly-loaded results at each level.
+
+### Persisted shape change
+- `BrowseHistoryStep = BrowseOptions & { breadcrumb?: BrowseBreadcrumb }` — the step IS-A request, so existing test assertions (`s.itemKey`) keep working.
+- `BrowseBreadcrumb = { title?, subtitle?, imageKey?, itemType? }` — content-keyed fields chosen for stability across search re-seeds. itemKey deliberately excluded (it's exactly what we're trying to recover).
+- Storage key bumped `v2 → v3`. v2 entries on the old key are ignored on first load (sessionStorage is per-tab, so the orphan is cleaned up automatically).
+- New `replaceHistory(steps)` primitive — used by `restoreBrowse` to rewrite persisted history with the fresh keys it just walked, so a subsequent Forward (after Back) doesn't send Roon stale keys minted by a prior session.
+
+### Capture
+- `browse(options, opts)` accepts an optional `breadcrumb`. All three `recordHistory: true` callsites (`navigate`, `navigateSearchResult`, `quickPlay` fallback) pass `makeBreadcrumb(item)`.
+- `forward()` strips `breadcrumb` before re-issuing — it's a restore-time concern, not part of the Roon browse request payload.
+
+### Restore (search-rooted with breadcrumbs)
+1. Re-seed search with the saved query (unchanged).
+2. For each saved step, match its breadcrumb against current `last.items`. On match, drill in with the FRESH itemKey. On miss / no breadcrumb, stop and surface a feedback toast (`"Restore stopped: <title> no longer in results"` or `"breadcrumb metadata missing"`).
+3. `replaceHistory(rebuilt)` writes the successfully-walked path (with fresh itemKeys) back to sessionStorage.
+
+Browse-rooted restore is unchanged. Mismatched/missing breadcrumb is treated as a graceful stop, not a failure — the user lands at whatever level we got to and can continue manually.
+
+### Tests
+- 5 new Library page tests covering: one-step replay via breadcrumb (asserts FRESH key used, not the stale persisted one), two-step sequential replay, breadcrumb mismatch stops + toasts, partial-success truncation (deepest matched step kept), legacy step without breadcrumb stops with the breadcrumb-missing toast.
+- Existing browse history store tests already use `s.itemKey` which still works on the step shape — only the storage key constant needed updating to `v3`.
+
+### Validation
+- `npm --prefix ui test` — 75 → 83 UI tests passing.
+- `npm --prefix ui run check` — 0 errors / 0 warnings.
+- `npm --prefix ui run build` — pass.
+- `npm run lint` — clean.
+
+## 2026-05-04 — Track-list classification by itemType (C-5)
+
+The `/^\d/` title-regex used to partition tracks vs page actions on action_list pages was the last classification heuristic still working from title shape alone. The action-list quickPlay incident gave us live evidence the regex was wrong: a "Work" page (`Play Work` + `On Ocean to Ocean by Tori Amos`) triggered the track-list path because every item was `action_list` — even though neither item was a track. Conversely, classical movements with no leading digit would have rendered as page actions instead of tracks under the old regex.
+
+`BrowseService.toBrowseItem()` already exposes `itemType` (Roon's `item_type` / `item_subtype`), and the existing test fixtures use `itemType: 'track'`. C-5 was logged "defer until live evidence rendering is wrong"; we now have that evidence.
+
+### Fix
+- `+page.svelte` now classifies each row through `isTrackItem(item)`: prefer `item.itemType === 'track'` when present, fall back to `/^\d/` only when `itemType` is absent.
+- `isTrackList` requires both `every(hint === 'action_list')` AND `some(isTrackItem)`. Pure action_list pages with no real tracks (Work pages, work-with-action-only pages) no longer flip into the track layout.
+- `pageActions` / `trackItems` partitioning rewritten on top of `isTrackItem`.
+- `shouldQuickPlayActionList`: track itemType is the only positive shortcut. For any other (or no) itemType, the title heuristics decide — `/^play\b/i` is itemType-agnostic so explicit play actions like `Play Work` quick-play regardless of the type Roon supplies; the numeric-prefix `/^\d/` fallback is still gated on absent itemType so a non-track itemType can't accidentally promote a numbered title into a track row.
+- `normalizeItemType()` lowercases `itemType` for comparison and `isTrackType()` accepts `track` / `tracks`, matching the defensive style already used by `BrowseService.inferSearchType`.
+
+### Behavior matrix
+- Real track list with `itemType=track`: rendered as track list (no change visually for numbered tracks; classical/un-numbered tracks now render correctly instead of as a wall of pill buttons).
+- Real track list without `itemType` (legacy Roon payloads): unchanged — fallback regex preserves prior behavior.
+- "Work" page (action_list-only, no track items): no longer mis-classified as track list; both rows render as page-action pills (same visual result as before in this specific case, but no longer mis-categorized).
+- Numbered title with non-track `itemType` (e.g. `1 Hour Continuous Mix` flagged as `action`): the `itemType` wins — treated as a page action, not promoted into the track list.
+
+### Tests
+- 6 new Library page tests (25 → 31; UI total 69 → 75):
+  - Tracks with `itemType=track` and no leading digit render as a track list.
+  - Legacy fallback: `/^\d/` titles without `itemType` still partition correctly.
+  - Work-page case: both action_list rows render as page actions, no `<ol class="track-list">` rendered.
+  - `itemType` precedence: numbered title with `itemType=action` is a page action, not a track row.
+  - Case-insensitive itemType: `Track` / `TRACKS` still classify as tracks.
+  - `Play Work` with `itemType=work` still triggers the action-lookup → Play Now flow (regression coverage for the Codex follow-up below).
+
+### Validation
+- `npm --prefix ui test -- page.test.ts` — 31 Library page tests passed.
+- `npm --prefix ui test` — 75 UI tests passed.
+- `npm --prefix ui run check` — 0 errors / 0 warnings.
+- `npm --prefix ui run build` — pass.
+- `npm run lint` — clean.
+
+### Codex review iterations
+1. **Non-track itemType blocked explicit play actions.** First version of `shouldQuickPlayActionList` returned `false` for any non-track itemType *before* checking `/^play\b/i`, so `Play Work` rows tagged `itemType: 'work'` or `'action'` would have fallen through to `navigate()`. Reworked: track itemType is now the only positive itemType shortcut; everything else falls back to title heuristics, and `/^play\b/i` is itemType-agnostic. Added the `Play Work` + `itemType=work` regression test listed above.
+2. **itemType comparisons were case-sensitive.** `BrowseService.toBrowseItem()` passes `item_type` through raw, while `inferSearchType` already lowercases for comparison. Added `normalizeItemType()` + `isTrackType()` so `Track` / `TRACKS` payloads classify correctly. Added a case-normalization test in the track-list classification block.
+
+## 2026-05-04 — Action-list quickPlay guard
+
+Live composer/work browse showed a dangerous routing bug. Roon returned the work page for `29 Years` with two `action_list` buttons:
+
+```text
+Play Work
+On Ocean to Ocean by Tori Amos
+```
+
+Clicking `On Ocean to Ocean by Tori Amos` should not immediately start playback, but the UI treated every `hint: "action_list"` item as quickPlay. It browsed into the item's action menu, picked the first `Play Now`, and executed it. That made contextual buttons cycle through play actions.
+
+### Fix
+- `handleItemClick()` now quick-plays only action-list items that are explicit play actions (`/^Play\b/i`) or numbered track rows.
+- Other action-list items now use normal browse navigation, so `On Ocean to Ocean by Tori Amos` opens its Roon action menu instead of executing `Play Now`.
+- This is still not a true album-page jump; the live Roon browse payload for `On Ocean to Ocean by Tori Amos` exposes a playback action menu (`Play Now`, `Add Next`, `Queue`, `Start Radio`), not a direct album browse result.
+
+### Tests
+- Added Library page coverage using the exact `On Ocean to Ocean by Tori Amos` label. The test leaves the zone unselected and verifies the click emits `browse:browse`; if it regressed to quickPlay it would bail with "Select a zone" and emit nothing.
+
+### Validation
+- `npm --prefix ui test -- page.test.ts` — 25 Library page tests passed.
+- `npm --prefix ui run check` — 0 errors / 0 warnings.
+- `npm --prefix ui test` — 69 UI tests passed.
+- `npm --prefix ui run build` — pass.
+- `git diff --check` — clean.
+
+## 2026-05-03 — Search restore stale-itemKey guard
+
+Live navigation produced a "Restore stopped..." browse error. The journal showed restore re-seeding search for query `tori`, receiving fresh keys like `32:2`, then replaying a persisted stale search drill key `29:2`; Roon returned `InvalidItemKey`.
+
+### Fix
+- `restoreBrowse()` no longer replays persisted search drill steps after re-seeding search.
+- Search restore now lands at the fresh search root for the saved query and clears the stale search history.
+- Browse-rooted history restore is unchanged and still walks saved steps, because browse keys remain valid within the restored browse stack.
+
+### Rationale
+Roon mints fresh search `item_key`s on every search re-seed. The current persisted history stores only `itemKey`, not stable per-step metadata, so there is no safe way to remap arbitrary deep search drill paths during route remount. Clearing stale search drill history avoids false browse errors while preserving the active query/search root.
+
+### Tests
+- Updated Library page restore coverage to assert search restore re-seeds once, does not use the stale saved key, renders the fresh search root, and clears history.
+- Updated quickPlay search-context coverage so it no longer depends on unsafe search-history replay.
+
+### Validation
+- `npm --prefix ui test -- page.test.ts` — 24 Library page tests passed.
+- `npm --prefix ui run check` — 0 errors / 0 warnings.
+- `npm --prefix ui test` — 68 UI tests passed.
+- `npm --prefix ui run build` — pass.
+- `bash -n scripts/install.sh` — clean.
+- `git diff --check` — clean.
+
+## 2026-05-03 — Linux installer URL host fallback
+
+Live reinstall completed, but the final summary failed to render a host:
+
+```text
+./scripts/install.sh: line 287: hostname: command not found
+URL        : http://:5173
+```
+
+### Fix
+- Replaced the inline `hostname -I | awk ...` summary expression with `detect_url_host()`.
+- The Linux installer now tries:
+  1. `ip -4 route get 1.1.1.1` and extracts the `src` address.
+  2. `hostname -I` if `hostname` exists.
+  3. `localhost` as a final safe fallback.
+- The `PORT=5173` part was accurate for this VM: `/opt/roon-controller/.env` currently contains `PORT=5173`, and the installer now intentionally preserves existing `.env` values when `--port` is not passed.
+
+### Validation
+- `bash -n scripts/install.sh` — clean.
+- Standalone smoke of `detect_url_host()` under `set -euo pipefail` with no `hostname` available returned `localhost` and did not abort.
+
+## 2026-05-03 — Search result stale-itemKey hotfix
+
+Live redeploy exposed a real search regression: clicking a search result immediately returned a browse error. The service journal showed the sequence:
+
+1. Search query re-seeded `hierarchy: "search"` with `pop_all: true`.
+2. The UI then browsed the `item_key` from the pre-reset search result row.
+3. Roon returned `InvalidItemKey` because the re-seeded search session minted fresh result keys.
+
+### Fix
+- Search-result navigation still starts a clean thread, but now remaps the clicked row against the freshly re-seeded search result list before emitting `browse:browse`.
+- Search quickPlay uses the same remap before action-list lookup, so track results no longer look up stale keys.
+- Search result quickPlay is limited to `resultType === "track" && hint === "action_list"`; album/artist search rows with structural `action_list` hints now navigate instead of trying to play.
+
+### Tests
+- Added Library page integration coverage for:
+  - Search album click → re-seed search → browse with fresh `itemKey` (not stale rendered key).
+  - Search track quickPlay → re-seed search → action lookup with fresh `itemKey`.
+  - Non-track `action_list` search result → navigate, not quickPlay.
+
+### Validation
+- `npm --prefix ui test -- page.test.ts` — 24 Library page tests passed.
+- `npm --prefix ui run check` — 0 errors / 0 warnings.
+- `npm --prefix ui test` — 68 UI tests passed.
+- `npm run lint` — clean.
+- `npm --prefix ui run build` — pass.
+- `npm run build` — pass.
+- `git diff --check` — clean.
+
+## 2026-05-03 — PORT lookup safety + append-on-missing
 
 Codex caught two real bugs in the previous PORT-honesty fix:
 
@@ -88,7 +283,11 @@ Added 10 more Library page tests covering the remaining open coverage in the tes
 - "Load more" calls apiBrowseLoad with offset = current loaded count and count clamped to ≤ 100; appended items extend the visible list.
 
 ### A note worth flagging for future test writers
-Single-item action_list payloads cause the page to render as a `track-list` view (because `isTrackList` checks "all items are action_list"). In that view, titles starting with a digit get the leading `\d+\.\s*` stripped via `trackTitle()`, so the rendered text differs from the raw item title. Use action_list items with non-digit titles ("Play Album") so they render as page-action pills with predictable text matching.
+**Superseded by C-5 (2026-05-04 — Track-list classification by itemType)** — `isTrackList` now also requires `some(isTrackItem)`, so a single non-track action_list item no longer flips the layout into the track-list view. The historical caveat below is preserved for context on tests written before the refactor.
+
+> Single-item action_list payloads cause the page to render as a `track-list` view (because `isTrackList` checks "all items are action_list"). In that view, titles starting with a digit get the leading `\d+\.\s*` stripped via `trackTitle()`, so the rendered text differs from the raw item title. Use action_list items with non-digit titles ("Play Album") so they render as page-action pills with predictable text matching.
+
+Post-C-5 guidance for new tests: a row only enters the track layout when at least one item carries `itemType: 'track'` (or, in the legacy fallback, has a leading digit). Use page-action titles like "Play Album" or attach `itemType: 'track'` deliberately when you want a row in the track list.
 
 ### Validation
 - `npm run build` — pass

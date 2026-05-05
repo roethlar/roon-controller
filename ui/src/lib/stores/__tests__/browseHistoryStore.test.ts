@@ -11,7 +11,7 @@ async function importStore() {
 	return await import('../browseHistoryStore');
 }
 
-const STORAGE_KEY = 'roon-controller-browse-history-v2';
+const STORAGE_KEY = 'roon-controller-browse-history-v3';
 
 const browse = (k: string): BrowseOptions => ({ hierarchy: 'browse', itemKey: k });
 const search = (k: string): BrowseOptions => ({ hierarchy: 'search', itemKey: k });
@@ -232,9 +232,9 @@ describe('browseHistoryStore', () => {
 		});
 
 		it('ignores entries from older schema (different storage key)', async () => {
-			// v1 (unversioned) entries — newer reader uses v2 key.
+			// v1/v2 entries — newer reader uses v3 key.
 			sessionStorage.setItem(
-				'roon-controller-browse-history',
+				'roon-controller-browse-history-v2',
 				JSON.stringify({ history: [browse('legacy')], forward: [] })
 			);
 			const store = await importStore();

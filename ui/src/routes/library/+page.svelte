@@ -20,7 +20,10 @@
 		pushHistory,
 		popHistory,
 		popForward,
-		resetHistory
+		resetHistory,
+		replaceHistory,
+		type BrowseBreadcrumb,
+		type BrowseHistoryStep
 	} from '$lib/stores';
 	import { getSocket } from '$lib/socket/client';
 	import { browse as apiBrowse, browseLoad as apiBrowseLoad } from '$lib/api/client';
@@ -60,6 +63,20 @@
 		};
 	});
 
+	function matchBreadcrumb(items: BrowseItem[], crumb: BrowseBreadcrumb): BrowseItem | undefined {
+		// Match on every breadcrumb field that's present. Title must match
+		// exactly; subtitle/imageKey/itemType act as disambiguators when
+		// multiple rows share a title (e.g. albums with the same name by
+		// different artists).
+		return items.find((candidate) => {
+			if (crumb.title && candidate.title !== crumb.title) return false;
+			if (crumb.subtitle && candidate.subtitle !== crumb.subtitle) return false;
+			if (crumb.imageKey && candidate.imageKey !== crumb.imageKey) return false;
+			if (crumb.itemType && candidate.itemType !== crumb.itemType) return false;
+			return true;
+		});
+	}
+
 	async function restoreBrowse(state: BrowseHistoryState): Promise<void> {
 		const { history, searchQuery } = state;
 		// The hierarchy we end up in is the hierarchy of the deepest saved
@@ -91,7 +108,11 @@
 				}
 				// Re-seed the Roon search session by replaying the original
 				// query. This puts the search stack at the result-list level
-				// so the saved drill-down item_keys resolve correctly.
+				// so the saved drill-down item_keys would resolve — except
+				// they don't, because Roon mints fresh keys on each re-seed.
+				// The breadcrumb walk below recovers the new keys by
+				// matching saved title/subtitle/imageKey/itemType against
+				// the freshly-loaded results at each level.
 				last = await apiBrowse(fetch, {
 					hierarchy: 'search',
 					input: searchQuery,
@@ -99,16 +120,68 @@
 					multiSessionKey: SEARCH_SESSION_KEY,
 					popAll: true
 				});
-				// Make the search query visible in the Search component again
-				// so subsequent result clicks know which query to reset to.
 				setSearchLoading(searchQuery);
-			} else {
-				last = await apiBrowse(fetch, {
-					hierarchy: 'browse',
-					zoneId: $selectedZoneStore || undefined,
-					popAll: true
-				});
+
+				// Walk each saved step using its breadcrumb. We rebuild a
+				// fresh history list with the new itemKeys so subsequent
+				// Forward navigation (after Back) doesn't send Roon stale
+				// keys minted by a prior search session.
+				const rebuilt: BrowseHistoryStep[] = [];
+				let truncated = false;
+				let stopReason: string | undefined;
+				for (const step of history) {
+					if (!step.breadcrumb) {
+						// Legacy step with no breadcrumb — can't remap
+						// safely. Stop here and let the user re-navigate.
+						truncated = true;
+						stopReason = 'breadcrumb metadata missing';
+						break;
+					}
+					const match = matchBreadcrumb(last.items, step.breadcrumb);
+					if (!match?.itemKey) {
+						truncated = true;
+						stopReason = `"${step.breadcrumb.title}" no longer in results`;
+						break;
+					}
+					try {
+						last = await apiBrowse(fetch, {
+							hierarchy: step.hierarchy || 'search',
+							itemKey: match.itemKey,
+							zoneId: step.zoneId ?? ($selectedZoneStore || undefined),
+							multiSessionKey: step.multiSessionKey ?? SEARCH_SESSION_KEY
+						});
+						rebuilt.push({
+							...step,
+							itemKey: match.itemKey
+						});
+					} catch (err) {
+						truncated = true;
+						stopReason = (err as Error).message;
+						break;
+					}
+				}
+
+				// Replace persisted history with the successfully-walked
+				// path so its itemKeys reflect the current Roon session.
+				replaceHistory(rebuilt);
+
+				if (truncated && stopReason) {
+					pushCommandFeedback({
+						source: 'browse',
+						command: 'browse:restore',
+						message: `Restore stopped: ${stopReason}.`
+					});
+				}
+
+				setBrowseResult(last, targetHierarchy);
+				return;
 			}
+
+			last = await apiBrowse(fetch, {
+				hierarchy: 'browse',
+				zoneId: $selectedZoneStore || undefined,
+				popAll: true
+			});
 
 			// Walk each saved step. If any step fails (e.g. stale item_key
 			// after a Roon Core restart), stop where we are and surface a
@@ -120,6 +193,9 @@
 					zoneId: step.zoneId ?? ($selectedZoneStore || undefined),
 					hierarchy: step.hierarchy || 'browse'
 				};
+				// Strip breadcrumb before sending to Roon — it's a
+				// restore-time concern, not part of the browse request.
+				delete (stepWithZone as Partial<BrowseHistoryStep>).breadcrumb;
 				try {
 					last = await apiBrowse(fetch, stepWithZone);
 				} catch (err) {
@@ -183,7 +259,22 @@
 		return $browseStore.hierarchy === 'search' ? SEARCH_SESSION_KEY : undefined;
 	}
 
-	function browse(options: BrowseOptions, opts: { recordHistory?: boolean } = {}) {
+	function makeBreadcrumb(item: BrowseItem): BrowseBreadcrumb {
+		// Capture only stable, content-keyed fields. itemKey is intentionally
+		// excluded — search itemKeys mint fresh on each search re-seed, which
+		// is exactly the staleness this breadcrumb is meant to recover from.
+		return {
+			title: item.title || undefined,
+			subtitle: item.subtitle,
+			imageKey: item.imageKey,
+			itemType: item.itemType
+		};
+	}
+
+	function browse(
+		options: BrowseOptions,
+		opts: { recordHistory?: boolean; breadcrumb?: BrowseBreadcrumb } = {}
+	) {
 		const scopedOptions: BrowseOptions = {
 			...options,
 			zoneId: options.zoneId ?? ($selectedZoneStore || undefined)
@@ -195,7 +286,11 @@
 		if (opts.recordHistory) {
 			// Capture the active search query alongside any search-derived
 			// step so a later restore can re-seed the Roon search session.
-			pushHistory(scopedOptions, $browseStore.lastSearchQuery);
+			// The breadcrumb (when supplied) lets restore re-walk a deep
+			// search drill: each step's saved itemKey is stale after a
+			// search re-seed, so we match the breadcrumb against fresh
+			// results to recover the new key.
+			pushHistory(scopedOptions, $browseStore.lastSearchQuery, opts.breadcrumb);
 		}
 	}
 
@@ -222,7 +317,10 @@
 	function forward() {
 		const next = popForward();
 		if (next) {
-			browse(next, { recordHistory: false });
+			// Strip breadcrumb before re-issuing — it's a restore-time
+			// concern, not part of the Roon browse request.
+			const { breadcrumb: _drop, ...request } = next;
+			browse(request, { recordHistory: false });
 		}
 	}
 
@@ -274,7 +372,7 @@
 			zoneId: $selectedZoneStore || undefined,
 			multiSessionKey: activeMultiSessionKey()
 		};
-		browse(opts, { recordHistory: true });
+		browse(opts, { recordHistory: true, breadcrumb: makeBreadcrumb(item) });
 	}
 
 	/** Open an item's action menu (e.g. Play Now / Play Next / Add to Queue). */
@@ -289,7 +387,7 @@
 	}
 
 	function handleSearchResultClick(result: SearchResult) {
-		if (result.hint === 'action_list') {
+		if (result.resultType === 'track' && result.hint === 'action_list') {
 			void quickPlay(result, { hierarchy: 'search', multiSessionKey: SEARCH_SESSION_KEY, resetSearch: true });
 		} else {
 			void navigateSearchResult(result);
@@ -310,11 +408,11 @@
 		});
 	}
 
-	async function resetSearchSession(): Promise<void> {
+	async function resetSearchSession(): Promise<BrowseResult | null> {
 		const query = $browseStore.lastSearchQuery;
-		if (!query) return;
+		if (!query) return null;
 
-		await apiBrowse(fetch, {
+		return apiBrowse(fetch, {
 			hierarchy: 'search',
 			input: query,
 			zoneId: $selectedZoneStore || undefined,
@@ -323,16 +421,48 @@
 		});
 	}
 
+	function optionalFieldMatches(left?: string, right?: string): boolean {
+		return !left || !right || left === right;
+	}
+
+	function semanticType(item: BrowseItem): string | undefined {
+		const resultType = (item as BrowseItem & { resultType?: SearchResult['resultType'] }).resultType;
+		return item.itemType ?? (resultType && resultType !== 'unknown' ? resultType : undefined);
+	}
+
+	function searchItemMatches(candidate: BrowseItem, original: BrowseItem): boolean {
+		if (candidate.title !== original.title) return false;
+		if (!optionalFieldMatches(candidate.subtitle, original.subtitle)) return false;
+		if (!optionalFieldMatches(candidate.hint, original.hint)) return false;
+		if (!optionalFieldMatches(candidate.imageKey, original.imageKey)) return false;
+		if (!optionalFieldMatches(semanticType(candidate), semanticType(original))) return false;
+		return true;
+	}
+
+	async function freshenSearchItem(item: BrowseItem): Promise<BrowseItem> {
+		const freshSearch = await resetSearchSession();
+		if (!freshSearch) return item;
+
+		const freshItem = freshSearch.items.find((candidate) => candidate.itemKey && searchItemMatches(candidate, item));
+		if (!freshItem?.itemKey) {
+			throw new Error(`Search result is no longer available: ${item.title}`);
+		}
+		return { ...item, itemKey: freshItem.itemKey };
+	}
+
 	async function navigateSearchResult(result: SearchResult): Promise<void> {
 		if (!result.itemKey) return;
 
 		setBrowseLoading('search');
 		try {
-			await resetSearchSession();
+			const target = await freshenSearchItem(result);
 
 			// Each search-result click starts a new navigation thread:
 			//   - prior browse history is from a different Roon hierarchy
 			//   - prior search drill history is from a different sub-tree
+			// Search re-seeding mints fresh Roon item_keys, so browse the
+			// matched result from the new session rather than the stale key
+			// attached to the rendered search row.
 			// Restore-on-remount must replay only this thread, so reset
 			// before pushing. The store's hierarchy-switch guard would
 			// catch the browse-history case anyway, but doing it here
@@ -342,11 +472,11 @@
 
 			const opts: BrowseOptions = {
 				hierarchy: 'search',
-				itemKey: result.itemKey,
+				itemKey: target.itemKey,
 				zoneId: $selectedZoneStore || undefined,
 				multiSessionKey: SEARCH_SESSION_KEY
 			};
-			browse(opts, { recordHistory: true });
+			browse(opts, { recordHistory: true, breadcrumb: makeBreadcrumb(target) });
 		} catch (err) {
 			setBrowseError(`Browse failed: ${(err as Error).message}`);
 			pushCommandFeedback({
@@ -377,15 +507,16 @@
 		const hierarchyAtStart = options.hierarchy ?? $browseStore.hierarchy;
 		quickPlayInFlight = true;
 		try {
+			let target = item;
 			if (options.resetSearch) {
-				await resetSearchSession();
+				target = await freshenSearchItem(item);
 			}
 
 			// Browse into the track to get its action list (Play Now, Play Next, etc.).
 			// REST keeps this helper from broadcasting intermediate action-list state.
 			const actionResult = await apiBrowse(fetch, {
 				hierarchy: hierarchyAtStart,
-				itemKey: item.itemKey,
+				itemKey: target.itemKey,
 				zoneId,
 				multiSessionKey: options.multiSessionKey
 			});
@@ -402,11 +533,11 @@
 				}
 				const fallbackOpts: BrowseOptions = {
 					hierarchy: hierarchyAtStart,
-					itemKey: item.itemKey,
+					itemKey: target.itemKey,
 					zoneId,
 					multiSessionKey: options.multiSessionKey
 				};
-				browse(fallbackOpts, { recordHistory: true });
+				browse(fallbackOpts, { recordHistory: true, breadcrumb: makeBreadcrumb(target) });
 				return;
 			}
 
@@ -438,34 +569,180 @@
 		if (!item.itemKey) return;
 
 		if (item.hint === 'action_list') {
-			void quickPlay(item, { multiSessionKey: activeMultiSessionKey() });
+			if (shouldQuickPlayActionList(item)) {
+				void quickPlay(item, { multiSessionKey: activeMultiSessionKey() });
+			} else if (parseAlbumByArtist(item.title)) {
+				// Contextual rows like "On Ocean to Ocean by Tori Amos"
+				// land on a play-action menu in Roon, not the album page.
+				// Try to resolve the album via search; fall back to the
+				// existing navigate (action menu) if resolution fails.
+				void resolveAlbumOrNavigate(item);
+			} else {
+				navigate(item);
+			}
 			return;
 		}
 
 		navigate(item);
 	}
 
-	/** True when the current level is a track listing (all items are action_list). */
-	const isTrackList = $derived(
-		!!$browseStore.current &&
-		$browseStore.current.items.length > 0 &&
-		$browseStore.current.items.every((i) => i.hint === 'action_list')
-	);
+	/**
+	 * Parse "<album> by <artist>" titles. Roon uses this format for
+	 * contextual rows on Work / Composer pages where the row points to a
+	 * play-action menu rather than an album browse page. Returning the
+	 * parsed pair lets `resolveAlbumOrNavigate` look up the album via
+	 * search and jump to the album page directly.
+	 */
+	function parseAlbumByArtist(title: string): { album: string; artist: string } | null {
+		const m = title.match(/^(.+?)\s+by\s+(.+?)\s*$/i);
+		if (!m) return null;
+		const album = m[1].trim();
+		const artist = m[2].trim();
+		if (!album || !artist) return null;
+		return { album, artist };
+	}
+
+	async function resolveAlbumOrNavigate(item: BrowseItem): Promise<void> {
+		const parsed = parseAlbumByArtist(item.title);
+		if (!parsed) {
+			navigate(item);
+			return;
+		}
+
+		// Show loading without committing the hierarchy switch — a
+		// failed resolver must be able to fall back to navigate(item)
+		// in the original hierarchy. setBrowseLoading('search') here
+		// would switch the store's hierarchy and the fallback would
+		// then send the contextual row's browse-hierarchy itemKey
+		// against the search session.
+		setBrowseLoading();
+
+		let searchResult: BrowseResult;
+		try {
+			// Re-seed the user's main search session with the album title.
+			// Side effect: the search panel reflects this lookup. Acceptable
+			// trade-off — the alternative (a side multi-session) would
+			// produce a fresh itemKey that's only valid in that session,
+			// forcing a second re-seed before navigation.
+			searchResult = await apiBrowse(fetch, {
+				hierarchy: 'search',
+				input: parsed.album,
+				zoneId: $selectedZoneStore || undefined,
+				multiSessionKey: SEARCH_SESSION_KEY,
+				popAll: true
+			});
+		} catch {
+			navigate(item);
+			return;
+		}
+
+		const albumLower = parsed.album.toLowerCase();
+		const artistLower = parsed.artist.toLowerCase();
+		const match = searchResult.items.find((candidate) => {
+			if (!candidate.itemKey) return false;
+			if ((candidate.itemType ?? '').toLowerCase() !== 'album') return false;
+			if (candidate.title.toLowerCase() !== albumLower) return false;
+			const subtitle = (candidate.subtitle ?? '').toLowerCase();
+			return subtitle.includes(artistLower);
+		});
+
+		if (!match?.itemKey) {
+			// No album match; fall back to the contextual row's own
+			// action menu — same behavior as the pre-resolver code.
+			navigate(item);
+			return;
+		}
+
+		// Match confirmed — commit the hierarchy switch and land on the
+		// album as a fresh search-rooted thread (mirrors
+		// `navigateSearchResult`). The prior browse stack is intentionally
+		// cleared; Back walks search history from here.
+		setSearchLoading(parsed.album);
+		resetHistory();
+		browse(
+			{
+				hierarchy: 'search',
+				itemKey: match.itemKey,
+				zoneId: $selectedZoneStore || undefined,
+				multiSessionKey: SEARCH_SESSION_KEY
+			},
+			{ recordHistory: true, breadcrumb: makeBreadcrumb(match) }
+		);
+	}
+
+	/**
+	 * Normalize a Roon `item_type` / `item_subtype` for comparison.
+	 * BrowseService passes the raw value through; Roon is mostly lowercase
+	 * singular but `inferSearchType` already handles plurals defensively.
+	 * Match that style here so a `Track` / `tracks` payload doesn't slip
+	 * through as untyped.
+	 */
+	function normalizeItemType(value: string | undefined): string | undefined {
+		return value ? value.toLowerCase() : undefined;
+	}
+
+	function isTrackType(value: string | undefined): boolean {
+		const t = normalizeItemType(value);
+		return t === 'track' || t === 'tracks';
+	}
+
+	/**
+	 * Classify an action_list item as a track. Roon usually sets
+	 * `item_type === 'track'` on real track rows; when it does, trust that
+	 * over the leading-digit heuristic (some tracklists — e.g. classical
+	 * movements — have no numeric prefix). Fall back to the regex only when
+	 * the payload omits `item_type`, so older Roon responses keep working.
+	 */
+	function isTrackItem(item: BrowseItem): boolean {
+		if (item.itemType) return isTrackType(item.itemType);
+		return /^\d/.test(item.title);
+	}
+
+	function shouldQuickPlayActionList(item: BrowseItem): boolean {
+		// Track rows always quick-play, regardless of title shape.
+		if (isTrackType(item.itemType)) return true;
+		// For any other itemType (or none), fall back to title heuristics.
+		// `/^play\b/i` is a strong positive signal across itemType values:
+		// `Play Work` may carry `itemType: "work"` or `"action"`, but it's
+		// still an explicit play action — not blocking on itemType here
+		// keeps that path working. The numeric prefix only fires as a
+		// track signal when itemType is absent (legacy fallback for the
+		// untyped track-row path).
+		const title = item.title.trim();
+		if (/^play\b/i.test(title)) return true;
+		if (!item.itemType && /^\d/.test(title)) return true;
+		return false;
+	}
+
+	/**
+	 * True when the current level renders as a track list. A page is a
+	 * track list when every item is `action_list` AND at least one item
+	 * classifies as a track. The second clause keeps "Work"-style pages
+	 * (e.g. `Play Work` + `On Ocean to Ocean by Tori Amos`) — which are
+	 * pure action_list but contain no real tracks — out of the track
+	 * layout.
+	 */
+	const isTrackList = $derived.by(() => {
+		const cur = $browseStore.current;
+		if (!cur || cur.items.length === 0) return false;
+		if (!cur.items.every((i) => i.hint === 'action_list')) return false;
+		return cur.items.some(isTrackItem);
+	});
 
 	/**
 	 * In a mixed list (e.g. artist page): action_list items like "Play Artist" shown as pill buttons.
-	 * In a pure tracklist: album-level actions like "Play Album" (items not starting with a digit).
+	 * In a pure tracklist: page-level actions like "Play Work" — items that aren't classified as tracks.
 	 */
 	const pageActions = $derived(
 		isTrackList
-			? $browseStore.current!.items.filter((i) => !/^\d/.test(i.title))
+			? ($browseStore.current?.items.filter((i) => !isTrackItem(i)) ?? [])
 			: ($browseStore.current?.items.filter((i) => i.hint === 'action_list') ?? [])
 	);
 
-	/** Individual tracks — items whose titles start with a track number like "1. Title". */
+	/** Individual tracks — items classified as `track` semantically (or numbered, in legacy fallback). */
 	const trackItems = $derived(
 		isTrackList
-			? $browseStore.current!.items.filter((i) => /^\d/.test(i.title))
+			? ($browseStore.current?.items.filter(isTrackItem) ?? [])
 			: []
 	);
 

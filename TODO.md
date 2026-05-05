@@ -1,9 +1,35 @@
 # TODO
 
 ## Active Priorities
+- [x] Stop contextual `action_list` buttons from auto-playing
 - [x] Fix search result drill-down after browse/search interaction
+- [x] Fix live search click regression after redeploy: re-seed search then browse fresh result `itemKey`
+- [x] Fix search restore browse error from persisted stale search `itemKey`
+- [x] Fix Linux installer summary on VMs without `hostname`
 - [x] Preserve Roon browse multi-session context through backend load calls
 - [x] Keep search UI state separate from main browse hierarchy
+
+## Action-list quickPlay guard (done — see DEVLOG)
+- [x] QuickPlay only explicit `Play ...` action-list buttons and numbered track rows
+- [x] Contextual action-list buttons like `On Ocean to Ocean by Tori Amos` browse instead of executing first play action
+- [x] Add Library page regression test for contextual action-list click
+
+## Search restore stale-itemKey guard (done — see DEVLOG)
+- [x] Stop replaying persisted search drill steps after search re-seed
+- [x] Restore saved search query to fresh search root and clear stale drill history
+- [x] Keep browse-rooted restore replay behavior unchanged
+- [x] Update Library page tests for search restore and quickPlay search-context coverage
+
+## Linux installer URL fallback (done — see DEVLOG)
+- [x] Replace `hostname -I` summary dependency with `ip route` / `hostname` / `localhost` fallback
+- [x] Verify deployed `/opt/roon-controller/.env` has `PORT=5173`; summary port was matching preserved config
+- [x] Syntax-check `scripts/install.sh`
+
+## Search result stale-itemKey hotfix (done — see DEVLOG)
+- [x] Remap clicked search result against freshly re-seeded search results before socket browse
+- [x] Remap search track quickPlay target before REST action-list lookup
+- [x] Restrict search-result quickPlay to track `action_list` rows; non-track action lists navigate
+- [x] Add Library page tests for album click, track quickPlay, and non-track `action_list` search result
 
 ## Code Review Batch 1 (done — see DEVLOG)
 - [x] Hash image cache filenames and validate image route params (C-1)
@@ -119,11 +145,32 @@
 - [x] `socketStatusStore` tests (2)
 - [x] `register.ts` connectivity transition tests (9)
 
+## Track-list classification by itemType (done — see DEVLOG)
+- [x] `isTrackItem()` prefers `item.itemType === 'track'`, falls back to `/^\d/` when itemType is absent
+- [x] `isTrackList` requires every action_list AND some isTrackItem (so pure action_list "Work" pages don't flip layout)
+- [x] `shouldQuickPlayActionList()`: track itemType is the only positive shortcut; explicit `/^play\b/i` quick-plays regardless of itemType; numeric-prefix fallback gated on absent itemType
+- [x] `normalizeItemType()` + `isTrackType()` lowercase comparisons (matches `BrowseService.inferSearchType` style; handles `track`/`tracks`)
+- [x] 6 new Library page tests: 25 → 31 (UI: 69 → 75)
+
+## Robust deep search restore — Phase A (done — see DEVLOG)
+- [x] `BrowseHistoryStep = BrowseOptions & { breadcrumb? }`; storage key bumped `v2 → v3`
+- [x] `pushHistory` accepts optional breadcrumb; all three `recordHistory: true` callsites pass `makeBreadcrumb(item)`
+- [x] `replaceHistory(steps)` primitive added so restore can rewrite persisted history with fresh itemKeys
+- [x] `restoreBrowse` for search hierarchy walks each step via breadcrumb match, uses fresh itemKey, stops gracefully + toasts on mismatch or missing breadcrumb
+- [x] `forward()` strips breadcrumb before re-issuing the Roon browse request
+- [x] 5 new Library page tests for the breadcrumb walk
+
+## Album-jump resolver — Phase B (done — see DEVLOG)
+- [x] `parseAlbumByArtist(title)` parses `"<album> by <artist>"`
+- [x] `resolveAlbumOrNavigate(item)` re-seeds main search with album title, scans for an `itemType=album` match (title equals + subtitle contains artist), navigates to the fresh search itemKey on hit, falls back to `navigate(item)` on miss / parse fail / search error
+- [x] Hierarchy commit deferred until match confirmed (initial impl polluted state on fallback — caught by test)
+- [x] 4 new Library page tests: miss → action-menu fallback, hit → search-hierarchy navigation w/ breadcrumb persisted, wrong-artist match rejected, unparseable title skips resolver
+
 ## Next Iteration (open)
-- [ ] Track-list detection: replace title-regex `/^\d/` with hint/itemType-based partitioning (C-5). Defer until live evidence rendering is wrong.
-- [ ] Manually verify on live Roon Core after redeploy: search → click album/artist/track → nested browse/back → click another search result.
+- [ ] Live verification on Roon Core: search → drill → back; remount restores deep search via breadcrumbs (Phase A); contextual `<album> by <artist>` rows jump to album page when resolver finds a match (Phase B); resolver-miss preserves action-menu fallback.
 - [ ] Manually verify queue protocol fix after redeploy: skip a track, Play Next from Roon iOS app, confirm rows update positionally.
-- [ ] **Redeploy required**: `sudo ./scripts/install.sh --reinstall` — current systemd service is still running the pre-batch code.
+- [ ] **Redeploy required**: `sudo ./scripts/install.sh --reinstall` to pick up Phase A + Phase B.
+- [ ] If live evidence shows the album resolver clobbering search context is annoying, reconsider the side-multi-session approach (would require a follow-up session re-seed to navigate).
 
 ## Documentation / Collaboration
 - [x] Maintain `DEVLOG.md`

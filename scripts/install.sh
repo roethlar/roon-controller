@@ -32,6 +32,20 @@ success() { echo -e "${GREEN}[install]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[install]${NC} $*"; }
 die()     { echo -e "${RED}[install] ERROR:${NC} $*" >&2; exit 1; }
 
+detect_url_host() {
+  local host_ip=""
+
+  if command -v ip >/dev/null 2>&1; then
+    host_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}' || true)"
+  fi
+
+  if [[ -z "$host_ip" ]] && command -v hostname >/dev/null 2>&1; then
+    host_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+
+  echo "${host_ip:-localhost}"
+}
+
 # ── Argument parsing ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -284,7 +298,8 @@ fi
 echo
 success "Installation complete!"
 echo
-echo "  URL        : http://$(hostname -I | awk '{print $1}'):${PORT}"
+URL_HOST="$(detect_url_host)"
+echo "  URL        : http://${URL_HOST}:${PORT}"
 echo "  Logs       : journalctl -u ${SERVICE_NAME} -f"
 echo "  Stop       : systemctl stop ${SERVICE_NAME}"
 echo "  Uninstall  : systemctl disable --now ${SERVICE_NAME} && rm -rf ${INSTALL_DIR}"

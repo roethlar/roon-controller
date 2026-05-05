@@ -15,19 +15,38 @@ import type { BrowseOptions } from '@shared/types';
  * restore we need it to re-seed the Roon search session before replaying
  * any drill-down steps; the steps themselves carry only `item_key`s that
  * are only valid against a freshly-seeded search stack.
+ *
+ * Each `BrowseHistoryStep` extends `BrowseOptions` with an optional
+ * `breadcrumb`. The breadcrumb is written at click time (`pushHistory`
+ * receives the title/subtitle/imageKey/itemType of the row the user
+ * clicked) and consumed at restore time: search drill-down `item_key`s
+ * are minted fresh on each search re-seed, so re-walking a deep search
+ * path requires matching saved breadcrumbs against the freshly-loaded
+ * results to find the new keys.
  */
+export interface BrowseBreadcrumb {
+	title?: string;
+	subtitle?: string;
+	imageKey?: string;
+	itemType?: string;
+}
+
+export type BrowseHistoryStep = BrowseOptions & { breadcrumb?: BrowseBreadcrumb };
+
 export interface BrowseHistoryState {
-	history: BrowseOptions[];
-	forward: BrowseOptions[];
+	history: BrowseHistoryStep[];
+	forward: BrowseHistoryStep[];
 	searchQuery: string | null;
 }
 
 // Versioned key. Bump when the persisted shape changes or when legacy
-// entries can violate a new invariant (e.g. multi-search-result threads
-// pre-dating the resetHistory-on-search-click guard). Reading a stale
-// version is a no-op; sessionStorage is per-tab so the orphaned key
-// will be discarded when the tab closes.
-const STORAGE_KEY = 'roon-controller-browse-history-v2';
+// entries can violate a new invariant.
+//   v2 → v3: each entry is a BrowseHistoryStep (BrowseOptions + optional
+//   breadcrumb). v2 stored bare BrowseOptions; reading v2 raw would give
+//   us steps with no breadcrumb, which would force search-rooted restore
+//   to drop drill history (the old behavior). Bumping the key migrates
+//   users to a fresh persisted state on first load.
+const STORAGE_KEY = 'roon-controller-browse-history-v3';
 
 function emptyState(): BrowseHistoryState {
 	return { history: [], forward: [], searchQuery: null };
@@ -45,14 +64,14 @@ function emptyState(): BrowseHistoryState {
  * gives `restoreBrowse` exactly the same shape it would see for a
  * stack written under the new invariant.
  */
-function sanitizeStack(raw: unknown): { stack: BrowseOptions[]; truncated: boolean } {
+function sanitizeStack(raw: unknown): { stack: BrowseHistoryStep[]; truncated: boolean } {
 	if (!Array.isArray(raw) || raw.length === 0) {
 		return { stack: [], truncated: false };
 	}
-	const tailHierarchy = (raw[raw.length - 1] as BrowseOptions)?.hierarchy || 'browse';
-	const out: BrowseOptions[] = [];
+	const tailHierarchy = (raw[raw.length - 1] as BrowseHistoryStep)?.hierarchy || 'browse';
+	const out: BrowseHistoryStep[] = [];
 	for (let i = raw.length - 1; i >= 0; i--) {
-		const step = raw[i] as BrowseOptions;
+		const step = raw[i] as BrowseHistoryStep;
 		const h = step?.hierarchy || 'browse';
 		if (h !== tailHierarchy) break;
 		out.unshift(step);
@@ -73,7 +92,7 @@ function readPersisted(): BrowseHistoryState {
 		// `popForward` would bypass `pushHistory`'s guard and splice a
 		// foreign-hierarchy step directly into history. If history is
 		// empty there's no anchor, so discard forward entirely.
-		let forward: BrowseOptions[] = [];
+		let forward: BrowseHistoryStep[] = [];
 		if (history.length > 0) {
 			const { stack: rawForward } = sanitizeStack(parsed.forward);
 			if (rawForward.every((s) => (s.hierarchy || 'browse') === tailHierarchy)) {
@@ -106,7 +125,11 @@ export const browseHistoryStore = {
 	subscribe: internal.subscribe
 };
 
-export function pushHistory(opts: BrowseOptions, searchQuery?: string | null): void {
+export function pushHistory(
+	opts: BrowseOptions,
+	searchQuery?: string | null,
+	breadcrumb?: BrowseBreadcrumb
+): void {
 	internal.update((state) => {
 		const newHierarchy = opts.hierarchy || 'browse';
 		const tail = state.history[state.history.length - 1];
@@ -119,7 +142,8 @@ export function pushHistory(opts: BrowseOptions, searchQuery?: string | null): v
 		// to replay browse steps against a search session (or vice versa)
 		// and fail or land in the wrong place.
 		const switchingContext = !!tail && tailHierarchy !== newHierarchy;
-		const history = switchingContext ? [opts] : [...state.history, opts];
+		const step: BrowseHistoryStep = breadcrumb ? { ...opts, breadcrumb } : { ...opts };
+		const history = switchingContext ? [step] : [...state.history, step];
 
 		let nextQuery: string | null;
 		if (newHierarchy === 'search') {
@@ -146,8 +170,8 @@ export function pushHistory(opts: BrowseOptions, searchQuery?: string | null): v
 	});
 }
 
-export function popHistory(): BrowseOptions | undefined {
-	let popped: BrowseOptions | undefined;
+export function popHistory(): BrowseHistoryStep | undefined {
+	let popped: BrowseHistoryStep | undefined;
 	internal.update((state) => {
 		if (state.history.length === 0) return state;
 		const last = state.history[state.history.length - 1];
@@ -163,8 +187,8 @@ export function popHistory(): BrowseOptions | undefined {
 	return popped;
 }
 
-export function popForward(): BrowseOptions | undefined {
-	let popped: BrowseOptions | undefined;
+export function popForward(): BrowseHistoryStep | undefined {
+	let popped: BrowseHistoryStep | undefined;
 	internal.update((state) => {
 		if (state.forward.length === 0) return state;
 		const last = state.forward[state.forward.length - 1];
@@ -184,4 +208,24 @@ export function resetHistory(): void {
 	const empty = emptyState();
 	internal.set(empty);
 	persist(empty);
+}
+
+/**
+ * Replace the history stack wholesale, clearing forward but preserving
+ * the active searchQuery. Used by `restoreBrowse` to rewrite the stack
+ * with fresh `item_key`s after walking a deep search drill via
+ * breadcrumb matching: the persisted itemKeys are stale (Roon mints new
+ * ones on each search re-seed), so without rewriting them the user's
+ * Forward navigation after Back would later send stale keys to Roon.
+ */
+export function replaceHistory(history: BrowseHistoryStep[]): void {
+	internal.update((state) => {
+		const next: BrowseHistoryState = {
+			history,
+			forward: [],
+			searchQuery: state.searchQuery
+		};
+		persist(next);
+		return next;
+	});
 }
