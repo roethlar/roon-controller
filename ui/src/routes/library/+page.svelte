@@ -79,6 +79,17 @@
 
 	async function restoreBrowse(state: BrowseHistoryState): Promise<void> {
 		const { history, searchQuery } = state;
+
+		// Empty history + no active search → show the welcome view, not
+		// the browse-root listing. The browse-root content (Library /
+		// Playlists / Genres / etc.) is already surfaced in the Explore
+		// rail; popAll-ing here would just duplicate the rail in the
+		// right pane. Leave `$browseStore.current` null so the welcome
+		// placeholder renders.
+		if (history.length === 0 && !searchQuery) {
+			return;
+		}
+
 		// The hierarchy we end up in is the hierarchy of the deepest saved
 		// step, or 'browse' if there's no history. Setting loading with the
 		// right hierarchy up front means the store stays consistent if the
@@ -976,7 +987,11 @@
 				{/if}
 			{/if}
 		{:else}
-			<p class="loading">No content loaded.</p>
+			<div class="welcome">
+				<h2>Welcome</h2>
+				<p>Pick something from <strong>Explore</strong> on the left to start browsing your library — Albums, Artists, Tracks, Composers, Genres, Playlists.</p>
+				<p class="welcome-hint">Or use the search box up top to jump straight to an artist or album.</p>
+			</div>
 		{/if}
 	</section>
 </div>
@@ -995,6 +1010,29 @@
 	.results-panel {
 		padding: 0.85rem;
 		background: var(--surface);
+	}
+
+	.welcome {
+		padding: 2rem 1.4rem;
+		max-width: 640px;
+	}
+
+	.welcome h2 {
+		font-family: var(--font-display);
+		font-size: 1.4rem;
+		margin-bottom: 0.6rem;
+	}
+
+	.welcome p {
+		font-size: 0.95rem;
+		line-height: 1.55;
+		color: var(--text-soft);
+	}
+
+	.welcome-hint {
+		margin-top: 0.7rem;
+		font-size: 0.86rem;
+		opacity: 0.78;
 	}
 
 	.loading {

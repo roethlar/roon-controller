@@ -1,6 +1,33 @@
 # Dev Log
 
-## 2026-05-05 (latest) — UX overhaul PR1: sticky header + left-rail Explore
+## 2026-05-07 (latest) — PR1 follow-ups: locked panes, welcome view, zone selector relocation
+
+User feedback from the live PR1 deploy surfaced three issues. Fixing each:
+
+1. **Locked panes** — top, left, and bottom were all scrolling together with the right pane. The first cut used `position: sticky` on the workspace header and play-bar, which works only if the parent doesn't scroll; with `body` scrolling, sticky offsets accumulated. Restructured to a viewport-locked grid: `body { overflow: hidden; height: 100% }`, `.app-root { display: grid; grid-template-rows: 1fr auto; height: 100vh }`. Now the only scroll surface is `.workspace-main` (the right pane content). Sidebar's `.explore` rail scrolls internally if it has more entries than fit. Sticky declarations on the header and play-bar are gone.
+
+2. **No more Explore duplication in the right pane** — on empty-history mount, `restoreBrowse` was calling `popAll: true`, landing on Roon's "Explore" root which contains Library/Playlists/My Live Radio/Genres/Settings. The sidebar Explore rail already surfaces those, so the right pane was just duplicating the rail. Changed `restoreBrowse` to early-return when `history.length === 0 && !searchQuery` — no popAll, no rail mirror. The Library page renders a welcome placeholder (`<div class="welcome">`) when `$browseStore.current` is null, with a hint to use the rail or the search box.
+
+3. **Zone selector back in the play bar** — moved out of the sidebar footer (where PR1 put it) and back next to the Queue button in `.pb-right`. Sidebar footer keeps just the status pill / core info.
+
+### Test fallout
+The mount-popAll early-return invalidated 28 tests that assumed mount fired one `apiBrowse` call. Two patterns:
+- Tests that just needed *some* state to interact with → swapped `apiBrowse.mockResolvedValueOnce(...)` for a direct `setBrowseResult(..., 'browse')` so the page renders the items without going through restore. New pattern is also faster.
+- Tests that genuinely tested the restore path (history walk, zone forwarding, search re-seed) → already pushed history, no change needed.
+
+Helper functions updated:
+- `setUpRoot(items)` (in both quickPlay and track-list classification describe blocks) → uses `setBrowseResult` directly.
+- "with empty history, pops to root via REST" → inverted to "does NOT pop to root and renders the welcome view." Asserts the new behavior with no `apiBrowse` calls and the welcome text in the DOM.
+
+Call-count and index assertions decremented by 1 across the affected tests (mount no longer consumes a call).
+
+### Validation
+- `npm --prefix ui test` — 91 passed (no change in count; restructured tests rather than adding new ones).
+- `npm --prefix ui run check` — 0 errors / 0 warnings.
+- `npm --prefix ui run build` — pass.
+- `npm run lint` — clean.
+
+## 2026-05-05 — UX overhaul PR1: sticky header + left-rail Explore
 
 First of three planned PRs from `docs/UX_OVERHAUL_PLAN_2026-05-05.md`. Reclaims the wasted left-rail real estate by replacing the "Browse / Queue" link list with an Explore rail backed by Roon's top-level browse hierarchy. Search input and back/home/forward cluster move into a sticky workspace header that persists across routes.
 

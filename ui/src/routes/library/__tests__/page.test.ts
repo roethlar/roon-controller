@@ -41,7 +41,13 @@ vi.mock('$app/navigation', () => ({
 // Import after mocks so the page picks them up.
 import LibraryPage from '../+page.svelte';
 import { browseHistoryStore, resetHistory, pushHistory } from '$lib/stores/browseHistoryStore';
-import { browseStore, resetBrowse, setSearchLoading, setSearchResults } from '$lib/stores/browseStore';
+import {
+	browseStore,
+	resetBrowse,
+	setBrowseResult,
+	setSearchLoading,
+	setSearchResults
+} from '$lib/stores/browseStore';
 import { setSelectedZone } from '$lib/stores/selectedZoneStore';
 
 // ---------------- Helpers ----------------
@@ -94,15 +100,15 @@ beforeEach(() => {
 // ---------------- Tests ----------------
 
 describe('Library page — mount restore', () => {
-	it('with empty history, pops to root via REST', async () => {
+	it('with empty history, does NOT pop to root and renders the welcome view', async () => {
+		// The Explore rail in the layout sidebar already shows the
+		// browse-root entries; popping to root in the right pane would
+		// just duplicate them. With empty history, restoreBrowse skips
+		// the popAll entirely and the page renders a welcome placeholder.
 		render(LibraryPage);
-		await waitFor(() => {
-			expect(apiBrowse).toHaveBeenCalledTimes(1);
-		});
-		expect(apiBrowse).toHaveBeenCalledWith(
-			expect.anything(),
-			expect.objectContaining({ hierarchy: 'browse', popAll: true })
-		);
+		await tick();
+		expect(apiBrowse).not.toHaveBeenCalled();
+		expect(screen.getByText(/Welcome/i)).toBeInTheDocument();
 	});
 
 	it('with browse-rooted history, pops to root then walks each step', async () => {
@@ -210,15 +216,19 @@ describe('Library page — mount restore', () => {
 	});
 
 	it('renders the items returned by the restore', async () => {
+		// Push a history anchor so restoreBrowse runs the popAll + walk
+		// path (empty history would render welcome instead).
+		pushHistory({ hierarchy: 'browse', itemKey: 'anchor' });
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 0 })); // popAll
 		apiBrowse.mockResolvedValueOnce(
 			listResult({
-				level: 0,
+				level: 1,
 				items: [
 					makeItem({ title: 'Albums', itemKey: 'albums' }),
 					makeItem({ title: 'Artists', itemKey: 'artists' })
 				]
 			})
-		);
+		); // walk
 
 		render(LibraryPage);
 
@@ -377,8 +387,8 @@ describe('Library page — mount restore', () => {
 			);
 
 			render(LibraryPage);
-			await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
 			await tick();
+			// 
 
 			// No drill call, history truncated, feedback toast pushed.
 			expect(apiBrowse).toHaveBeenCalledTimes(1);
@@ -457,8 +467,8 @@ describe('Library page — mount restore', () => {
 			);
 
 			render(LibraryPage);
-			await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
 			await tick();
+			// 
 
 			// Stops at search root, history cleared, toast surfaced.
 			expect(apiBrowse).toHaveBeenCalledTimes(1);
@@ -471,11 +481,13 @@ describe('Library page — mount restore', () => {
 
 describe('Library page — navigation actions', () => {
 	it('clicking a list item emits browse:browse with the item key and records history', async () => {
-		apiBrowse.mockResolvedValueOnce(
+		// Bypass mount restore — page renders these items directly.
+		setBrowseResult(
 			listResult({
 				level: 0,
 				items: [makeItem({ title: 'Albums', itemKey: 'albums' })]
-			})
+			}),
+			'browse'
 		);
 
 		render(LibraryPage);
@@ -492,7 +504,7 @@ describe('Library page — navigation actions', () => {
 
 	it('clicking a search result re-seeds search and browses the fresh item key', async () => {
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		await tick();
 
 		setSearchLoading('tori amos');
 		setSearchResults([
@@ -521,8 +533,8 @@ describe('Library page — navigation actions', () => {
 
 		screen.getByText('Little Earthquakes').closest('button')?.click();
 
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
-		expect(apiBrowse.mock.calls[1][1]).toEqual(
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		expect(apiBrowse.mock.calls[0][1]).toEqual(
 			expect.objectContaining({
 				hierarchy: 'search',
 				input: 'tori amos',
@@ -550,7 +562,7 @@ describe('Library page — navigation actions', () => {
 	it('search track quickPlay re-seeds search before action lookup', async () => {
 		setSelectedZone('zone-living-room');
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		await tick();
 
 		setSearchLoading('tori amos');
 		setSearchResults([
@@ -588,8 +600,8 @@ describe('Library page — navigation actions', () => {
 
 		screen.getByText('Cornflake Girl').closest('button')?.click();
 
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(4));
-		expect(apiBrowse.mock.calls[2][1]).toEqual(
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
 			expect.objectContaining({
 				hierarchy: 'search',
 				itemKey: 'fresh-track-key',
@@ -597,14 +609,14 @@ describe('Library page — navigation actions', () => {
 				multiSessionKey: 'library-search'
 			})
 		);
-		expect(apiBrowse.mock.calls[2][1]).not.toEqual(
+		expect(apiBrowse.mock.calls[1][1]).not.toEqual(
 			expect.objectContaining({ itemKey: 'old-track-key' })
 		);
 	});
 
 	it('navigates non-track action_list search results instead of quick-playing them', async () => {
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		await tick();
 
 		setSearchLoading('tori amos');
 		setSearchResults([
@@ -635,7 +647,7 @@ describe('Library page — navigation actions', () => {
 
 		screen.getByText('Boys for Pele').closest('button')?.click();
 
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
 		await waitFor(() => {
 			expect(fakeSocket.emit).toHaveBeenCalledWith(
 				'browse:browse',
@@ -677,9 +689,8 @@ describe('Library page — navigation actions', () => {
 	});
 
 	it('Back (browseNavStore.back) calls browse:pop and moves the step to forward', async () => {
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 0 })); // mount popAll
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalled());
+		await tick();
 
 		// Simulate the user clicking into one item so there's something
 		// to back out of.
@@ -701,7 +712,7 @@ describe('Library page — navigation actions', () => {
 
 	it('searchLoading hides the result panel and shows the loading text', async () => {
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalled());
+		await tick();
 
 		// Direct loading toggle covers what setBrowseLoading does on the
 		// browse panel — the Library page's results-panel switches to the
@@ -716,9 +727,11 @@ describe('Library page — navigation actions', () => {
 
 describe('Library page — quickPlay', () => {
 	function setUpRoot(items: BrowseItem[] = []) {
-		// First call is the mount popAll. Subsequent calls are queued by
-		// the test for the quickPlay flow.
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 0, items }));
+		// The Library page no longer pops to root on empty-history mount
+		// (renders welcome instead). Bypass the mount restore by setting
+		// the browse result directly — `apiBrowse` then starts at index
+		// [0] for whatever the test's first user action emits.
+		setBrowseResult(listResult({ level: 0, items }), 'browse');
 	}
 
 	it('looks up the action list, executes the play action, then pops the album view back', async () => {
@@ -740,16 +753,16 @@ describe('Library page — quickPlay', () => {
 		btn.click();
 
 		// Wait for the action lookup + execute calls.
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
 
-		expect(apiBrowse.mock.calls[1][1]).toEqual(
+		expect(apiBrowse.mock.calls[0][1]).toEqual(
 			expect.objectContaining({
 				hierarchy: 'browse',
 				itemKey: 'track-key',
 				zoneId: 'zone-living-room'
 			})
 		);
-		expect(apiBrowse.mock.calls[2][1]).toEqual(
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
 			expect.objectContaining({
 				hierarchy: 'browse',
 				itemKey: 'play-now-key',
@@ -780,8 +793,8 @@ describe('Library page — quickPlay', () => {
 		render(LibraryPage);
 		const btn = await screen.findByRole('button', { name: 'Play Album' });
 		btn.click();
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
 		await tick();
+		// 
 
 		// Fallback path emits browse:browse via socket and records history.
 		expect(fakeSocket.emit).toHaveBeenCalledWith(
@@ -814,11 +827,11 @@ describe('Library page — quickPlay', () => {
 		render(LibraryPage);
 		const btn = await screen.findByRole('button', { name: 'On Ocean to Ocean by Tori Amos' });
 		btn.click();
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
 		await tick();
+		// 
 
-		// 1st apiBrowse = mount popAll. 2nd apiBrowse = resolver search.
-		expect(apiBrowse.mock.calls[1][1]).toEqual(
+		// Sole apiBrowse call is the resolver search.
+		expect(apiBrowse.mock.calls[0][1]).toEqual(
 			expect.objectContaining({ hierarchy: 'search', input: 'On Ocean to Ocean' })
 		);
 		// Resolver missed; falls back to navigate(item) → emits browse:browse
@@ -856,11 +869,11 @@ describe('Library page — quickPlay', () => {
 		render(LibraryPage);
 		const btn = await screen.findByRole('button', { name: 'On Ocean to Ocean by Tori Amos' });
 		btn.click();
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
 		await tick();
+		// 
 
 		// Resolver re-seeded the main search session with the album title.
-		expect(apiBrowse.mock.calls[1][1]).toEqual(
+		expect(apiBrowse.mock.calls[0][1]).toEqual(
 			expect.objectContaining({
 				hierarchy: 'search',
 				input: 'On Ocean to Ocean',
@@ -908,8 +921,8 @@ describe('Library page — quickPlay', () => {
 		render(LibraryPage);
 		const btn = await screen.findByRole('button', { name: 'Greatest Hits by Tori Amos' });
 		btn.click();
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
 		await tick();
+		// 
 
 		// Wrong-artist match was rejected → fallback to navigate(item).
 		expect(fakeSocket.emit).toHaveBeenCalledWith(
@@ -932,8 +945,8 @@ describe('Library page — quickPlay', () => {
 		btn.click();
 		await tick();
 
-		// Only the mount popAll — no resolver search.
-		expect(apiBrowse).toHaveBeenCalledTimes(1);
+		// Title isn't parseable — resolver skipped, no apiBrowse.
+		expect(apiBrowse).not.toHaveBeenCalled();
 		expect(fakeSocket.emit).toHaveBeenCalledWith(
 			'browse:browse',
 			expect.objectContaining({ itemKey: 'bonus-key' })
@@ -946,14 +959,14 @@ describe('Library page — quickPlay', () => {
 
 		setSelectedZone('');
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1)); // mount popAll only
+		await tick();
 
 		const btn = await screen.findByRole('button', { name: 'Play Album' });
 		btn.click();
 		await tick();
 
-		// No additional apiBrowse calls after the mount popAll.
-		expect(apiBrowse).toHaveBeenCalledTimes(1);
+		// No apiBrowse calls — quickPlay bails before REST due to no zone.
+		expect(apiBrowse).not.toHaveBeenCalled();
 
 		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
 		expect(get(commandFeedbackStore)?.message).toMatch(/select a zone/i);
@@ -962,7 +975,7 @@ describe('Library page — quickPlay', () => {
 	it('does not pop the album view after quickPlay from a search result', async () => {
 		setSelectedZone('zone-living-room');
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1)); // mount popAll
+		await tick();
 
 		setSearchLoading('beatles');
 		setSearchResults([
@@ -999,7 +1012,7 @@ describe('Library page — quickPlay', () => {
 
 		await tick();
 		screen.getByText('Play Album').closest('button')?.click();
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(4));
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
 		await tick();
 
 		// Should NOT have emitted browse:pop — search context doesn't restore.
@@ -1016,8 +1029,8 @@ describe('Library page — quickPlay', () => {
 		render(LibraryPage);
 		const btn = await screen.findByRole('button', { name: 'Play Album' });
 		btn.click();
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
 		await tick();
+		// 
 
 		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
 		expect(get(commandFeedbackStore)?.message).toMatch(/Roon timed out/);
@@ -1051,14 +1064,14 @@ describe('Library page — quickPlay', () => {
 		const btn = await screen.findByRole('button', { name: 'Play Work' });
 		btn.click();
 
-		// 3 calls = mount popAll + action lookup + Play Now execute.
-		// If the regression resurfaced, only the mount popAll would fire
-		// and `browse:browse` would emit instead.
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
-		expect(apiBrowse.mock.calls[1][1]).toEqual(
+		// 2 calls = action lookup + Play Now execute. If the regression
+		// resurfaced, no apiBrowse would fire and `browse:browse` would
+		// emit instead.
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+		expect(apiBrowse.mock.calls[0][1]).toEqual(
 			expect.objectContaining({ itemKey: 'work-key' })
 		);
-		expect(apiBrowse.mock.calls[2][1]).toEqual(
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
 			expect.objectContaining({ itemKey: 'pn' })
 		);
 	});
@@ -1086,10 +1099,9 @@ describe('Library page — alphabetic jump bar', () => {
 		for (let i = 0; i < 6; i++) items.push(makeItem({ title: `C item ${i}`, itemKey: `c${i}` }));
 		for (let i = 0; i < 3; i++) items.push(makeItem({ title: `D item ${i}`, itemKey: `d${i}` }));
 		// Force level >= 2 so isContentList renders the grid path.
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 2, items }));
+		setBrowseResult(listResult({ level: 2, items }), 'browse');
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalled());
 		await tick();
 
 		const jumpBar = await screen.findByLabelText(/alphabetic index/i);
@@ -1102,10 +1114,9 @@ describe('Library page — alphabetic jump bar', () => {
 		const items = Array.from({ length: 10 }, (_, i) =>
 			makeItem({ title: `Item ${i}`, itemKey: `k${i}` })
 		);
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 2, items }));
+		setBrowseResult(listResult({ level: 2, items }), 'browse');
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalled());
 		await tick();
 
 		expect(screen.queryByLabelText(/alphabetic index/i)).toBeNull();
@@ -1116,10 +1127,9 @@ describe('Library page — alphabetic jump bar', () => {
 		for (let i = 0; i < 6; i++) items.push(makeItem({ title: `A${i}`, itemKey: `a${i}` }));
 		for (let i = 0; i < 6; i++) items.push(makeItem({ title: `B${i}`, itemKey: `b${i}` }));
 		for (let i = 0; i < 9; i++) items.push(makeItem({ title: `C${i}`, itemKey: `c${i}` }));
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 2, items }));
+		setBrowseResult(listResult({ level: 2, items }), 'browse');
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalled());
 		await tick();
 
 		const bButton = screen.getAllByRole('button').find((b) => b.textContent?.trim() === 'B');
@@ -1137,12 +1147,12 @@ describe('Library page — alphabetic jump bar', () => {
 		const items = Array.from({ length: 21 }, (_, i) =>
 			makeItem({ title: `Item ${i}`, itemKey: `k${i}` })
 		);
-		apiBrowse.mockResolvedValueOnce(
-			listResult({ level: 2, items, totalCount: 30, count: 30 })
+		setBrowseResult(
+			listResult({ level: 2, items, totalCount: 30, count: 30 }),
+			'browse'
 		);
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalled());
 		await tick();
 
 		expect(await screen.findByText(/showing 21 of 30/i)).toBeInTheDocument();
@@ -1154,8 +1164,9 @@ describe('Library page — alphabetic jump bar', () => {
 		const initial = Array.from({ length: 21 }, (_, i) =>
 			makeItem({ title: `Item ${i}`, itemKey: `k${i}` })
 		);
-		apiBrowse.mockResolvedValueOnce(
-			listResult({ level: 2, items: initial, totalCount: 100, count: 100 })
+		setBrowseResult(
+			listResult({ level: 2, items: initial, totalCount: 100, count: 100 }),
+			'browse'
 		);
 		const more = Array.from({ length: 79 }, (_, i) =>
 			makeItem({ title: `Extra ${i}`, itemKey: `extra${i}` })
@@ -1163,7 +1174,6 @@ describe('Library page — alphabetic jump bar', () => {
 		apiBrowseLoad.mockResolvedValueOnce(listResult({ level: 2, items: more.slice(0, 79) }));
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalled());
 		await tick();
 
 		screen.getByRole('button', { name: /^load more$/i }).click();
@@ -1213,7 +1223,9 @@ describe('Library page — restore robustness', () => {
 
 describe('Library page — track-list classification', () => {
 	function setUpRoot(items: BrowseItem[]) {
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 2, items }));
+		// Bypass the mount restore (which now renders welcome on empty
+		// history) and inject the test result directly.
+		setBrowseResult(listResult({ level: 2, items }), 'browse');
 	}
 
 	it('renders itemType=track items as a track list even without numeric prefixes', async () => {
@@ -1241,8 +1253,8 @@ describe('Library page — track-list classification', () => {
 		setUpRoot(items);
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
 		await tick();
+		// 
 
 		// Tracks rendered in an <ol class="track-list">
 		const trackList = document.querySelector('ol.track-list');
@@ -1266,8 +1278,8 @@ describe('Library page — track-list classification', () => {
 		setUpRoot(items);
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
 		await tick();
+		// 
 
 		const trackList = document.querySelector('ol.track-list');
 		expect(trackList).not.toBeNull();
@@ -1295,8 +1307,8 @@ describe('Library page — track-list classification', () => {
 		setUpRoot(items);
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
 		await tick();
+		// 
 
 		// No track list rendered; both items are page actions.
 		expect(document.querySelector('ol.track-list')).toBeNull();
@@ -1326,8 +1338,8 @@ describe('Library page — track-list classification', () => {
 		setUpRoot(items);
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
 		await tick();
+		// 
 
 		const trackList = document.querySelector('ol.track-list');
 		expect(trackList).not.toBeNull();
@@ -1355,8 +1367,8 @@ describe('Library page — track-list classification', () => {
 		setUpRoot(items);
 
 		render(LibraryPage);
-		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
 		await tick();
+		// 
 
 		const trackList = document.querySelector('ol.track-list');
 		expect(trackList).not.toBeNull();

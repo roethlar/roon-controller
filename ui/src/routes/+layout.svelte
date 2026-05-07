@@ -308,87 +308,72 @@
 	}
 </script>
 
-<div class="shell" class:mobile-nav-open={mobileNavOpen}>
-	<aside class="sidebar" class:open={mobileNavOpen}>
-		<div class="brand-block">
-			<p class="eyebrow">Roon Controller</p>
-		</div>
-
-		<nav class="explore" aria-label="Explore">
-			{#if $exploreRailStore.loading && $exploreRailStore.entries.length === 0}
-				<div class="rail-skeleton">
-					<span class="skel-row"></span>
-					<span class="skel-row"></span>
-					<span class="skel-row"></span>
-					<span class="skel-row"></span>
-				</div>
-			{:else if $exploreRailStore.error}
-				<p class="rail-error">{$exploreRailStore.error}</p>
-			{:else}
-				{#if railLibrary.length > 0}
-					<div class="rail-section">
-						<h3 class="rail-section-header">Library</h3>
-						{#each railLibrary as entry}
-							<button
-								type="button"
-								class="rail-link"
-								class:muted={entry.isEmpty}
-								disabled={railNavInFlight}
-								onclick={() => navigateToRailEntry(entry)}
-							>{entry.label}</button>
-						{/each}
-					</div>
-				{/if}
-
-				{#if railTopLevel.length > 0}
-					<div class="rail-section">
-						{#each railTopLevel as entry}
-							<button
-								type="button"
-								class="rail-link top"
-								class:muted={entry.isEmpty}
-								disabled={railNavInFlight}
-								onclick={() => navigateToRailEntry(entry)}
-							>{entry.label}</button>
-						{/each}
-					</div>
-				{/if}
-			{/if}
-		</nav>
-
-		<div class="sidebar-footer">
-			<div class="status card">
-				<p class="status-value" class:good={connectedGood}>{connectedLabel}</p>
-				<p class="status-core">{$coreStore.core?.displayName ?? '—'}</p>
-				<p class="status-version">{$coreStore.core?.displayVersion ?? ''}</p>
+<div class="app-root" class:mobile-nav-open={mobileNavOpen}>
+	<div class="main-area">
+		<aside class="sidebar" class:open={mobileNavOpen}>
+			<div class="brand-block">
+				<p class="eyebrow">Roon Controller</p>
 			</div>
 
-			<label class="visually-hidden" for="sidebar-zone">Zone</label>
-			<select
-				id="sidebar-zone"
-				class="zone-select"
-				value={$selectedZoneStore}
-				onchange={(e) => setSelectedZone((e.target as HTMLSelectElement).value)}
-			>
-				{#if $zonesStore.length === 0}
-					<option value="">No zones</option>
+			<nav class="explore" aria-label="Explore">
+				{#if $exploreRailStore.loading && $exploreRailStore.entries.length === 0}
+					<div class="rail-skeleton">
+						<span class="skel-row"></span>
+						<span class="skel-row"></span>
+						<span class="skel-row"></span>
+						<span class="skel-row"></span>
+					</div>
+				{:else if $exploreRailStore.error}
+					<p class="rail-error">{$exploreRailStore.error}</p>
 				{:else}
-					{#each $zonesStore as zone}
-						<option value={zone.zone_id}>{zone.display_name}</option>
-					{/each}
+					{#if railLibrary.length > 0}
+						<div class="rail-section">
+							<h3 class="rail-section-header">Library</h3>
+							{#each railLibrary as entry}
+								<button
+									type="button"
+									class="rail-link"
+									class:muted={entry.isEmpty}
+									disabled={railNavInFlight}
+									onclick={() => navigateToRailEntry(entry)}
+								>{entry.label}</button>
+							{/each}
+						</div>
+					{/if}
+
+					{#if railTopLevel.length > 0}
+						<div class="rail-section">
+							{#each railTopLevel as entry}
+								<button
+									type="button"
+									class="rail-link top"
+									class:muted={entry.isEmpty}
+									disabled={railNavInFlight}
+									onclick={() => navigateToRailEntry(entry)}
+								>{entry.label}</button>
+							{/each}
+						</div>
+					{/if}
 				{/if}
-			</select>
-		</div>
-	</aside>
+			</nav>
 
-	{#if mobileNavOpen}
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="sidebar-scrim" onclick={toggleMobileNav}></div>
-	{/if}
+			<div class="sidebar-footer">
+				<div class="status card">
+					<p class="status-value" class:good={connectedGood}>{connectedLabel}</p>
+					<p class="status-core">{$coreStore.core?.displayName ?? '—'}</p>
+					<p class="status-version">{$coreStore.core?.displayVersion ?? ''}</p>
+				</div>
+			</div>
+		</aside>
 
-	<section class="workspace">
-		<header class="workspace-header">
+		{#if mobileNavOpen}
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div class="sidebar-scrim" onclick={toggleMobileNav}></div>
+		{/if}
+
+		<section class="workspace">
+			<header class="workspace-header">
 			<button
 				type="button"
 				class="hamburger"
@@ -439,13 +424,13 @@
 			>{$themeStore === 'dark' ? '☀' : '☾'}</button>
 		</header>
 
-		<main class="workspace-main">
-			{@render children()}
-		</main>
-	</section>
-</div>
+			<main class="workspace-main">
+				{@render children()}
+			</main>
+		</section>
+	</div>
 
-<footer class="play-bar card" aria-label="Playback controls">
+	<footer class="play-bar card" aria-label="Playback controls">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="pb-progress-bar" class:seekable={canSeek} onclick={seekTo}>
@@ -503,17 +488,50 @@
 				</label>
 			{/if}
 		{/if}
+		<label class="visually-hidden" for="footer-zone">Zone</label>
+		<select
+			id="footer-zone"
+			class="zone-select"
+			value={$selectedZoneStore}
+			onchange={(e) => setSelectedZone((e.target as HTMLSelectElement).value)}
+		>
+			{#if $zonesStore.length === 0}
+				<option value="">No zones</option>
+			{:else}
+				{#each $zonesStore as zone}
+					<option value={zone.zone_id}>{zone.display_name}</option>
+				{/each}
+			{/if}
+		</select>
 		<a href="/queue" class="queue-btn" data-sveltekit-preload-data="hover">Queue</a>
 	</div>
-</footer>
+	</footer>
+</div>
 
 <ErrorToast />
 
 <style>
-	.shell {
+	/* App-level: lock the viewport so only the workspace-main scrolls.
+	   The sidebar, sticky header, and play bar stay fixed; the right
+	   pane is the only scrollable surface. */
+	:global(html),
+	:global(body) {
+		height: 100%;
+		margin: 0;
+		overflow: hidden;
+	}
+
+	.app-root {
+		display: grid;
+		grid-template-rows: 1fr auto;
+		height: 100vh;
+	}
+
+	.main-area {
 		display: grid;
 		grid-template-columns: 200px 1fr;
-		min-height: calc(100vh - 76px);
+		min-height: 0;
+		overflow: hidden;
 	}
 
 	/* ── Sidebar ── */
@@ -526,6 +544,7 @@
 		gap: 0.6rem;
 		border-right: 1px solid var(--sidebar-border);
 		min-height: 0;
+		overflow: hidden; /* internal scrolling only on .explore */
 	}
 
 	.brand-block {
@@ -661,16 +680,6 @@
 		margin-top: 0.05rem;
 	}
 
-	.zone-select {
-		padding: 0.4rem 0.55rem;
-		border-radius: 8px;
-		border: 1px solid var(--sidebar-card-border);
-		background: var(--sidebar-card-bg);
-		color: var(--sidebar-text);
-		font-size: 0.85rem;
-		width: 100%;
-	}
-
 	.sidebar-scrim {
 		display: none;
 	}
@@ -681,6 +690,7 @@
 		flex-direction: column;
 		min-height: 0;
 		min-width: 0;
+		overflow: hidden;
 	}
 
 	.workspace-header {
@@ -690,9 +700,7 @@
 		padding: 0.5rem 0.9rem;
 		border-bottom: 1px solid var(--border);
 		background: var(--surface-1);
-		position: sticky;
-		top: 0;
-		z-index: 5;
+		flex-shrink: 0; /* doesn't scroll with workspace-main */
 	}
 
 	.hamburger {
@@ -761,17 +769,22 @@
 	}
 
 	.workspace-main {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto; /* the only scrolling surface */
 		padding: 0.9rem;
-		max-width: 1440px;
-		width: 100%;
-		margin: 0 auto;
 		animation: rise-in 320ms ease;
+	}
+
+	/* Cap the inner content so wide screens don't stretch grids
+	   edge-to-edge, but let the scroll container itself fill. */
+	.workspace-main > :global(*) {
+		max-width: 1440px;
+		margin: 0 auto;
 	}
 
 	/* ── Play bar (persistent footer) ── */
 	.play-bar {
-		position: sticky;
-		bottom: 0;
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
 		align-items: center;
@@ -928,6 +941,16 @@
 		transition: background 120ms ease;
 	}
 
+	.zone-select {
+		padding: 0.38rem 0.5rem;
+		border-radius: 9px;
+		border: 1px solid rgba(255, 255, 255, 0.18);
+		background: rgba(255, 255, 255, 0.1);
+		color: inherit;
+		font-size: 0.85rem;
+		max-width: 160px;
+	}
+
 	.queue-btn:hover {
 		background: rgba(255, 255, 255, 0.18);
 	}
@@ -980,7 +1003,7 @@
 
 	/* ── Responsive ── */
 	@media (max-width: 1020px) {
-		.shell {
+		.main-area {
 			grid-template-columns: 1fr;
 		}
 
@@ -988,7 +1011,7 @@
 			position: fixed;
 			top: 0;
 			left: 0;
-			bottom: 76px;
+			bottom: 0;
 			width: 240px;
 			z-index: 12;
 			transform: translateX(-100%);

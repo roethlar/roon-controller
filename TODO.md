@@ -182,11 +182,19 @@
 - [x] R7 follow-up: header `<Search>` routes through `onSubmit` (`pendingSearchStore` + `goto('/library')`) so cross-route submissions land on the page that renders results
 - [x] R7 follow-up: monotonic resolve token in `exploreRailStore` so stale rail-resolve completions can't overwrite newer ones
 
+## PR1 follow-ups (done — see DEVLOG)
+- [x] Locked panes: viewport grid with single scroll surface (`.workspace-main`); body overflow hidden; sticky declarations removed
+- [x] Welcome view in right pane when no browse target; `restoreBrowse` early-returns on empty history
+- [x] Zone selector relocated from sidebar footer back to play bar
+- [x] 28 tests updated to use `setBrowseResult` directly instead of mocking mount popAll; 91 tests still passing
+
 ## Next Iteration (open)
 - [ ] Live verification on Roon Core after PR1 redeploy:
+  - [ ] Right pane is the only scroll surface; left, top, bottom panes locked
+  - [ ] Welcome view appears on first /library load (no Explore duplication)
+  - [ ] Zone selector works from play bar
   - [ ] Rail entries render and respond to clicks
   - [ ] Stale-key recovery on Core restart
-  - [ ] Sticky header behaves correctly under scroll
   - [ ] Mobile viewport hamburger toggle
 - [ ] Live verification carryover from earlier PRs: search drill + remount (Phase A); `<album> by <artist>` resolver hits/misses (Phase B); composer/work flow doesn't auto-play; queue positional updates.
 - [ ] **Redeploy required**: `sudo ./scripts/install.sh --reinstall` to pick up PR1.
