@@ -45,7 +45,7 @@ beforeEach(() => {
 });
 
 describe('exploreRailStore — resolveExploreRail', () => {
-	it('captures level-0 list children, surfaces nested Library children, excludes Settings + Search', async () => {
+	it('captures level-0 list children, surfaces nested Library children, excludes Search under Library', async () => {
 		// Mirrors the live capture: 5 items at level 0.
 		const root = listResult({
 			title: 'Explore',
@@ -82,20 +82,25 @@ describe('exploreRailStore — resolveExploreRail', () => {
 			items: [makeItem({ title: 'Rock' }), makeItem({ title: 'Jazz' })]
 		});
 
-		// Sequence: root, then for each non-Settings level-0 list child:
-		// popAll (drops to root), drill that child. Library is the only
-		// expanded entry — its children become rail entries directly,
-		// no further drill needed for them in PR1.
-		// Order: root, popAll, lib, popAll, pl, popAll, mlr, popAll, gen.
-		apiBrowse.mockResolvedValueOnce(root); // initial popAll/root
+		// Settings is now surfaced (per 2026-05-07 user feedback) — no
+		// level-0 exclusions today. Each list-hint level-0 child gets
+		// a popAll + drill for empty-state detection.
+		const settings = listResult({
+			items: [makeItem({ title: 'Profile', subtitle: 'Michael' })]
+		});
+		// Order: root, popAll, lib, popAll, pl, popAll, mlr, popAll,
+		// gen, popAll, set.
+		apiBrowse.mockResolvedValueOnce(root);
 		apiBrowse.mockResolvedValueOnce(listResult()); // popAll before lib
-		apiBrowse.mockResolvedValueOnce(library); // drill lib
+		apiBrowse.mockResolvedValueOnce(library);
 		apiBrowse.mockResolvedValueOnce(listResult()); // popAll before pl
-		apiBrowse.mockResolvedValueOnce(playlists); // drill pl
+		apiBrowse.mockResolvedValueOnce(playlists);
 		apiBrowse.mockResolvedValueOnce(listResult()); // popAll before mlr
-		apiBrowse.mockResolvedValueOnce(liveRadio); // drill mlr
+		apiBrowse.mockResolvedValueOnce(liveRadio);
 		apiBrowse.mockResolvedValueOnce(listResult()); // popAll before gen
-		apiBrowse.mockResolvedValueOnce(genres); // drill gen
+		apiBrowse.mockResolvedValueOnce(genres);
+		apiBrowse.mockResolvedValueOnce(listResult()); // popAll before set
+		apiBrowse.mockResolvedValueOnce(settings);
 
 		await resolveExploreRail(fetch);
 
@@ -104,7 +109,8 @@ describe('exploreRailStore — resolveExploreRail', () => {
 		expect(state.error).toBeNull();
 
 		const labels = state.entries.map((e) => e.label);
-		// Library expanded into its non-Search children (in order).
+		// Library expanded into its non-Search children, then top-level
+		// containers (including Settings).
 		expect(labels).toEqual([
 			'Artists',
 			'Albums',
@@ -113,12 +119,11 @@ describe('exploreRailStore — resolveExploreRail', () => {
 			'Tags',
 			'Playlists',
 			'My Live Radio',
-			'Genres'
+			'Genres',
+			'Settings'
 		]);
 
-		// Settings excluded.
-		expect(labels).not.toContain('Settings');
-		// Search excluded from Library expansion.
+		// Search still excluded from Library expansion.
 		expect(labels).not.toContain('Search');
 
 		// Library children carry the parent in labelPath.

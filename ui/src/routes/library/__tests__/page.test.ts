@@ -660,32 +660,30 @@ describe('Library page — navigation actions', () => {
 		});
 	});
 
-	it('Home (browseNavStore.home) resets history and re-pops to root', async () => {
+	it('Home (browseNavStore.home) resets history and renders the welcome view', async () => {
 		// Seed prior history so we can confirm it gets cleared.
 		pushHistory({ hierarchy: 'browse', itemKey: 'deep' });
-
 		apiBrowse.mockResolvedValueOnce(listResult({ level: 0 })); // mount popAll
 		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 })); // mount step
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 0 })); // home popAll
 
 		render(LibraryPage);
 		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
 
-		// Home is exposed via browseNavStore by Library's onMount.
+		// Home no longer pops the Roon browse root (the rail already
+		// shows it). Resets history + clears browseStore so the welcome
+		// view renders.
 		const { browseNavStore } = await import('$lib/stores/browseNavStore');
 		const nav = get(browseNavStore);
 
-		// Home routes through the socket (browse function) — assert socket
-		// emit + history reset rather than apiBrowse here.
+		const emitCountBefore = fakeSocket.emit.mock.calls.length;
 		nav.home();
 		await tick();
 
-		expect(fakeSocket.emit).toHaveBeenCalledWith(
-			'browse:browse',
-			expect.objectContaining({ hierarchy: 'browse', popAll: true })
-		);
+		// History cleared, no browse:browse emitted, welcome renders.
 		expect(get(browseHistoryStore).history).toEqual([]);
 		expect(get(browseHistoryStore).forward).toEqual([]);
+		expect(fakeSocket.emit.mock.calls.length).toBe(emitCountBefore);
+		expect(screen.getByText(/Welcome/i)).toBeInTheDocument();
 	});
 
 	it('Back (browseNavStore.back) calls browse:pop and moves the step to forward', async () => {

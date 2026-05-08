@@ -1,6 +1,23 @@
 # Dev Log
 
-## 2026-05-07 (latest) — PR1 follow-ups: locked panes, welcome view, zone selector relocation
+## 2026-05-07 (latest) — PR1 polish round 2: Home → welcome, Settings on rail, indented tree
+
+User feedback after the locked-panes redeploy:
+
+1. **Home button now goes to the welcome view, not the Explore root.** The rail already mirrors the Explore root entries, so popping to root on Home just duplicated them again. `resetRoot()` now calls `resetHistory()` + `resetBrowse()` and the welcome placeholder renders. No socket emit, no apiBrowse — just clear local state.
+
+2. **Settings surfaced on the sidebar.** Removed from `EXCLUDED_LEVEL_0` per user request. Drilling Settings (`Profile`, `Display Settings`) hits browse-only data; we don't drive its actions but the user wanted it visible. Future PR can wire specific Settings flows if any of them prove useful through the public API.
+
+3. **Library tree indent.** Library is rendered as a section header with its children below; the children are now indented (`padding-left: 1.6rem`) so the parent-child relationship is unambiguous. Top-level entries (Playlists / Genres / My Live Radio / Settings) stay at the standard left padding via `.rail-link.top`.
+
+4. **Recently Played / Added** — flagged by user as a priority for the welcome view. The public Roon extension API doesn't expose these as discoverable nodes at the level-0 / level-1 layers we've captured. Ran the conversation through whether deeper levels (Library/Albums sub-views) might surface them; verdict was "needs `--include-content-samples` capture against the live Core to confirm." Held pending user direction on whether to run that capture (artifact gitignored).
+
+### Tests
+- Home test rewritten: now asserts no socket emit, history cleared, welcome view visible.
+- Rail store test updated: Settings expected in the rail; matched against the new resolution sequence (5 level-0 children drilled instead of 4 after dropping Settings exclusion).
+- 91 tests still passing. svelte-check 0/0, build clean, lint clean.
+
+## 2026-05-07 — PR1 follow-ups: locked panes, welcome view, zone selector relocation
 
 User feedback from the live PR1 deploy surfaced three issues. Fixing each:
 

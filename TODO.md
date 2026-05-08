@@ -186,16 +186,27 @@
 - [x] Locked panes: viewport grid with single scroll surface (`.workspace-main`); body overflow hidden; sticky declarations removed
 - [x] Welcome view in right pane when no browse target; `restoreBrowse` early-returns on empty history
 - [x] Zone selector relocated from sidebar footer back to play bar
-- [x] 28 tests updated to use `setBrowseResult` directly instead of mocking mount popAll; 91 tests still passing
+- [x] Home button → welcome view (no popAll, no socket emit)
+- [x] Settings surfaced on the sidebar rail
+- [x] Library children indented in the rail to make the tree relationship visible
+- [x] 91 tests passing through both rounds of polish
+
+## Recently Played / Added on welcome view (open — needs investigation)
+- [ ] User flagged this as a priority. Public Roon extension API services don't expose recent-activity nodes at the level-0 / level-1 layers we've captured. Need a `--include-content-samples` capture against the live Core to look at level-2 sub-views (Library/Albums, Library/Tracks, etc.) for sort=recent / "Recently Added" / "Recently Played" affordances. The capture artifact is local-only and gitignored.
 
 ## Next Iteration (open)
 - [ ] Live verification on Roon Core after PR1 redeploy:
-  - [ ] Right pane is the only scroll surface; left, top, bottom panes locked
+  - [ ] Layout: right pane is the only scroll surface; left, top, bottom panes locked
   - [ ] Welcome view appears on first /library load (no Explore duplication)
   - [ ] Zone selector works from play bar
   - [ ] Rail entries render and respond to clicks
-  - [ ] Stale-key recovery on Core restart
-  - [ ] Mobile viewport hamburger toggle
+  - [ ] Header search from /queue routes to /library and shows results (R7 fix)
+  - [ ] Search result click drills without browse errors (Phase A regression check)
+  - [ ] Core reconnect/re-pair refreshes the rail without hiding entries (R7 token guard)
+  - [ ] Stale-key recovery: kill the Roon Core, click a rail entry, expect silent label-walk recovery
+  - [ ] Mobile (<1020px): hamburger opens/closes rail; clicking a rail entry closes the overlay
+  - [ ] Theme toggle persists across refresh
+  - [ ] Queue button still works from the play bar
 - [ ] Live verification carryover from earlier PRs: search drill + remount (Phase A); `<album> by <artist>` resolver hits/misses (Phase B); composer/work flow doesn't auto-play; queue positional updates.
 - [ ] **Redeploy required**: `sudo ./scripts/install.sh --reinstall` to pick up PR1.
 - [ ] PR2 from the UX overhaul plan: now-playing overlay, album page polish.

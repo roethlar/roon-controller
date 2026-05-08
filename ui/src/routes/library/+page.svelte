@@ -9,7 +9,8 @@
 		setBrowseLoading,
 		setSearchLoading,
 		setBrowseResult,
-		appendBrowseItems
+		appendBrowseItems,
+		resetBrowse
 	} from '$lib/stores/browseStore';
 	import { selectedZoneStore } from '$lib/stores/selectedZoneStore';
 	import {
@@ -336,8 +337,11 @@
 	}
 
 	function resetRoot() {
+		// Home returns to the welcome view, not the Roon browse root.
+		// The browse root would just mirror the Explore rail (Library /
+		// Playlists / Genres / etc.) which is already in the sidebar.
 		resetHistory();
-		browse({ hierarchy: 'browse', popAll: true }, { recordHistory: false });
+		resetBrowse();
 	}
 
 	/**

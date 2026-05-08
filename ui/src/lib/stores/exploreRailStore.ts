@@ -69,11 +69,12 @@ const RESOLVE_SESSION_KEY = 'explore-rail-discover';
 const EXPANDED_LEVEL_0 = new Set(['Library']);
 
 /**
- * Level-0 entries to exclude from the rail entirely. `Settings` is
- * a Roon-internal config page that the public browse API can't
- * action meaningfully.
+ * Level-0 entries to exclude from the rail entirely. None today —
+ * `Settings` is surfaced even though our public-API surface can't
+ * drive every action it exposes; users want it visible per
+ * 2026-05-07 feedback.
  */
-const EXCLUDED_LEVEL_0 = new Set(['Settings']);
+const EXCLUDED_LEVEL_0 = new Set<string>();
 
 /**
  * Level-1 entries under `Library` to exclude from the rail.

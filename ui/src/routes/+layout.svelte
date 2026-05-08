@@ -587,6 +587,7 @@
 		display: block;
 		text-align: left;
 		padding: 0.45rem 0.7rem;
+		padding-left: 1.6rem;
 		border-radius: 8px;
 		background: transparent;
 		border: 1px solid transparent;
@@ -598,6 +599,7 @@
 
 	.rail-link.top {
 		font-weight: 500;
+		padding-left: 0.7rem;
 	}
 
 	.rail-link:hover:not(:disabled) {
