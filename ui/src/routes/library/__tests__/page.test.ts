@@ -1384,3 +1384,179 @@ describe('Library page — track-list classification', () => {
 		expect(screen.getByRole('button', { name: '1 Hour Continuous Mix' })).toBeTruthy();
 	});
 });
+
+describe('Library page — Recently Played tile click', () => {
+	const RECENT = {
+		title: 'Hey Jude',
+		artist: 'The Beatles',
+		album: '1',
+		duration: 431,
+		image_key: 'img-x',
+		zone_id: 'zone-a',
+		zone_name: 'Living Room',
+		played_at: '2026-05-08T00:00:00.000Z'
+	};
+
+	beforeEach(async () => {
+		const { resetRecentlyPlayed, appendRecentlyPlayedFromSocket } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
+		resetRecentlyPlayed();
+		appendRecentlyPlayedFromSocket(RECENT);
+	});
+
+	it('shows a feedback toast and skips REST when no zone is selected', async () => {
+		setSelectedZone('');
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', {
+			name: /Play 'Hey Jude'/i
+		});
+		tile.click();
+		await tick();
+
+		// Filter out the welcome-stats fetches; the click path should
+		// not have triggered any nav-related apiBrowse calls.
+		const navCalls = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		);
+		expect(navCalls).toHaveLength(0);
+
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message).toMatch(/select a zone/i);
+	});
+
+	it('searches for the title, matches by track + artist, and runs quickPlay', async () => {
+		setSelectedZone('zone-a');
+
+		// Search returns the track under a fresh search itemKey.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Hey Jude',
+						subtitle: 'The Beatles',
+						itemKey: 'fresh-track-key',
+						itemType: 'track',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+		// quickPlay action-list lookup → finds Play Now.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [
+					makeItem({ title: 'Play Now', itemKey: 'pn', hint: 'action', isPlayable: true })
+				]
+			})
+		);
+		// Execute Play Now.
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
+		tile.click();
+
+		await waitFor(() => {
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(3);
+		});
+
+		const navCalls = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		);
+		// First nav call: search the title in main search session.
+		expect(navCalls[0][1]).toEqual(
+			expect.objectContaining({
+				hierarchy: 'search',
+				input: 'Hey Jude',
+				multiSessionKey: 'library-search'
+			})
+		);
+		// Second: drill the matched fresh itemKey for its action list.
+		expect(navCalls[1][1]).toEqual(
+			expect.objectContaining({ hierarchy: 'search', itemKey: 'fresh-track-key' })
+		);
+		// Third: execute Play Now.
+		expect(navCalls[2][1]).toEqual(
+			expect.objectContaining({ itemKey: 'pn' })
+		);
+	});
+
+	it('pushes a feedback toast when no track in library matches the entry', async () => {
+		setSelectedZone('zone-a');
+
+		// Search returns nothing track-shaped.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Different Track',
+						subtitle: 'Other Artist',
+						itemKey: 'wrong',
+						itemType: 'track',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
+		tile.click();
+		await tick();
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message).toMatch(/Couldn't find "Hey Jude"/);
+		});
+
+		// No quickPlay drill calls fired.
+		const navCalls = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		);
+		expect(navCalls).toHaveLength(1); // just the search
+	});
+
+	it('rejects matches whose subtitle does not contain the recorded artist', async () => {
+		setSelectedZone('zone-a');
+
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Hey Jude',
+						subtitle: 'A Different Cover Artist',
+						itemKey: 'wrong',
+						itemType: 'track',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
+		tile.click();
+		await tick();
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message).toMatch(/Couldn't find/);
+		});
+	});
+});

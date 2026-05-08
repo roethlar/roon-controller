@@ -38,6 +38,7 @@
 		BrowseOptions,
 		BrowsePopOptions,
 		BrowseResult,
+		RecentlyPlayedEntry,
 		SearchResult
 	} from '@shared/types';
 	import type { BrowseHistoryState } from '$lib/stores/browseHistoryStore';
@@ -89,6 +90,81 @@
 
 	function fmtCount(n: number | null): string {
 		return n === null ? '—' : n.toLocaleString();
+	}
+
+	let recentlyPlayedClickInFlight = $state(false);
+
+	/**
+	 * Play a Recently Played tile. We don't store Roon item_keys (they're
+	 * session-scoped — would be stale across Core restarts), so we resolve
+	 * the entry to a fresh result by searching Roon for its title and
+	 * matching against the recorded artist/album/duration. On a confirmed
+	 * match, run the quickPlay action-lookup → Play Now flow against the
+	 * fresh search itemKey. On no match (track removed from library, name
+	 * collision, etc.), surface a feedback toast.
+	 */
+	async function playRecentEntry(entry: RecentlyPlayedEntry): Promise<void> {
+		if (recentlyPlayedClickInFlight) return;
+		const zoneId = $selectedZoneStore || undefined;
+		if (!zoneId) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'recently-played',
+				message: 'Select a zone to play.'
+			});
+			return;
+		}
+		if (!entry.title) return;
+
+		recentlyPlayedClickInFlight = true;
+		try {
+			const search = await apiBrowse(fetch, {
+				hierarchy: 'search',
+				input: entry.title,
+				zoneId,
+				multiSessionKey: SEARCH_SESSION_KEY,
+				popAll: true
+			});
+			setSearchLoading(entry.title);
+
+			const titleLower = entry.title.toLowerCase();
+			const artistLower = entry.artist?.toLowerCase();
+			const match = search.items.find((candidate) => {
+				if (!candidate.itemKey) return false;
+				const type = (candidate.itemType ?? '').toLowerCase();
+				if (type !== 'track' && type !== 'tracks') return false;
+				if ((candidate.title ?? '').toLowerCase() !== titleLower) return false;
+				if (artistLower) {
+					const subtitle = (candidate.subtitle ?? '').toLowerCase();
+					if (!subtitle.includes(artistLower)) return false;
+				}
+				return true;
+			});
+
+			if (!match?.itemKey) {
+				pushCommandFeedback({
+					source: 'browse',
+					command: 'recently-played',
+					message: `Couldn't find "${entry.title}" in your library.`
+				});
+				return;
+			}
+
+			// QuickPlay the matched track via its fresh search itemKey.
+			await quickPlay(match, {
+				hierarchy: 'search',
+				multiSessionKey: SEARCH_SESSION_KEY
+				// resetSearch:false — we just freshened above.
+			});
+		} catch (err) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'recently-played',
+				message: `Play failed: ${(err as Error).message}`
+			});
+		} finally {
+			recentlyPlayedClickInFlight = false;
+		}
 	}
 
 	function matchBreadcrumb(items: BrowseItem[], crumb: BrowseBreadcrumb): BrowseItem | undefined {
@@ -1071,7 +1147,14 @@
 						</header>
 						<div class="recently-played-grid">
 							{#each $recentlyPlayedStore.entries.slice(0, 12) as entry}
-								<article class="rp-tile">
+								<button
+									type="button"
+									class="rp-tile"
+									disabled={recentlyPlayedClickInFlight}
+									title="Play '{entry.title ?? 'Untitled'}' on the selected zone"
+									aria-label="Play '{entry.title ?? 'Untitled'}' on the selected zone"
+									onclick={() => playRecentEntry(entry)}
+								>
 									<div class="rp-art">
 										{#if entry.image_key}
 											<img
@@ -1081,6 +1164,7 @@
 										{:else}
 											<span class="rp-art-fallback">{entry.title?.charAt(0) ?? '♪'}</span>
 										{/if}
+										<span class="rp-play-overlay" aria-hidden="true">▶</span>
 									</div>
 									<div class="rp-meta">
 										<p class="rp-title" title={entry.title}>{entry.title ?? 'Untitled'}</p>
@@ -1091,7 +1175,7 @@
 											<p class="rp-zone">{entry.zone_name}</p>
 										{/if}
 									</div>
-								</article>
+								</button>
 							{/each}
 						</div>
 					</section>
@@ -1262,9 +1346,26 @@
 		flex-direction: column;
 		gap: 0.4rem;
 		min-width: 0;
+		padding: 0;
+		background: transparent;
+		border: 0;
+		text-align: left;
+		color: inherit;
+		cursor: pointer;
+		transition: transform 140ms ease;
+	}
+
+	.rp-tile:hover:not(:disabled) {
+		transform: translateY(-2px);
+	}
+
+	.rp-tile:disabled {
+		opacity: 0.55;
+		cursor: progress;
 	}
 
 	.rp-art {
+		position: relative;
 		width: 100%;
 		aspect-ratio: 1;
 		border-radius: 9px;
@@ -1272,6 +1373,22 @@
 		background: rgba(255, 255, 255, 0.06);
 		display: grid;
 		place-items: center;
+	}
+
+	.rp-play-overlay {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		font-size: 2.4rem;
+		color: #fff;
+		background: rgba(0, 0, 0, 0.45);
+		opacity: 0;
+		transition: opacity 140ms ease;
+	}
+
+	.rp-tile:hover:not(:disabled) .rp-play-overlay {
+		opacity: 1;
 	}
 
 	.rp-art img {
