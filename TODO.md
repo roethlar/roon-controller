@@ -191,6 +191,21 @@
 - [x] Library children indented in the rail to make the tree relationship visible
 - [x] 91 tests passing through both rounds of polish
 
+## Welcome / track-list / play-bar polish round (done — see DEVLOG)
+- [x] quickPlay restore depth — popInternal uses levels: 2
+- [x] Now-playing indicator on album track list (♫ + accent styling)
+- [x] Track-list classifier handles large untyped action_list pages (Library/Tracks, playlist contents); inferred-all-tracks mode keeps the rendering correct
+- [x] Play-bar track title → opens album; artist label → opens artist (search-resolve via dedicated hierarchies)
+- [x] Header search + theme toggle right-aligned
+- [x] Recently Played as horizontal-scroll row
+- [x] R-N follow-ups: searchQuery passed to pushHistory in resolveAndNavigate; itemType normalizer accepts plural/case variants
+
+## Search-result rendering consistency (open — large)
+- [ ] Search results currently render in a grouped/paginated panel; browse views render as list / grid / track-list. Unify so search results match the surrounding browse layout. Significant Search.svelte refactor.
+
+## Layout integration tests (open — residual risk from R7)
+- [ ] Add a layout test harness so things like rail clicks, play-bar links, mobile hamburger are covered. The recent searchQuery-not-passed regression in `resolveAndNavigate` was caught only by static review; a layout-level test would have failed on it.
+
 ## Recently Played, locally tracked (done — see DEVLOG)
 - [x] Confirmed via full hierarchy probe + RoonApiBrowse docs that recent-activity is not in the public API
 - [x] `RecentlyPlayedService` subscribes to now-playing-updated, persists to `data/recently-played.json` atomically, dedupes within 30s window, caps at 50

@@ -1,6 +1,43 @@
 # Dev Log
 
-## 2026-05-08 (latest) — Recently Played, locally tracked
+## 2026-05-08 (latest) — Welcome / track-list / play-bar polish round
+
+Six fixes from a single round of UX feedback after the Recently Played deploy, plus three corrections from a static review of the polish patch:
+
+### A. quickPlay restored two levels too few
+`popInternal` now uses `levels: 2`. quickPlay drills twice (track action list → execute Play Now), so a single pop left the user one level deeper than the album. Roon clamps to root if the level count exceeds the stack, so this is safe in shallower contexts.
+
+### B. Now-playing indicator on the album track list
+Track rows now compare against the selected zone's `now_playing` (stripped title equality + artist substring on subtitle). The matched row gets a pulsing ♫ glyph in place of the track number, accent-colored title, and a soft accent gradient.
+
+### C. Library/Tracks and playlist contents rendered as pill buttons
+Roon returns these as 100s of `action_list` rows with no `itemType` and non-numeric titles, so the prior `isTrackItem` heuristic refused to classify them as tracks.
+
+- Added a size-threshold fallback to `isTrackList`: if every item is action_list AND the list has ≥ 5 items, treat as a track list. Keeps small Work-style pages out of the track layout while catching the 100s-of-rows tracks/playlists case.
+- **R-N follow-up bug**: the size-threshold mode set `isTrackList = true` but `trackItems` still filtered by `isTrackItem()`, so all rows fell into `pageActions`. Result: empty `<ol>` plus a pile of pill buttons. Added `inferredAllTracks` mode — when the size threshold is what made the list qualify (no item passed `isTrackItem`), every action_list row IS a track row; `pageActions` is empty. Test added with 7 untyped non-numeric rows.
+
+### D + E. Play-bar artist/title links now resolve to entity pages
+Both call `resolveAndNavigate` which searches Roon's search hierarchy for the input, matches the first item by `itemType` + title (and subtitle-contains-artist for albums), drills into it, and pushes history with a breadcrumb so route remount can replay. Falls back to raw search results on miss so the user always lands somewhere useful.
+
+- **R-N follow-up bug**: `resolveAndNavigate` pushed search-rooted history but passed `undefined` as the searchQuery to `pushHistory`. Persisted history would have `searchQuery: null` — Phase A's `restoreBrowse` would then discard the drill on remount as "search history with no query." Fix: call `setSearchLoading(input)` first and pass `input` to `pushHistory` as the searchQuery.
+- **R-N P3**: The matcher used strict `=== 'album'` / `=== 'artist'`, missing Roon's plural variants (`albums`, `artists`). Added `itemTypeMatches(actual, expectedSingular)` that accepts both forms and is case-insensitive — same defensive style as `BrowseService.inferSearchType`.
+
+### F. Header search + theme toggle right-aligned
+`header-search` dropped `flex: 1`; now `flex: 0 0 auto` with `margin-left: auto` so it sits to the right alongside the theme toggle. Hamburger and back/home/forward stay on the left.
+
+### Bonus. Recently Played as a single horizontal-scroll row
+Was a multi-row wrapping grid; now a single flex row with `overflow-x: auto`, scroll-snap, and styled scrollbar.
+
+### Tests
+- 1 new in track-list classification (inferred large untyped track list).
+- 4 prior recently-played-tile tests confirmed still passing.
+- Total UI: 106 → 107. Backend unchanged at 67. svelte-check 0/0, build clean, lint clean.
+
+### Known gap (deferred)
+- Layout-level integration tests still don't exist (R7 residual risk). The play-bar `pushHistory` push was the kind of regression a layout test would catch — caught here only by static review. A `+layout.svelte` test harness is the right fix; tracking in TODO.
+- Search-result rendering consistency (#5 from the original ask): search results panel uses its own grouped layout, browse views use list/grid/track-list. Unifying is a meaningful refactor; deferred to its own PR.
+
+## 2026-05-08 — Recently Played, locally tracked
 
 User flagged "Recently Played" as a priority for the welcome view. Public Roon extension API doesn't expose recent-activity history (confirmed via the full hierarchy probe + reading the RoonApiBrowse docs). Native Roon's "Home" page uses a private service that third-party clients can't reach.
 

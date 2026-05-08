@@ -882,20 +882,37 @@
 	});
 
 	/**
-	 * In a mixed list (e.g. artist page): action_list items like "Play Artist" shown as pill buttons.
-	 * In a pure tracklist: page-level actions like "Play Work" — items that aren't classified as tracks.
+	 * Inferred-track-list mode: the page is a track list ONLY because
+	 * we hit the size-threshold fallback in `isTrackList`, not because
+	 * `isTrackItem` flagged any row. In that case every action_list
+	 * row IS a track row — splitting via `isTrackItem` would put 100%
+	 * of rows in `pageActions` (an empty `<ol>` plus a pile of pill
+	 * buttons, the bug GPT R-N flagged).
 	 */
-	const pageActions = $derived(
-		isTrackList
-			? ($browseStore.current?.items.filter((i) => !isTrackItem(i)) ?? [])
-			: ($browseStore.current?.items.filter((i) => i.hint === 'action_list') ?? [])
+	const inferredAllTracks = $derived(
+		isTrackList && !($browseStore.current?.items.some(isTrackItem) ?? false)
 	);
 
-	/** Individual tracks — items classified as `track` semantically (or numbered, in legacy fallback). */
+	/**
+	 * In a mixed list (e.g. artist page): action_list items like "Play Artist" shown as pill buttons.
+	 * In an explicit tracklist: page-level actions like "Play Work" — items that aren't tracks.
+	 * In an inferred tracklist: no page actions; every row is a track row.
+	 */
+	const pageActions = $derived(
+		inferredAllTracks
+			? []
+			: isTrackList
+				? ($browseStore.current?.items.filter((i) => !isTrackItem(i)) ?? [])
+				: ($browseStore.current?.items.filter((i) => i.hint === 'action_list') ?? [])
+	);
+
+	/** Individual tracks — explicit (itemType=track / numbered) or inferred (every action_list row). */
 	const trackItems = $derived(
-		isTrackList
-			? ($browseStore.current?.items.filter(isTrackItem) ?? [])
-			: []
+		inferredAllTracks
+			? ($browseStore.current?.items ?? [])
+			: isTrackList
+				? ($browseStore.current?.items.filter(isTrackItem) ?? [])
+				: []
 	);
 
 	/** Non-action items for the current list. */

@@ -1353,6 +1353,39 @@ describe('Library page — track-list classification', () => {
 		expect(trackList!.querySelectorAll('li.track-row')).toHaveLength(2);
 	});
 
+	it('infers a track list from a large pure-action_list page even when items have no itemType and no leading digit', async () => {
+		// Live shape from Library/Tracks and playlist contents: 100s of
+		// action_list rows with no itemType and non-numeric titles. Prior
+		// classifier left every row in pageActions with an empty <ol>;
+		// inferred-mode now puts every row in trackItems.
+		const items: BrowseItem[] = [
+			'Bohemian Rhapsody',
+			'Something',
+			'Hey Jude',
+			'Imagine',
+			'Yesterday',
+			'Let It Be',
+			'Come Together'
+		].map((title, i) =>
+			makeItem({
+				title,
+				itemKey: `t${i}`,
+				hint: 'action_list',
+				subtitle: 'Some Artist'
+			})
+		);
+		setUpRoot(items);
+
+		render(LibraryPage);
+		await tick();
+
+		// Track list rendered with all 7 rows, no page-action pills.
+		const trackList = document.querySelector('ol.track-list');
+		expect(trackList).not.toBeNull();
+		expect(trackList!.querySelectorAll('li.track-row')).toHaveLength(7);
+		expect(document.querySelector('.page-actions')).toBeNull();
+	});
+
 	it('itemType wins over leading-digit regex (numbered title with non-track itemType is a page action)', async () => {
 		// Hypothetical: a page action with a numbered label like "1 hour
 		// continuous mix" that Roon flags as a non-track item. Pre-refactor

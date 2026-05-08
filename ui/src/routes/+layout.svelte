@@ -237,6 +237,19 @@
 	 * search results page (via `pendingSearchStore`) on miss so the
 	 * user still gets *something* useful.
 	 */
+	/**
+	 * Roon's `item_type` / `item_subtype` come back raw — sometimes
+	 * plural (`albums`), sometimes capitalized (`Album`). Normalize
+	 * the same way `BrowseService.inferSearchType` does so the
+	 * matcher accepts singular and plural variants regardless of case.
+	 */
+	function itemTypeMatches(actual: string | undefined, expectedSingular: string): boolean {
+		const a = (actual ?? '').toLowerCase();
+		if (!a) return false;
+		const e = expectedSingular.toLowerCase();
+		return a === e || a === `${e}s`;
+	}
+
 	async function resolveAndNavigate(opts: {
 		input: string;
 		expectedItemType: string;
@@ -257,12 +270,10 @@
 
 			const targetLower = opts.input.toLowerCase();
 			const subtitleLower = opts.matchSubtitle?.toLowerCase();
-			const expected = opts.expectedItemType.toLowerCase();
 
 			const match = search.items.find((candidate) => {
 				if (!candidate.itemKey) return false;
-				const type = (candidate.itemType ?? '').toLowerCase();
-				if (type !== expected) return false;
+				if (!itemTypeMatches(candidate.itemType, opts.expectedItemType)) return false;
 				if ((candidate.title ?? '').toLowerCase() !== targetLower) return false;
 				if (subtitleLower) {
 					const sub = (candidate.subtitle ?? '').toLowerCase();
@@ -277,11 +288,17 @@
 				return;
 			}
 
-			// Land on the matched entity as a fresh search-rooted thread.
+			// Set search context BEFORE pushing history so the search
+			// query is available to remount-restore. pushHistory captures
+			// `lastSearchQuery` at the time of the call; without this
+			// `setSearchLoading` the persisted history step would be
+			// search-rooted with searchQuery=null, and Phase A's
+			// restoreBrowse would discard it.
+			setSearchLoading(opts.input);
 			resetHistory();
 			pushHistory(
 				{ hierarchy: 'search', itemKey: match.itemKey, zoneId, multiSessionKey: SEARCH_SESSION_KEY },
-				undefined,
+				opts.input,
 				{
 					title: opts.breadcrumb.title,
 					subtitle: match.subtitle,
@@ -298,7 +315,6 @@
 				multiSessionKey: SEARCH_SESSION_KEY
 			});
 
-			setSearchLoading(opts.input);
 			if ($page.url.pathname === '/library') {
 				setBrowseResult(result, 'search');
 			} else {
