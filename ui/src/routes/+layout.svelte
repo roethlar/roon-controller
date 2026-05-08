@@ -23,7 +23,13 @@
 		resetHistory,
 		type ExploreRailEntry
 	} from '$lib/stores';
-	import { browseStore, setBrowseLoading, setBrowseResult } from '$lib/stores/browseStore';
+	import {
+		browseStore,
+		setBrowseLoading,
+		setBrowseResult,
+		setSearchLoading
+	} from '$lib/stores/browseStore';
+	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
 	import { goto } from '$app/navigation';
 	import { zonesStore, zoneMapStore } from '$lib/stores/zonesStore';
 	import { registerSocketHandlers } from '$lib/socket/register';
@@ -219,6 +225,115 @@
 	function searchInLibrary(query: string) {
 		pendingSearchStore.set(query);
 		void goto('/library');
+	}
+
+	let playBarNavInFlight = $state(false);
+
+	/**
+	 * Resolve a play-bar link (artist name / album name) to a real
+	 * Roon page via the search hierarchy. Searches Roon for the
+	 * input, finds the first matching result by itemType, and
+	 * navigates the right pane to it. Falls back to opening the raw
+	 * search results page (via `pendingSearchStore`) on miss so the
+	 * user still gets *something* useful.
+	 */
+	async function resolveAndNavigate(opts: {
+		input: string;
+		expectedItemType: string;
+		matchSubtitle?: string;
+		breadcrumb: { title: string; itemType: string };
+	}): Promise<void> {
+		if (playBarNavInFlight) return;
+		playBarNavInFlight = true;
+		try {
+			const zoneId = $selectedZoneStore || undefined;
+			const search = await apiBrowse(fetch, {
+				hierarchy: 'search',
+				input: opts.input,
+				zoneId,
+				multiSessionKey: SEARCH_SESSION_KEY,
+				popAll: true
+			});
+
+			const targetLower = opts.input.toLowerCase();
+			const subtitleLower = opts.matchSubtitle?.toLowerCase();
+			const expected = opts.expectedItemType.toLowerCase();
+
+			const match = search.items.find((candidate) => {
+				if (!candidate.itemKey) return false;
+				const type = (candidate.itemType ?? '').toLowerCase();
+				if (type !== expected) return false;
+				if ((candidate.title ?? '').toLowerCase() !== targetLower) return false;
+				if (subtitleLower) {
+					const sub = (candidate.subtitle ?? '').toLowerCase();
+					if (!sub.includes(subtitleLower)) return false;
+				}
+				return true;
+			});
+
+			if (!match?.itemKey) {
+				// Couldn't pin the entity — fall back to showing search results.
+				searchInLibrary(opts.input);
+				return;
+			}
+
+			// Land on the matched entity as a fresh search-rooted thread.
+			resetHistory();
+			pushHistory(
+				{ hierarchy: 'search', itemKey: match.itemKey, zoneId, multiSessionKey: SEARCH_SESSION_KEY },
+				undefined,
+				{
+					title: opts.breadcrumb.title,
+					subtitle: match.subtitle,
+					imageKey: match.imageKey,
+					itemType: opts.breadcrumb.itemType
+				}
+			);
+
+			// Drill into the matched entity to populate the right pane.
+			const result = await apiBrowse(fetch, {
+				hierarchy: 'search',
+				itemKey: match.itemKey,
+				zoneId,
+				multiSessionKey: SEARCH_SESSION_KEY
+			});
+
+			setSearchLoading(opts.input);
+			if ($page.url.pathname === '/library') {
+				setBrowseResult(result, 'search');
+			} else {
+				void goto('/library');
+			}
+		} catch (err) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'play-bar',
+				message: `Couldn't open: ${(err as Error).message}`
+			});
+		} finally {
+			playBarNavInFlight = false;
+		}
+	}
+
+	function openArtistPage(name: string): void {
+		if (!name) return;
+		void resolveAndNavigate({
+			input: name,
+			expectedItemType: 'artist',
+			breadcrumb: { title: name, itemType: 'artist' }
+		});
+	}
+
+	function openAlbumOfNowPlaying(): void {
+		const album = nowPlaying?.album;
+		const artist = nowPlaying?.artist;
+		if (!album) return;
+		void resolveAndNavigate({
+			input: album,
+			expectedItemType: 'album',
+			matchSubtitle: artist,
+			breadcrumb: { title: album, itemType: 'album' }
+		});
 	}
 
 	/**
@@ -444,12 +559,12 @@
 		</div>
 		<div class="pb-meta">
 			{#if nowPlaying?.title}
-				<button type="button" class="pb-title pb-link" onclick={() => nowPlaying?.album && searchInLibrary(nowPlaying.album)}>{nowPlaying.title}</button>
+				<button type="button" class="pb-title pb-link" disabled={playBarNavInFlight} onclick={() => openAlbumOfNowPlaying()}>{nowPlaying.title}</button>
 			{:else}
 				<p class="pb-title">Nothing playing</p>
 			{/if}
 			{#if nowPlaying?.artist}
-				<button type="button" class="pb-sub pb-link" onclick={() => searchInLibrary(nowPlaying!.artist!)}>{nowPlaying.artist}</button>
+				<button type="button" class="pb-sub pb-link" disabled={playBarNavInFlight} onclick={() => openArtistPage(nowPlaying!.artist!)}>{nowPlaying.artist}</button>
 			{:else}
 				<p class="pb-sub"></p>
 			{/if}
@@ -750,8 +865,10 @@
 	}
 
 	.header-search {
-		flex: 1;
-		max-width: 480px;
+		flex: 0 0 auto;
+		width: 360px;
+		max-width: 50vw;
+		margin-left: auto; /* push search + theme toggle to the right */
 	}
 
 	.theme-toggle {

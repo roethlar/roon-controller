@@ -92,6 +92,25 @@
 		return n === null ? '—' : n.toLocaleString();
 	}
 
+	/**
+	 * Track-row "now playing" check. Compares a row from a track-list
+	 * page against the selected zone's now_playing payload. Match is
+	 * by stripped title equality + artist substring on the row's
+	 * subtitle. We strip the leading "N. " prefix the same way
+	 * `trackTitle` does so a numbered row matches against Roon's
+	 * unprefixed now_playing.title.
+	 */
+	function isNowPlayingTrack(item: BrowseItem): boolean {
+		const np = heroNowPlaying;
+		if (!np?.title || !item.title) return false;
+		const itemTitle = trackTitle(item.title).toLowerCase();
+		if (itemTitle !== np.title.toLowerCase()) return false;
+		if (np.artist && item.subtitle) {
+			return item.subtitle.toLowerCase().includes(np.artist.toLowerCase());
+		}
+		return true;
+	}
+
 	let recentlyPlayedClickInFlight = $state(false);
 
 	/**
@@ -420,12 +439,19 @@
 		emitBrowse('browse:pop', options);
 	}
 
-	/** Internal pop used by quickPlay — does not touch history/forward stacks. */
+	/**
+	 * Internal pop used by quickPlay — does not touch history/forward
+	 * stacks. quickPlay drills twice (track action list → execute Play
+	 * Now), so two pops restore the album view. Roon clamps to root if
+	 * we ask for more levels than exist, so this is safe even when
+	 * quickPlay is called from a shallower context.
+	 */
 	function popInternal() {
 		emitBrowse('browse:pop', {
 			hierarchy: $browseStore.hierarchy,
 			zoneId: $selectedZoneStore || undefined,
-			multiSessionKey: activeMultiSessionKey()
+			multiSessionKey: activeMultiSessionKey(),
+			levels: 2
 		});
 	}
 
@@ -834,17 +860,25 @@
 
 	/**
 	 * True when the current level renders as a track list. A page is a
-	 * track list when every item is `action_list` AND at least one item
-	 * classifies as a track. The second clause keeps "Work"-style pages
-	 * (e.g. `Play Work` + `On Ocean to Ocean by Tori Amos`) — which are
-	 * pure action_list but contain no real tracks — out of the track
+	 * track list when every item is `action_list` AND either:
+	 *   (a) at least one item explicitly classifies as a track via
+	 *       `isTrackItem` (itemType=track or numbered title), OR
+	 *   (b) the list is large enough (>= 5 items) that it can only
+	 *       reasonably be a track list — Library/Tracks and playlist
+	 *       contents come back as 100s of action_list rows with no
+	 *       itemType and non-numeric titles, so heuristic (a) misses.
+	 *
+	 * The size threshold also keeps "Work"-style pages (`Play Work` +
+	 * `On Ocean to Ocean by Tori Amos`, two items) out of the track
 	 * layout.
 	 */
+	const TRACK_LIST_SIZE_THRESHOLD = 5;
 	const isTrackList = $derived.by(() => {
 		const cur = $browseStore.current;
 		if (!cur || cur.items.length === 0) return false;
 		if (!cur.items.every((i) => i.hint === 'action_list')) return false;
-		return cur.items.some(isTrackItem);
+		if (cur.items.some(isTrackItem)) return true;
+		return cur.items.length >= TRACK_LIST_SIZE_THRESHOLD;
 	});
 
 	/**
@@ -996,8 +1030,15 @@
 				{/if}
 				<ol class="track-list">
 					{#each trackItems as item, index}
-						<li class="track-row">
-							<span class="track-num">{trackNum(item.title, index)}</span>
+						{@const playing = isNowPlayingTrack(item)}
+						<li class="track-row" class:playing>
+							<span class="track-num">
+								{#if playing}
+									<span class="track-now-playing" aria-label="Currently playing">♫</span>
+								{:else}
+									{trackNum(item.title, index)}
+								{/if}
+							</span>
 							<div class="track-info">
 								<span class="track-title">{trackTitle(item.title)}</span>
 								{#if item.subtitle}
@@ -1336,16 +1377,32 @@
 	}
 
 	.recently-played-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+		display: flex;
+		flex-direction: row;
 		gap: 0.7rem;
+		overflow-x: auto;
+		overflow-y: visible;
+		padding-bottom: 0.4rem; /* room for the scrollbar without clipping tiles */
+		scroll-snap-type: x mandatory;
+		scrollbar-color: var(--text-soft) transparent;
+	}
+
+	.recently-played-grid::-webkit-scrollbar {
+		height: 8px;
+	}
+
+	.recently-played-grid::-webkit-scrollbar-thumb {
+		background: var(--text-soft);
+		border-radius: 4px;
+		opacity: 0.5;
 	}
 
 	.rp-tile {
 		display: flex;
 		flex-direction: column;
 		gap: 0.4rem;
-		min-width: 0;
+		flex: 0 0 160px;
+		min-width: 160px;
 		padding: 0;
 		background: transparent;
 		border: 0;
@@ -1353,6 +1410,7 @@
 		color: inherit;
 		cursor: pointer;
 		transition: transform 140ms ease;
+		scroll-snap-align: start;
 	}
 
 	.rp-tile:hover:not(:disabled) {
@@ -1575,6 +1633,31 @@
 
 	.track-row:hover {
 		background: var(--surface-2);
+	}
+
+	.track-row.playing {
+		background: linear-gradient(
+			90deg,
+			color-mix(in srgb, var(--accent) 22%, transparent),
+			transparent 80%
+		);
+	}
+
+	.track-row.playing .track-title {
+		color: var(--accent);
+		font-weight: 700;
+	}
+
+	.track-now-playing {
+		display: inline-block;
+		font-size: 0.95rem;
+		color: var(--accent);
+		animation: pulse 1.6s ease-in-out infinite;
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.55; }
 	}
 
 	.track-row + .track-row {
