@@ -179,8 +179,13 @@ export interface NowPlaying {
  * view can show "Recently played on this controller". The record
  * carries only normalized display fields — no Roon item_keys, no
  * private state. Track identity for dedupe purposes is the tuple
- * (title, artist, album, duration, image_key); rapid duplicates
- * within a suppression window are collapsed.
+ * (title, artist, album, duration, image_key); a new entry is
+ * suppressed if any prior entry within the effective window has the
+ * same identity. The window is `max(configured_floor, duration +
+ * 5s grace)` which catches three patterns: Roon's mid-play
+ * re-emits, group-play (zones grouped together emit per zone within
+ * milliseconds — collapses to one entry, no zone discriminator),
+ * and multi-zone interleaving (head can be a different track).
  *
  * Important caveat for UI: the list reflects what played WHILE this
  * controller's backend was running and subscribed to Roon. Plays

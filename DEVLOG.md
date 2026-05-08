@@ -51,7 +51,7 @@ What we CAN do: track plays locally as our backend observes them via `now-playin
 
 ### Backend — `RecentlyPlayedService`
 - New service under `src/core/recently-played/`. Subscribes to `TransportService.on('now-playing-updated')`, normalizes display fields (`title / artist / album / duration / image_key / zone_id / zone_name / played_at`), persists to `data/recently-played.json` with atomic writes (write-`.tmp` + rename).
-- Dedupes via `title|artist|album|duration|image_key` within a 30s suppression window per zone — collapses Roon's chatty re-emits on seek/pause/metadata-refresh without dropping legitimate consecutive plays.
+- Dedupes via `title|artist|album|duration|image_key` against any entry within an effective window of `max(30s, track_duration + 5s grace)`. Catches three patterns: Roon's chatty mid-play re-emits (seek/pause/metadata refresh) regardless of how late they arrive, group-play artifacts (zones grouped together emit per zone within milliseconds — collapses to one entry, no zone discriminator), and multi-zone interleaving (zone A plays X, zone B plays Y, A re-emits X — head-only check would miss; we scan all entries within the window).
 - Caps at 50 entries (configurable via `RECENTLY_PLAYED_CAP`).
 - Recovers from corrupt JSON (logs warning, starts empty), wrong-shape JSON (`{}` instead of `[]`), and ENOENT (first run). Plausibility filter at load time drops malformed entries.
 - Emits `inserted` event ONLY when a new entry is actually added — not on suppressed duplicates. `server.ts` wires this to a socket broadcast (`recently-played-inserted`) so clients get live appends without seek noise.
@@ -68,7 +68,7 @@ What we CAN do: track plays locally as our backend observes them via `now-playin
 - Section hides cleanly on first run (no entries yet), reappears as soon as something plays.
 
 ### Tests
-- **15 backend tests** for the service: insert, suppression window (collapse + expire), cross-zone non-dedupe, null payload handling, `inserted` only fires on real inserts, cap enforcement, persisted-file load, atomic write (no leftover `.tmp`), corrupt-JSON recovery, wrong-shape recovery, plausibility filter on load, ENOENT-graceful start, zone-name stamping, `stop()` detaches.
+- **18 backend tests** for the service: insert, window-collapse, window-expire (with duration:0 to exercise the configured floor), cross-zone group-play collapse, mid-play duration-window re-emit suppression, post-duration legitimate replay, multi-zone interleaved dedupe (head was different track), null payload handling, `inserted` only fires on real inserts, cap enforcement, persisted-file load, atomic write (no leftover `.tmp`), corrupt-JSON recovery, wrong-shape recovery, plausibility filter on load, ENOENT-graceful start, zone-name stamping, `stop()` detaches.
 - **1 new app-routing test** for `GET /api/recently-played` end-to-end.
 - **5 new UI store tests**: REST load, REST-failure preserves existing entries, socket-append unshifts, socket-append dedupes head-match, client-side cap at 50.
 - Total: backend 51 → 67, UI 97 → 102. svelte-check 0/0, build clean, lint clean.

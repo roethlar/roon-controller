@@ -208,7 +208,7 @@
 
 ## Recently Played, locally tracked (done — see DEVLOG)
 - [x] Confirmed via full hierarchy probe + RoonApiBrowse docs that recent-activity is not in the public API
-- [x] `RecentlyPlayedService` subscribes to now-playing-updated, persists to `data/recently-played.json` atomically, dedupes within 30s window, caps at 50
+- [x] `RecentlyPlayedService` subscribes to now-playing-updated, persists to `data/recently-played.json` atomically, dedupes any entry within `max(30s, track_duration + 5s grace)` (catches mid-play re-emits, group-play, multi-zone interleaving), caps at 50
 - [x] `GET /api/recently-played` + `recently-played-inserted` socket broadcast (only on real inserts)
 - [x] UI store + welcome view section, honest "on this controller" labelling
 - [x] 21 new tests (15 service + 1 REST + 5 UI store)

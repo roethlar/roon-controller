@@ -162,38 +162,48 @@ export class RecentlyPlayedService extends EventEmitter {
   }
 
   /**
-   * Suppress when the most-recent entry has the same dedupe key AND
-   * was recorded within the effective window. Two cases this catches:
+   * Suppress when ANY entry within the effective window has the same
+   * dedupe key. Three cases this catches:
    *
    * 1. Same track re-emitted by Roon mid-play (seek, pause, metadata
    *    refresh). The window must be wide enough to span the whole
    *    track — Roon can re-emit minutes after the play started.
    * 2. Group-play artifacts: when zones are grouped, every grouped
-   *    zone reports the same now_playing within milliseconds. We
-   *    don't compare zone_id; same dedupe key + tight time window =
-   *    same play, regardless of zone. Trade-off: two zones that
-   *    independently happen to play the same track within the
-   *    window collapse to one entry. Acceptable for "recently
-   *    played" UX.
+   *    zone reports the same now_playing within milliseconds. Same
+   *    dedupe key + tight time window = same play, regardless of
+   *    zone. Trade-off: two zones that independently happen to play
+   *    the same track within the window collapse to one entry —
+   *    acceptable for "recently played" UX.
+   * 3. Multi-zone interleaving: zone A plays track X, zone B plays
+   *    track Y, then A re-emits X mid-play. Head is Y, but we still
+   *    need to suppress against the prior X entry. A head-only check
+   *    misses this. Solution: scan entries within the window.
    *
    * The window is `max(suppressionWindowMs, track_duration + grace)`.
-   * The configured value (default 30s) is the floor for short
-   * tracks or unknown duration.
+   * The configured value (default 30s) is the floor for short tracks
+   * or unknown duration. Entries are newest-first, so we stop the
+   * scan as soon as we walk past the window edge.
    */
   private shouldSuppress(entry: RecentlyPlayedEntry): boolean {
-    const head = this.entries[0];
-    if (!head) return false;
-    if (this.dedupeKey(head) !== this.dedupeKey(entry)) return false;
-    const headTime = Date.parse(head.played_at);
     const entryTime = Date.parse(entry.played_at);
-    if (!Number.isFinite(headTime) || !Number.isFinite(entryTime)) return false;
+    if (!Number.isFinite(entryTime)) return false;
+    const key = this.dedupeKey(entry);
     const durationMs = entry.duration ? entry.duration * 1000 : 0;
     const TRACK_END_GRACE_MS = 5_000;
     const window = Math.max(
       this.suppressionWindowMs,
       durationMs + TRACK_END_GRACE_MS
     );
-    return entryTime - headTime < window;
+
+    for (const existing of this.entries) {
+      const existingTime = Date.parse(existing.played_at);
+      if (!Number.isFinite(existingTime)) continue;
+      // Entries are newest-first. Past the window edge → no more
+      // candidates can match.
+      if (entryTime - existingTime >= window) break;
+      if (this.dedupeKey(existing) === key) return true;
+    }
+    return false;
   }
 
   private dedupeKey(entry: RecentlyPlayedEntry): string {

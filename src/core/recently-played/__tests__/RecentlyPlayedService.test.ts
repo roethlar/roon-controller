@@ -173,6 +173,39 @@ describe("RecentlyPlayedService", () => {
       expect(svc.getEntries()).toHaveLength(1);
     });
 
+    it("dedupes against any prior entry within the window, not just head (multi-zone interleaving)", async () => {
+      // Zone A starts X, zone B starts Y, then zone A re-emits X
+      // mid-play. Head when X re-emits is Y, but the suppression
+      // check must also see the earlier X within the window.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      let clock = 1_000_000;
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath, suppressionWindowMs: 30_000, now: () => clock }
+      );
+      await svc.start();
+
+      const trackX = nowPlaying({ title: "Track X", duration: 200 });
+      const trackY = nowPlaying({
+        title: "Track Y",
+        duration: 200,
+        zone_id: "zone-b"
+      });
+
+      transport.fireNowPlaying("zone-a", trackX);
+      clock += 2_000;
+      transport.fireNowPlaying("zone-b", trackY);
+      clock += 5_000; // 7s after X started — well within X's 200s window
+      transport.fireNowPlaying("zone-a", trackX); // mid-play re-emit
+
+      // Two distinct tracks recorded; the X re-emit was suppressed
+      // even though head was Y.
+      const titles = svc.getEntries().map((e) => e.title);
+      expect(titles).toEqual(["Track Y", "Track X"]);
+    });
+
     it("inserts a new entry once the track-duration window has passed (legitimate replay)", async () => {
       const transport = new FakeTransport();
       const filePath = await makeTmpPath();
