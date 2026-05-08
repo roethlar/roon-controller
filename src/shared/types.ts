@@ -174,6 +174,39 @@ export interface NowPlaying {
 }
 
 /**
+ * One play observed by RecentlyPlayedService. Captured from
+ * `now-playing-updated` events and persisted to disk so the welcome
+ * view can show "Recently played on this controller". The record
+ * carries only normalized display fields — no Roon item_keys, no
+ * private state. Track identity for dedupe purposes is the tuple
+ * (title, artist, album, duration, image_key); rapid duplicates
+ * within a suppression window are collapsed.
+ *
+ * Important caveat for UI: the list reflects what played WHILE this
+ * controller's backend was running and subscribed to Roon. Plays
+ * that happened during service downtime aren't captured. Label the
+ * view honestly.
+ */
+export interface RecentlyPlayedEntry {
+  /** Track title at time of play. */
+  title?: string;
+  /** Primary artist. */
+  artist?: string;
+  /** Album name. */
+  album?: string;
+  /** Track duration in seconds, when known. */
+  duration?: number;
+  /** Roon image key for artwork. Session-scoped. */
+  image_key?: string;
+  /** Zone where the track played. */
+  zone_id: string;
+  /** Display name of that zone at the time. */
+  zone_name?: string;
+  /** Wall-clock time the entry was recorded (ISO 8601). */
+  played_at: string;
+}
+
+/**
  * Queue entry for a zone
  */
 export interface QueueItem {

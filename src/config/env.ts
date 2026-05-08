@@ -10,6 +10,8 @@ export interface AppConfig {
   readonly roonTokenPath: string;
   readonly imageCachePath: string;
   readonly imageCacheMaxBytes: number;
+  readonly recentlyPlayedPath: string;
+  readonly recentlyPlayedCap: number;
 }
 
 export type LogLevel = "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
@@ -97,6 +99,25 @@ const parseImageCacheMaxBytes = (value: string | undefined): number => {
   return Math.floor(parsed);
 };
 
+const parseRecentlyPlayedPath = (value: string | undefined): string => {
+  const rawPath = coerceString(value) ?? "./data/recently-played.json";
+  return path.resolve(rawPath);
+};
+
+const DEFAULT_RECENTLY_PLAYED_CAP = 50;
+
+const parseRecentlyPlayedCap = (value: string | undefined): number => {
+  const raw = coerceString(value);
+  if (!raw) return DEFAULT_RECENTLY_PLAYED_CAP;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 1000) {
+    throw new ConfigError(
+      "RECENTLY_PLAYED_CAP must be an integer between 1 and 1000"
+    );
+  }
+  return parsed;
+};
+
 export const loadConfig = (): AppConfig => {
   const host = parseHost(process.env.HOST);
   const port = parsePort(process.env.PORT);
@@ -104,6 +125,12 @@ export const loadConfig = (): AppConfig => {
   const roonTokenPath = parseTokenPath(process.env.ROON_TOKEN_PATH);
   const imageCachePath = parseImageCachePath(process.env.IMAGE_CACHE_PATH);
   const imageCacheMaxBytes = parseImageCacheMaxBytes(process.env.IMAGE_CACHE_MAX_BYTES);
+  const recentlyPlayedPath = parseRecentlyPlayedPath(
+    process.env.RECENTLY_PLAYED_PATH
+  );
+  const recentlyPlayedCap = parseRecentlyPlayedCap(
+    process.env.RECENTLY_PLAYED_CAP
+  );
 
   return {
     host,
@@ -112,5 +139,7 @@ export const loadConfig = (): AppConfig => {
     roonTokenPath,
     imageCachePath,
     imageCacheMaxBytes,
+    recentlyPlayedPath,
+    recentlyPlayedCap,
   };
 };

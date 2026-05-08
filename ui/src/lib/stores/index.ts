@@ -48,10 +48,22 @@ export {
 	type WelcomeStats,
 	type WelcomeStatsState
 } from './welcomeStatsStore';
+export {
+	recentlyPlayedStore,
+	loadRecentlyPlayed,
+	appendRecentlyPlayedFromSocket,
+	resetRecentlyPlayed,
+	type RecentlyPlayedState
+} from './recentlyPlayedStore';
 
 import { loadCoreStatus } from './coreStore';
 import { loadZones } from './zonesStore';
+import { loadRecentlyPlayed } from './recentlyPlayedStore';
 
 export async function initializeStores(fetchFn: typeof fetch): Promise<void> {
-	await Promise.all([loadCoreStatus(fetchFn), loadZones(fetchFn)]);
+	await Promise.all([
+		loadCoreStatus(fetchFn),
+		loadZones(fetchFn),
+		loadRecentlyPlayed(fetchFn)
+	]);
 }

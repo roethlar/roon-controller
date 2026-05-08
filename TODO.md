@@ -191,8 +191,15 @@
 - [x] Library children indented in the rail to make the tree relationship visible
 - [x] 91 tests passing through both rounds of polish
 
-## Recently Played / Added on welcome view (open — needs investigation)
-- [ ] User flagged this as a priority. Public Roon extension API services don't expose recent-activity nodes at the level-0 / level-1 layers we've captured. Need a `--include-content-samples` capture against the live Core to look at level-2 sub-views (Library/Albums, Library/Tracks, etc.) for sort=recent / "Recently Added" / "Recently Played" affordances. The capture artifact is local-only and gitignored.
+## Recently Played, locally tracked (done — see DEVLOG)
+- [x] Confirmed via full hierarchy probe + RoonApiBrowse docs that recent-activity is not in the public API
+- [x] `RecentlyPlayedService` subscribes to now-playing-updated, persists to `data/recently-played.json` atomically, dedupes within 30s window, caps at 50
+- [x] `GET /api/recently-played` + `recently-played-inserted` socket broadcast (only on real inserts)
+- [x] UI store + welcome view section, honest "on this controller" labelling
+- [x] 21 new tests (15 service + 1 REST + 5 UI store)
+
+## Recently Added (deferred)
+- [ ] Not in the public API. Could approximate by drilling `albums` hierarchy with `set_display_offset` to the end (last albums alphabetically aren't necessarily most-recently-added; not useful). True "Recently Added" requires private API access we don't have.
 
 ## Next Iteration (open)
 - [ ] Live verification on Roon Core after PR1 redeploy:

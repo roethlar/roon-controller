@@ -9,12 +9,14 @@ import { RoonClient } from "../core/roon/RoonClient";
 import { TransportService } from "../core/roon/TransportService";
 import { BrowseService } from "../core/roon/BrowseService";
 import { ImageService } from "../core/roon/ImageService";
+import { RecentlyPlayedService } from "../core/recently-played/RecentlyPlayedService";
 
 export interface ServerContext {
   readonly httpServer: http.Server;
   readonly socketContext: SocketContext;
   readonly roonClient: RoonClient;
   readonly transportService: TransportService;
+  readonly recentlyPlayedService: RecentlyPlayedService;
 }
 
 export const startServer = (
@@ -36,6 +38,19 @@ export const startServer = (
     config.imageCachePath,
     config.imageCacheMaxBytes
   );
+  const recentlyPlayedService = new RecentlyPlayedService(
+    transportService,
+    logger,
+    {
+      filePath: config.recentlyPlayedPath,
+      cap: config.recentlyPlayedCap,
+    }
+  );
+  recentlyPlayedService.setZoneNameLookup((zoneId) => {
+    return transportService
+      .getZones()
+      .find((z) => z.zone_id === zoneId)?.display_name;
+  });
 
   // Create HTTP app with services
   const app: Application = createHttpApp(
@@ -43,6 +58,7 @@ export const startServer = (
     transportService,
     browseService,
     imageService,
+    recentlyPlayedService,
     logger
   );
   const httpServer = http.createServer(app);
@@ -121,6 +137,13 @@ export const startServer = (
     socketContext.io.emit("now-playing-updated", data);
   });
 
+  // Broadcast recently-played updates to all clients only when a NEW
+  // entry actually lands (the service suppresses dedupe-collapsed
+  // updates from this event).
+  recentlyPlayedService.on("inserted", (entry) => {
+    socketContext.io.emit("recently-played-inserted", entry);
+  });
+
   transportService.on("queue-updated", (data) => {
     socketContext.io.emit("queue-updated", data);
   });
@@ -137,6 +160,12 @@ export const startServer = (
   roonClient.start();
   transportService.start();
   imageService.start();
+  void recentlyPlayedService.start().catch((err) => {
+    logger.warn(
+      { err },
+      "RecentlyPlayedService failed to start; recently-played list disabled"
+    );
+  });
 
   httpServer.listen(config.port, config.host, () => {
     logger.info(
@@ -150,5 +179,6 @@ export const startServer = (
     socketContext,
     roonClient,
     transportService,
+    recentlyPlayedService,
   };
 };

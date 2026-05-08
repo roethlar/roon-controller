@@ -17,7 +17,8 @@ import {
 	nowPlayingStore,
 	updateSeekPosition,
 	initializeStores,
-	setSocketStatus
+	setSocketStatus,
+	appendRecentlyPlayedFromSocket
 } from '../stores';
 import type {
 	CoreStatusResponse,
@@ -25,6 +26,7 @@ import type {
 	BrowseResult,
 	SearchResult,
 	NowPlaying,
+	RecentlyPlayedEntry,
 	ZoneQueue
 } from '@shared/types';
 
@@ -123,6 +125,10 @@ export function registerSocketHandlers(): CleanupFn {
 		setSearchResults(results);
 	};
 
+	const handleRecentlyPlayedInserted = (entry: RecentlyPlayedEntry) => {
+		appendRecentlyPlayedFromSocket(entry);
+	};
+
 	const handleTransportError = (payload: CommandErrorEvent) => {
 		pushCommandFeedback({
 			source: 'transport',
@@ -206,6 +212,7 @@ export function registerSocketHandlers(): CleanupFn {
 		['queue-updated', handleQueueUpdated],
 		['browse-result', handleBrowseResult],
 		['search-result', handleSearchResult],
+		['recently-played-inserted', handleRecentlyPlayedInserted],
 		['transport:error', handleTransportError],
 		['browse:error', handleBrowseError],
 		['queue:error', handleQueueError]

@@ -6,6 +6,7 @@ import type {
 	BrowseSearchOptions,
 	CoreStatusResponse,
 	ErrorResponse,
+	RecentlyPlayedEntry,
 	SearchResult,
 	ZonesResponse,
 	ZoneQueue,
@@ -58,6 +59,16 @@ export function fetchCoreStatus(fetchFn: FetchLike): Promise<CoreStatusResponse>
 export async function fetchZones(fetchFn: FetchLike): Promise<ZonesResponse['zones']> {
 	const { zones } = await request<ZonesResponse>(fetchFn, '/api/zones');
 	return zones;
+}
+
+export async function fetchRecentlyPlayed(
+	fetchFn: FetchLike
+): Promise<RecentlyPlayedEntry[]> {
+	const { entries } = await request<{ entries: RecentlyPlayedEntry[] }>(
+		fetchFn,
+		'/api/recently-played'
+	);
+	return entries;
 }
 
 export function browse(fetchFn: FetchLike, options: BrowseOptions): Promise<BrowseResult> {

@@ -1,10 +1,14 @@
 import http from 'http';
+import path from 'path';
+import os from 'os';
+import { promises as fs } from 'fs';
 import { AddressInfo } from 'net';
 import { createHttpApp } from '../app';
 import { RoonClient } from '../../../core/roon/RoonClient';
 import { TransportService } from '../../../core/roon/TransportService';
 import { BrowseService } from '../../../core/roon/BrowseService';
 import { ImageService } from '../../../core/roon/ImageService';
+import { RecentlyPlayedService } from '../../../core/recently-played/RecentlyPlayedService';
 
 const stubLogger: any = {
   info: jest.fn(),
@@ -23,25 +27,33 @@ const stubRoon: any = {
   getImage: () => null,
 };
 
-function startApp() {
+async function startApp() {
   const transport = new TransportService(stubRoon as RoonClient, stubLogger);
   const browse = new BrowseService(stubRoon as RoonClient, stubLogger);
   const images = new ImageService(stubRoon as RoonClient, stubLogger, '/tmp/__roon_test_img_cache__');
-  const app = createHttpApp(stubRoon as RoonClient, transport, browse, images, stubLogger);
-  return new Promise<{ url: string; close: () => Promise<void> }>((resolve) => {
-    const server = http.createServer(app);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address() as AddressInfo;
-      resolve({
-        url: `http://127.0.0.1:${port}`,
-        close: () => new Promise<void>((r) => server.close(() => r())),
-      });
-    });
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'app-test-rp-'));
+  const recentlyPlayed = new RecentlyPlayedService(transport, stubLogger, {
+    filePath: path.join(tmpDir, 'recently-played.json'),
   });
+  await recentlyPlayed.start();
+  const app = createHttpApp(stubRoon as RoonClient, transport, browse, images, recentlyPlayed, stubLogger);
+  return new Promise<{ url: string; close: () => Promise<void>; recentlyPlayed: RecentlyPlayedService }>(
+    (resolve) => {
+      const server = http.createServer(app);
+      server.listen(0, '127.0.0.1', () => {
+        const { port } = server.address() as AddressInfo;
+        resolve({
+          url: `http://127.0.0.1:${port}`,
+          close: () => new Promise<void>((r) => server.close(() => r())),
+          recentlyPlayed,
+        });
+      });
+    }
+  );
 }
 
 describe('HTTP app routing', () => {
-  let app: { url: string; close: () => Promise<void> };
+  let app: { url: string; close: () => Promise<void>; recentlyPlayed: RecentlyPlayedService };
 
   beforeAll(async () => {
     app = await startApp();
@@ -64,5 +76,31 @@ describe('HTTP app routing', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { status: string };
     expect(body.status).toBe('ok');
+  });
+
+  it('GET /api/recently-played returns the service\'s entries', async () => {
+    // Inject an entry directly via the transport event the service
+    // listens to. This avoids depending on the test harness having
+    // a real Roon Core attached.
+    const transport = (app.recentlyPlayed as any).transportService;
+    transport.emit('now-playing-updated', {
+      zone_id: 'zone-x',
+      now_playing: {
+        zone_id: 'zone-x',
+        title: 'Test Track',
+        artist: 'Test Artist',
+        album: 'Test Album',
+        state: 'playing',
+      },
+    });
+    // The service updates the in-memory list synchronously on the
+    // event, so a single tick is enough before fetching.
+    await new Promise((r) => setImmediate(r));
+
+    const res = await fetch(`${app.url}/api/recently-played`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: Array<{ title: string }> };
+    expect(body.entries.length).toBeGreaterThanOrEqual(1);
+    expect(body.entries[0].title).toBe('Test Track');
   });
 });

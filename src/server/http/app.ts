@@ -10,11 +10,13 @@ import { createZonesRouter } from "./routes/zones";
 import { createTransportRouter } from "./routes/transport";
 import { createBrowseRouter } from "./routes/browse";
 import { createImageRouter } from "./routes/image";
+import { createRecentlyPlayedRouter } from "./routes/recently-played";
 import { createErrorHandler } from "./middleware/errorHandler";
 import { RoonClient } from "../../core/roon/RoonClient";
 import { TransportService } from "../../core/roon/TransportService";
 import { BrowseService } from "../../core/roon/BrowseService";
 import { ImageService } from "../../core/roon/ImageService";
+import { RecentlyPlayedService } from "../../core/recently-played/RecentlyPlayedService";
 import { ErrorResponse } from "../../shared/types";
 
 export const createHttpApp = (
@@ -22,6 +24,7 @@ export const createHttpApp = (
   transportService: TransportService,
   browseService: BrowseService,
   imageService: ImageService,
+  recentlyPlayedService: RecentlyPlayedService,
   logger: Logger
 ): Application => {
   const app = express();
@@ -85,6 +88,7 @@ export const createHttpApp = (
   app.use("/api/transport", createTransportRouter(transportService));
   app.use("/api/browse", createBrowseRouter(browseService));
   app.use("/api/image", createImageRouter(imageService));
+  app.use("/api/recently-played", createRecentlyPlayedRouter(recentlyPlayedService));
 
   // Any unmatched /api/* request is an API miss — return JSON 404 instead of
   // falling through to the SPA HTML, which would confuse the API client's

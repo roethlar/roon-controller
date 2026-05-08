@@ -25,6 +25,7 @@
 		replaceHistory,
 		welcomeStatsStore,
 		loadWelcomeStats,
+		recentlyPlayedStore,
 		nowPlayingList,
 		type BrowseBreadcrumb,
 		type BrowseHistoryStep
@@ -1062,6 +1063,40 @@
 					</div>
 				</section>
 
+				{#if $recentlyPlayedStore.entries.length > 0}
+					<section class="recently-played" aria-label="Recently played">
+						<header class="recently-played-header">
+							<h3>Recently played</h3>
+							<p class="recently-played-note">on this controller</p>
+						</header>
+						<div class="recently-played-grid">
+							{#each $recentlyPlayedStore.entries.slice(0, 12) as entry}
+								<article class="rp-tile">
+									<div class="rp-art">
+										{#if entry.image_key}
+											<img
+												src="/api/image/{entry.image_key}?scale=fit&width=160&height=160"
+												alt={entry.album ?? entry.title ?? 'Artwork'}
+											/>
+										{:else}
+											<span class="rp-art-fallback">{entry.title?.charAt(0) ?? '♪'}</span>
+										{/if}
+									</div>
+									<div class="rp-meta">
+										<p class="rp-title" title={entry.title}>{entry.title ?? 'Untitled'}</p>
+										{#if entry.artist}
+											<p class="rp-artist" title={entry.artist}>{entry.artist}</p>
+										{/if}
+										{#if entry.zone_name}
+											<p class="rp-zone">{entry.zone_name}</p>
+										{/if}
+									</div>
+								</article>
+							{/each}
+						</div>
+					</section>
+				{/if}
+
 				<p class="welcome-hint">Pick something from <strong>Explore</strong> on the left, or search up top.</p>
 			</div>
 		{/if}
@@ -1193,6 +1228,95 @@
 	.welcome-hint {
 		font-size: 0.86rem;
 		color: var(--text-soft);
+	}
+
+	/* ── Recently played ── */
+	.recently-played-header {
+		display: flex;
+		align-items: baseline;
+		gap: 0.7rem;
+		margin-bottom: 0.7rem;
+	}
+
+	.recently-played-header h3 {
+		font-family: var(--font-display);
+		font-size: 1rem;
+		margin: 0;
+	}
+
+	.recently-played-note {
+		font-size: 0.74rem;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		color: var(--text-soft);
+	}
+
+	.recently-played-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+		gap: 0.7rem;
+	}
+
+	.rp-tile {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		min-width: 0;
+	}
+
+	.rp-art {
+		width: 100%;
+		aspect-ratio: 1;
+		border-radius: 9px;
+		overflow: hidden;
+		background: rgba(255, 255, 255, 0.06);
+		display: grid;
+		place-items: center;
+	}
+
+	.rp-art img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+
+	.rp-art-fallback {
+		font-family: var(--font-display);
+		font-size: 2.2rem;
+		opacity: 0.45;
+	}
+
+	.rp-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+		min-width: 0;
+	}
+
+	.rp-title,
+	.rp-artist,
+	.rp-zone {
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.rp-title {
+		font-size: 0.86rem;
+		font-weight: 600;
+	}
+
+	.rp-artist {
+		font-size: 0.78rem;
+		color: var(--text-soft);
+	}
+
+	.rp-zone {
+		font-size: 0.7rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--text-soft);
+		opacity: 0.78;
 	}
 
 	@media (max-width: 680px) {

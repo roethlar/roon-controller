@@ -1,6 +1,41 @@
 # Dev Log
 
-## 2026-05-07 (latest) — PR1 polish round 2: Home → welcome, Settings on rail, indented tree
+## 2026-05-08 (latest) — Recently Played, locally tracked
+
+User flagged "Recently Played" as a priority for the welcome view. Public Roon extension API doesn't expose recent-activity history (confirmed via the full hierarchy probe + reading the RoonApiBrowse docs). Native Roon's "Home" page uses a private service that third-party clients can't reach.
+
+What we CAN do: track plays locally as our backend observes them via `now-playing-updated` events, and surface that on the welcome view honestly labelled "Recently played on this controller." Caveat is real but the feature works for the common case where the controller's been running and watching.
+
+### Backend — `RecentlyPlayedService`
+- New service under `src/core/recently-played/`. Subscribes to `TransportService.on('now-playing-updated')`, normalizes display fields (`title / artist / album / duration / image_key / zone_id / zone_name / played_at`), persists to `data/recently-played.json` with atomic writes (write-`.tmp` + rename).
+- Dedupes via `title|artist|album|duration|image_key` within a 30s suppression window per zone — collapses Roon's chatty re-emits on seek/pause/metadata-refresh without dropping legitimate consecutive plays.
+- Caps at 50 entries (configurable via `RECENTLY_PLAYED_CAP`).
+- Recovers from corrupt JSON (logs warning, starts empty), wrong-shape JSON (`{}` instead of `[]`), and ENOENT (first run). Plausibility filter at load time drops malformed entries.
+- Emits `inserted` event ONLY when a new entry is actually added — not on suppressed duplicates. `server.ts` wires this to a socket broadcast (`recently-played-inserted`) so clients get live appends without seek noise.
+- `setZoneNameLookup(fn)` lets the service stamp the zone's current display name onto each entry; `server.ts` wires this to `transportService.getZones()` so the name is captured at insert time even if the zone is renamed/removed later.
+- New env knobs: `RECENTLY_PLAYED_PATH` (default `./data/recently-played.json`), `RECENTLY_PLAYED_CAP` (default 50, capped at 1000).
+
+### REST + socket
+- `GET /api/recently-played` → `{ entries: RecentlyPlayedEntry[] }`. Returns the in-memory list, newest first.
+- Socket event `recently-played-inserted` fires per insert. Clients dedupe defensively by `(played_at, zone_id)` in case of re-broadcast.
+
+### UI
+- New `recentlyPlayedStore`. `loadRecentlyPlayed(fetch)` runs from `initializeStores` at layout mount (alongside core + zones). `appendRecentlyPlayedFromSocket` handles live updates; capped at 50 client-side too.
+- Welcome view grew a "Recently played" section below the stat tiles, only rendered when there's at least one entry. 12-tile grid with artwork + title + artist + zone name. Honest section eyebrow: "on this controller".
+- Section hides cleanly on first run (no entries yet), reappears as soon as something plays.
+
+### Tests
+- **15 backend tests** for the service: insert, suppression window (collapse + expire), cross-zone non-dedupe, null payload handling, `inserted` only fires on real inserts, cap enforcement, persisted-file load, atomic write (no leftover `.tmp`), corrupt-JSON recovery, wrong-shape recovery, plausibility filter on load, ENOENT-graceful start, zone-name stamping, `stop()` detaches.
+- **1 new app-routing test** for `GET /api/recently-played` end-to-end.
+- **5 new UI store tests**: REST load, REST-failure preserves existing entries, socket-append unshifts, socket-append dedupes head-match, client-side cap at 50.
+- Total: backend 51 → 67, UI 97 → 102. svelte-check 0/0, build clean, lint clean.
+
+### Known scope
+- Plays during service downtime aren't captured. UI labels accordingly.
+- Persisted file lives next to other runtime data (`./data/...`). systemd unit's `WorkingDirectory=/opt/roon-controller` and `data/` is gitignored.
+- Image keys are session-scoped — if the persisted list outlives a Roon Core restart, older artwork URLs may 404. The image route already returns a placeholder on miss, so this degrades gracefully.
+
+## 2026-05-07 — PR1 polish round 2: Home → welcome, Settings on rail, indented tree
 
 User feedback after the locked-panes redeploy:
 
