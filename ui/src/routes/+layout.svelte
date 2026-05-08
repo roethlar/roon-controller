@@ -914,6 +914,7 @@
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto; /* the only scrolling surface */
+		overflow-x: hidden; /* never let inner content cause page-wide horizontal scroll */
 		padding: 0.9rem;
 		animation: rise-in 320ms ease;
 	}

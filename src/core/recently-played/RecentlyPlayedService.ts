@@ -163,19 +163,37 @@ export class RecentlyPlayedService extends EventEmitter {
 
   /**
    * Suppress when the most-recent entry has the same dedupe key AND
-   * was recorded within the suppression window. Same dedupe key
-   * across the window means Roon re-emitted the same now_playing
-   * (typical for seek / pause / metadata refresh).
+   * was recorded within the effective window. Two cases this catches:
+   *
+   * 1. Same track re-emitted by Roon mid-play (seek, pause, metadata
+   *    refresh). The window must be wide enough to span the whole
+   *    track — Roon can re-emit minutes after the play started.
+   * 2. Group-play artifacts: when zones are grouped, every grouped
+   *    zone reports the same now_playing within milliseconds. We
+   *    don't compare zone_id; same dedupe key + tight time window =
+   *    same play, regardless of zone. Trade-off: two zones that
+   *    independently happen to play the same track within the
+   *    window collapse to one entry. Acceptable for "recently
+   *    played" UX.
+   *
+   * The window is `max(suppressionWindowMs, track_duration + grace)`.
+   * The configured value (default 30s) is the floor for short
+   * tracks or unknown duration.
    */
   private shouldSuppress(entry: RecentlyPlayedEntry): boolean {
     const head = this.entries[0];
     if (!head) return false;
     if (this.dedupeKey(head) !== this.dedupeKey(entry)) return false;
-    if (head.zone_id !== entry.zone_id) return false;
     const headTime = Date.parse(head.played_at);
     const entryTime = Date.parse(entry.played_at);
     if (!Number.isFinite(headTime) || !Number.isFinite(entryTime)) return false;
-    return entryTime - headTime < this.suppressionWindowMs;
+    const durationMs = entry.duration ? entry.duration * 1000 : 0;
+    const TRACK_END_GRACE_MS = 5_000;
+    const window = Math.max(
+      this.suppressionWindowMs,
+      durationMs + TRACK_END_GRACE_MS
+    );
+    return entryTime - headTime < window;
   }
 
   private dedupeKey(entry: RecentlyPlayedEntry): string {

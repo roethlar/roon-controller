@@ -104,6 +104,8 @@ describe("RecentlyPlayedService", () => {
     });
 
     it("inserts a fresh entry once the suppression window has passed", async () => {
+      // Use duration: 0 so the effective window is just the
+      // configured 30s floor; otherwise duration would dominate.
       const transport = new FakeTransport();
       const filePath = await makeTmpPath();
       let clock = 1_000_000;
@@ -114,27 +116,78 @@ describe("RecentlyPlayedService", () => {
       );
       await svc.start();
 
-      const np = nowPlaying({ title: "Hey Jude" });
+      const np = nowPlaying({ title: "Hey Jude", duration: 0 });
       transport.fireNowPlaying("zone-a", np);
-      clock += 31_000; // past the window
+      clock += 31_000; // past the 30s window (duration is 0)
       transport.fireNowPlaying("zone-a", np);
 
       expect(svc.getEntries()).toHaveLength(2);
     });
 
-    it("does not collapse entries from different zones", async () => {
+    it("collapses cross-zone duplicates within the window (group play)", async () => {
+      // Grouped zones playing the same track produce a now-playing
+      // event per zone within milliseconds. We collapse them to one
+      // entry — same dedupe key + within window = same play, even
+      // across zones. Trade-off: two zones independently playing the
+      // same track within the window collapse too. Acceptable for
+      // "recently played" UX.
       const transport = new FakeTransport();
       const filePath = await makeTmpPath();
+      let clock = 1_000_000;
       const svc = new RecentlyPlayedService(
         transport as unknown as TransportService,
         mockLogger,
-        { filePath, suppressionWindowMs: 30_000 }
+        { filePath, suppressionWindowMs: 30_000, now: () => clock }
       );
       await svc.start();
 
-      const np = nowPlaying({ title: "Hey Jude" });
+      const np = nowPlaying({ title: "Hey Jude", duration: 200 });
       transport.fireNowPlaying("zone-a", { ...np, zone_id: "zone-a" });
+      clock += 5; // 5ms later — group-play emit
       transport.fireNowPlaying("zone-b", { ...np, zone_id: "zone-b" });
+
+      expect(svc.getEntries()).toHaveLength(1);
+    });
+
+    it("uses track duration as the window so mid-play re-emits get suppressed", async () => {
+      // Roon can re-emit the same now_playing well after the start of
+      // a track (queue-changed, metadata refresh). Without using the
+      // track's own duration as the window floor, a 4-minute track
+      // re-emitted at 2 minutes slips past the 30s default and
+      // duplicates.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      let clock = 1_000_000;
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath, suppressionWindowMs: 30_000, now: () => clock }
+      );
+      await svc.start();
+
+      const np = nowPlaying({ title: "Alexander Hamilton", duration: 236 });
+      transport.fireNowPlaying("zone-a", np);
+      clock += 107_000; // 107s in — past 30s default, well within song
+      transport.fireNowPlaying("zone-a", np);
+
+      expect(svc.getEntries()).toHaveLength(1);
+    });
+
+    it("inserts a new entry once the track-duration window has passed (legitimate replay)", async () => {
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      let clock = 1_000_000;
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath, suppressionWindowMs: 30_000, now: () => clock }
+      );
+      await svc.start();
+
+      const np = nowPlaying({ title: "Short Song", duration: 60 });
+      transport.fireNowPlaying("zone-a", np);
+      clock += 70_000; // past duration + grace (5s) — legitimate replay
+      transport.fireNowPlaying("zone-a", np);
 
       expect(svc.getEntries()).toHaveLength(2);
     });

@@ -1417,6 +1417,15 @@
 		padding-bottom: 0.4rem; /* room for the scrollbar without clipping tiles */
 		scroll-snap-type: x mandatory;
 		scrollbar-color: var(--text-soft) transparent;
+		/* As a flex item of .welcome, the row defaults to
+		   min-width: auto = its content's intrinsic width (~16k px
+		   for a full row of tiles). That lets it overflow .welcome
+		   horizontally and the page scrolls instead of the row.
+		   `min-width: 0` + `max-width: 100%` clamps the row to its
+		   container's width, so overflow-x: auto kicks in correctly
+		   on the row itself. */
+		min-width: 0;
+		max-width: 100%;
 	}
 
 	.recently-played-grid::-webkit-scrollbar {
