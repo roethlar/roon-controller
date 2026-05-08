@@ -33,8 +33,14 @@ Was a multi-row wrapping grid; now a single flex row with `overflow-x: auto`, sc
 - 4 prior recently-played-tile tests confirmed still passing.
 - Total UI: 106 → 107. Backend unchanged at 67. svelte-check 0/0, build clean, lint clean.
 
+### R-N+1 follow-up (breadcrumb itemType drift)
+- `resolveAndNavigate` was storing `opts.breadcrumb.itemType` (the *expected* singular like `'album'`) in the persisted breadcrumb, not the actual matched Roon `itemType`. If Roon returned the result with a plural/capitalized variant (`'Albums'`), the live click worked — but on remount, `matchBreadcrumb` did a strict `===` comparison and the breadcrumb wouldn't match the live result anymore. Two fixes:
+  1. Persist `match.itemType ?? opts.breadcrumb.itemType` so the breadcrumb records what Roon actually said.
+  2. `matchBreadcrumb` now uses a singular/plural/case-tolerant compare (same normalizer style as `BrowseService.inferSearchType` and the play-bar matcher), so old persisted entries with normalized values still resolve correctly.
+- Test added: a breadcrumb persisted with `'album'` matches a live result with `itemType: 'Albums'`.
+
 ### Known gap (deferred)
-- Layout-level integration tests still don't exist (R7 residual risk). The play-bar `pushHistory` push was the kind of regression a layout test would catch — caught here only by static review. A `+layout.svelte` test harness is the right fix; tracking in TODO.
+- Layout-level integration tests still don't exist (R7 residual risk). Two regressions in this batch (P2 `searchQuery` not passed, P-N+1 breadcrumb itemType drift) were caught only by static review. A `+layout.svelte` test harness is the right fix; tracking in TODO.
 - Search-result rendering consistency (#5 from the original ask): search results panel uses its own grouped layout, browse views use list/grid/track-list. Unifying is a meaningful refactor; deferred to its own PR.
 
 ## 2026-05-08 — Recently Played, locally tracked

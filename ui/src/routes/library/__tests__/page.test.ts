@@ -477,13 +477,55 @@ describe('Library page — mount restore', () => {
 
 			render(LibraryPage);
 			await tick();
-			// 
+			//
 
 			// Stops at search root, history cleared, toast surfaced.
 			expect(apiBrowse).toHaveBeenCalledTimes(1);
 			expect(get(browseHistoryStore).history).toEqual([]);
 			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
 			expect(get(commandFeedbackStore)?.message).toMatch(/breadcrumb/);
+		});
+
+		it('matches breadcrumb across singular/plural and case differences in itemType', async () => {
+			// Persisted breadcrumb has the singular `'album'` (e.g. from
+			// the play-bar resolver storing the expected type, or from a
+			// prior session that recorded a different casing). Live
+			// search returns the same album with `itemType: 'Albums'`.
+			// Match should still succeed.
+			pushHistory(
+				{ hierarchy: 'search', itemKey: 'stale-album-key', multiSessionKey: 'library-search' },
+				'abbey road',
+				{ title: 'Abbey Road', subtitle: 'The Beatles', itemType: 'album' }
+			);
+
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 0,
+					items: [
+						makeItem({
+							title: 'Abbey Road',
+							subtitle: 'The Beatles',
+							itemKey: 'fresh-album-key',
+							itemType: 'Albums' // ← capitalized plural
+						})
+					]
+				})
+			);
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 1,
+					items: [makeItem({ title: 'Come Together', itemKey: 't1', hint: 'action_list' })]
+				})
+			);
+
+			render(LibraryPage);
+			await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+
+			// Drill used the FRESH itemKey — the normalizer accepted the
+			// plural/case variant during the breadcrumb compare.
+			expect(apiBrowse.mock.calls[1][1]).toEqual(
+				expect.objectContaining({ itemKey: 'fresh-album-key' })
+			);
 		});
 	});
 });

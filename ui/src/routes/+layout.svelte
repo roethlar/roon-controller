@@ -303,7 +303,14 @@
 					title: opts.breadcrumb.title,
 					subtitle: match.subtitle,
 					imageKey: match.imageKey,
-					itemType: opts.breadcrumb.itemType
+					// Persist the ACTUAL Roon-supplied itemType, not the
+					// expected singular. The expected was just an input to
+					// matching; storing it would lose plural/case info that
+					// the live result happened to have. matchBreadcrumb
+					// normalizes during compare, so either form works on
+					// remount, but recording reality keeps the breadcrumb
+					// honest.
+					itemType: match.itemType ?? opts.breadcrumb.itemType
 				}
 			);
 

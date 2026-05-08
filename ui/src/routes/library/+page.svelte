@@ -186,6 +186,20 @@
 		}
 	}
 
+	/**
+	 * Normalize an itemType for breadcrumb-match comparison. Mirrors
+	 * the singular/plural-tolerant style used by `BrowseService
+	 * .inferSearchType` and the play-bar `itemTypeMatches` helper. A
+	 * breadcrumb persisted with `'album'` should still match a fresh
+	 * search result that comes back with `'Albums'` after a Core
+	 * restart.
+	 */
+	function breadcrumbItemTypeMatches(actual: string | undefined, expected: string): boolean {
+		const a = (actual ?? '').toLowerCase().replace(/s$/, '');
+		const e = expected.toLowerCase().replace(/s$/, '');
+		return a === e;
+	}
+
 	function matchBreadcrumb(items: BrowseItem[], crumb: BrowseBreadcrumb): BrowseItem | undefined {
 		// Match on every breadcrumb field that's present. Title must match
 		// exactly; subtitle/imageKey/itemType act as disambiguators when
@@ -195,7 +209,8 @@
 			if (crumb.title && candidate.title !== crumb.title) return false;
 			if (crumb.subtitle && candidate.subtitle !== crumb.subtitle) return false;
 			if (crumb.imageKey && candidate.imageKey !== crumb.imageKey) return false;
-			if (crumb.itemType && candidate.itemType !== crumb.itemType) return false;
+			if (crumb.itemType && !breadcrumbItemTypeMatches(candidate.itemType, crumb.itemType))
+				return false;
 			return true;
 		});
 	}
