@@ -23,9 +23,13 @@
 		popForward,
 		resetHistory,
 		replaceHistory,
+		welcomeStatsStore,
+		loadWelcomeStats,
+		nowPlayingList,
 		type BrowseBreadcrumb,
 		type BrowseHistoryStep
 	} from '$lib/stores';
+	import { zoneMapStore } from '$lib/stores/zonesStore';
 	import { getSocket } from '$lib/socket/client';
 	import { browse as apiBrowse, browseLoad as apiBrowseLoad } from '$lib/api/client';
 	import type {
@@ -51,6 +55,13 @@
 		// stale Roon search stack.
 		void restoreBrowse(get(browseHistoryStore));
 
+		// Library stats for the welcome view. Cheap (4 parallel browse
+		// calls, dedicated multiSessionKeys). Skip if already loaded —
+		// totals only change when the library itself does.
+		if (!get(welcomeStatsStore).loaded) {
+			void loadWelcomeStats(fetch);
+		}
+
 		browseNavStore.set({
 			canBack: false,
 			canForward: false,
@@ -63,6 +74,21 @@
 			browseNavStore.set({ canBack: false, canForward: false, back: noop, forward: noop, home: noop });
 		};
 	});
+
+	// Now-playing hero card on the welcome view. Selected zone might
+	// not yet be set on first mount; in that case the welcome view
+	// just hides the hero.
+	const heroNowPlaying = $derived(
+		$selectedZoneStore ? $nowPlayingList.find((t) => t.zone_id === $selectedZoneStore) : undefined
+	);
+	const heroZone = $derived(
+		$selectedZoneStore ? $zoneMapStore.get($selectedZoneStore) : undefined
+	);
+	const heroIsPlaying = $derived(heroZone?.state === 'playing');
+
+	function fmtCount(n: number | null): string {
+		return n === null ? '—' : n.toLocaleString();
+	}
 
 	function matchBreadcrumb(items: BrowseItem[], crumb: BrowseBreadcrumb): BrowseItem | undefined {
 		// Match on every breadcrumb field that's present. Title must match
@@ -992,9 +1018,51 @@
 			{/if}
 		{:else}
 			<div class="welcome">
-				<h2>Welcome</h2>
-				<p>Pick something from <strong>Explore</strong> on the left to start browsing your library — Albums, Artists, Tracks, Composers, Genres, Playlists.</p>
-				<p class="welcome-hint">Or use the search box up top to jump straight to an artist or album.</p>
+				{#if heroNowPlaying}
+					<section class="hero" aria-label="Now playing">
+						<div class="hero-art">
+							{#if heroNowPlaying.image_key}
+								<img
+									src="/api/image/{heroNowPlaying.image_key}?scale=fit&width=320&height=320"
+									alt="Now playing artwork"
+								/>
+							{:else}
+								<span class="hero-art-fallback">{heroNowPlaying.title?.charAt(0) ?? '♪'}</span>
+							{/if}
+						</div>
+						<div class="hero-meta">
+							<p class="hero-eyebrow">{heroIsPlaying ? 'Now playing' : 'Paused'} · {heroZone?.display_name ?? ''}</p>
+							<h2 class="hero-title">{heroNowPlaying.title ?? 'Untitled'}</h2>
+							{#if heroNowPlaying.artist}
+								<p class="hero-artist">{heroNowPlaying.artist}</p>
+							{/if}
+							{#if heroNowPlaying.album}
+								<p class="hero-album">{heroNowPlaying.album}</p>
+							{/if}
+						</div>
+					</section>
+				{/if}
+
+				<section class="stats" aria-label="Library statistics">
+					<div class="stat-tile">
+						<p class="stat-value">{fmtCount($welcomeStatsStore.artists)}</p>
+						<p class="stat-label">Artists</p>
+					</div>
+					<div class="stat-tile">
+						<p class="stat-value">{fmtCount($welcomeStatsStore.albums)}</p>
+						<p class="stat-label">Albums</p>
+					</div>
+					<div class="stat-tile">
+						<p class="stat-value">{fmtCount($welcomeStatsStore.tracks)}</p>
+						<p class="stat-label">Tracks</p>
+					</div>
+					<div class="stat-tile">
+						<p class="stat-value">{fmtCount($welcomeStatsStore.composers)}</p>
+						<p class="stat-label">Composers</p>
+					</div>
+				</section>
+
+				<p class="welcome-hint">Pick something from <strong>Explore</strong> on the left, or search up top.</p>
 			</div>
 		{/if}
 	</section>
@@ -1017,26 +1085,125 @@
 	}
 
 	.welcome {
-		padding: 2rem 1.4rem;
-		max-width: 640px;
+		padding: 1.8rem 1.4rem;
+		display: flex;
+		flex-direction: column;
+		gap: 1.6rem;
 	}
 
-	.welcome h2 {
+	/* ── Now-playing hero ── */
+	.hero {
+		display: grid;
+		grid-template-columns: 200px 1fr;
+		gap: 1.4rem;
+		align-items: center;
+		padding: 1.4rem;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 14px;
+	}
+
+	.hero-art {
+		width: 200px;
+		height: 200px;
+		border-radius: 10px;
+		overflow: hidden;
+		background: rgba(255, 255, 255, 0.05);
+		display: grid;
+		place-items: center;
+	}
+
+	.hero-art img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+
+	.hero-art-fallback {
 		font-family: var(--font-display);
-		font-size: 1.4rem;
-		margin-bottom: 0.6rem;
+		font-size: 4.5rem;
+		opacity: 0.45;
 	}
 
-	.welcome p {
-		font-size: 0.95rem;
-		line-height: 1.55;
+	.hero-meta {
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.hero-eyebrow {
+		font-size: 0.74rem;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		color: var(--text-soft);
+		font-family: var(--font-display);
+	}
+
+	.hero-title {
+		font-family: var(--font-display);
+		font-size: 1.5rem;
+		line-height: 1.15;
+		margin: 0.1rem 0 0.2rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.hero-artist {
+		font-size: 1rem;
+		font-weight: 600;
+	}
+
+	.hero-album {
+		font-size: 0.92rem;
+		color: var(--text-soft);
+	}
+
+	/* ── Stat tiles ── */
+	.stats {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+		gap: 0.85rem;
+	}
+
+	.stat-tile {
+		padding: 1rem 1.1rem;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+	}
+
+	.stat-value {
+		font-family: var(--font-display);
+		font-size: 1.7rem;
+		font-weight: 700;
+		line-height: 1;
+	}
+
+	.stat-label {
+		font-size: 0.72rem;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
 		color: var(--text-soft);
 	}
 
 	.welcome-hint {
-		margin-top: 0.7rem;
 		font-size: 0.86rem;
-		opacity: 0.78;
+		color: var(--text-soft);
+	}
+
+	@media (max-width: 680px) {
+		.hero {
+			grid-template-columns: 1fr;
+		}
+		.hero-art {
+			width: 100%;
+			height: auto;
+			aspect-ratio: 1;
+		}
 	}
 
 	.loading {

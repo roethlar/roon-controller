@@ -144,44 +144,90 @@ async function main() {
   };
 
   // Level 1 — under Library only by default; everything by
-  // --include-content-samples. popAll before each iteration so
-  // sibling drills always start from the root level (Roon's browse
-  // hierarchy is per-session stack-based, and a previous drill
-  // leaves the session at the wrong level for the next sibling).
-  for (const item of root.items) {
-    if (item.hint !== 'list' || !item.itemKey) continue;
-    if (!includeContentSamples && item.title !== 'Library') continue;
+  // --include-content-samples.
+  //
+  // Roon mints fresh item_keys when you popAll back to root, so the
+  // keys captured in `root.items` go stale after the first sibling
+  // drill. Re-fetch root each iteration and look up the title to
+  // get a fresh key. Per-iteration try/catch tolerates per-drill
+  // failures (rare, but if Roon throws we'd rather record what we
+  // got than abort the whole capture).
+  const titlesToDrill = root.items
+    .filter((it) => it.hint === 'list' && it.itemKey)
+    .filter((it) => includeContentSamples || it.title === 'Library')
+    .map((it) => it.title);
 
-    console.error(`[capture] level 1: drilling "${item.title}"`);
-    await browse({ hierarchy: 'browse', popAll: true });
-    const children = await captureChildren(item, 1, [item.title]);
-    if (children) tree.level1[item.title] = children;
+  for (const title of titlesToDrill) {
+    console.error(`[capture] level 1: drilling "${title}"`);
+    try {
+      const r = await browse({ hierarchy: 'browse', popAll: true });
+      const fresh = r.items.find((it) => it.title === title);
+      if (!fresh?.itemKey) {
+        console.error(`[capture] level 1: "${title}" missing on re-resolve, skipping`);
+        continue;
+      }
+      const children = await captureChildren(fresh, 1, [title]);
+      if (children) tree.level1[title] = children;
+    } catch (err) {
+      console.error(`[capture] level 1: "${title}" failed — ${err.message}`);
+      tree.level1[title] = { error: err.message, items: [] };
+    }
   }
 
-  // Level 2 — only with --include-content-samples
+  // Level 2 — only with --include-content-samples.
+  //
+  // Re-fetch root at the start (and before each sibling drill) to get
+  // a fresh `Library` item_key. After many popAll cycles in level 1,
+  // the originally-captured key may be stale or rejected by Roon.
+  // Each drill is wrapped in try/catch so one failure doesn't abort
+  // the rest — partial level-2 data is still useful for design work.
   if (includeContentSamples) {
-    const liveLibrary = root.items.find((it) => it.title === 'Library');
-    if (liveLibrary?.itemKey) {
-      console.error(`[capture] level 2: drilling Library children`);
-      // Roon's browse hierarchy is stack-based per multi-session.
-      // The level-1 loop above has left the capture session at the
-      // level-1 children of whichever level-0 container was drilled
-      // last. Reset to root before re-entering Library so the drill
-      // resolves correctly.
-      await browse({ hierarchy: 'browse', popAll: true });
-      const liveLibraryResult = await browse({
-        hierarchy: 'browse',
-        itemKey: liveLibrary.itemKey
-      });
-      for (const child of liveLibraryResult.items) {
+    console.error(`[capture] level 2: drilling Library children`);
+    let libraryChildren;
+    try {
+      const freshRoot = await browse({ hierarchy: 'browse', popAll: true });
+      const freshLibrary = freshRoot.items.find((it) => it.title === 'Library');
+      if (!freshLibrary?.itemKey) {
+        console.error(`[capture] level 2: Library not found in fresh root, skipping`);
+      } else {
+        libraryChildren = await browse({
+          hierarchy: 'browse',
+          itemKey: freshLibrary.itemKey
+        });
+      }
+    } catch (err) {
+      console.error(`[capture] level 2: failed to drill Library — ${err.message}`);
+    }
+
+    if (libraryChildren) {
+      for (const child of libraryChildren.items) {
         if (child.hint !== 'list' || !child.itemKey) continue;
         console.error(`[capture] level 2: drilling Library/"${child.title}"`);
-        // Same reasoning — popAll between siblings to keep each
-        // drill rooted from a known level (Library, level 1).
-        await browse({ hierarchy: 'browse', popAll: true });
-        await browse({ hierarchy: 'browse', itemKey: liveLibrary.itemKey });
-        const grand = await captureChildren(child, 2, ['Library', child.title]);
-        if (grand) tree.level2[child.title] = grand;
+        try {
+          // Re-fetch root + Library each iteration so each drill starts
+          // from known-fresh keys. Slow but resilient.
+          const r = await browse({ hierarchy: 'browse', popAll: true });
+          const lib = r.items.find((it) => it.title === 'Library');
+          if (!lib?.itemKey) {
+            console.error(`[capture] level 2: Library missing on re-resolve, stopping`);
+            break;
+          }
+          const libResult = await browse({ hierarchy: 'browse', itemKey: lib.itemKey });
+          const freshChild = libResult.items.find((it) => it.title === child.title);
+          if (!freshChild?.itemKey) {
+            console.error(
+              `[capture] level 2: child "${child.title}" missing on re-resolve, skipping`
+            );
+            continue;
+          }
+          const grand = await captureChildren(freshChild, 2, ['Library', child.title]);
+          if (grand) tree.level2[child.title] = grand;
+        } catch (err) {
+          console.error(
+            `[capture] level 2: Library/"${child.title}" failed — ${err.message}`
+          );
+          tree.level2[child.title] = { error: err.message, items: [] };
+        }
       }
     }
   }

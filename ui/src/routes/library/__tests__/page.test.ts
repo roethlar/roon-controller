@@ -105,10 +105,19 @@ describe('Library page — mount restore', () => {
 		// browse-root entries; popping to root in the right pane would
 		// just duplicate them. With empty history, restoreBrowse skips
 		// the popAll entirely and the page renders a welcome placeholder.
+		// (The welcome view also kicks off library-stats fetches via
+		// dedicated multiSessionKeys; those shouldn't be confused with
+		// any browse-navigation call.)
 		render(LibraryPage);
 		await tick();
-		expect(apiBrowse).not.toHaveBeenCalled();
-		expect(screen.getByText(/Welcome/i)).toBeInTheDocument();
+
+		const navCalls = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		);
+		expect(navCalls).toHaveLength(0);
+		// Welcome view is rendered (label "Artists" appears in stat tiles
+		// — match the "Pick something from Explore" hint instead).
+		expect(screen.getByText(/Pick something from/i)).toBeInTheDocument();
 	});
 
 	it('with browse-rooted history, pops to root then walks each step', async () => {
@@ -683,7 +692,7 @@ describe('Library page — navigation actions', () => {
 		expect(get(browseHistoryStore).history).toEqual([]);
 		expect(get(browseHistoryStore).forward).toEqual([]);
 		expect(fakeSocket.emit.mock.calls.length).toBe(emitCountBefore);
-		expect(screen.getByText(/Welcome/i)).toBeInTheDocument();
+		expect(screen.getByText(/Pick something from/i)).toBeInTheDocument();
 	});
 
 	it('Back (browseNavStore.back) calls browse:pop and moves the step to forward', async () => {

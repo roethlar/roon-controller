@@ -41,6 +41,13 @@ export {
 	type ExploreRailEntry,
 	type ExploreRailState
 } from './exploreRailStore';
+export {
+	welcomeStatsStore,
+	loadWelcomeStats,
+	invalidateWelcomeStats,
+	type WelcomeStats,
+	type WelcomeStatsState
+} from './welcomeStatsStore';
 
 import { loadCoreStatus } from './coreStore';
 import { loadZones } from './zonesStore';
