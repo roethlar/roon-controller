@@ -359,7 +359,14 @@
 					nextOpts = {
 						hierarchy: 'browse',
 						itemKey: match.itemKey,
-						zoneId: step.zoneId ?? ($selectedZoneStore || undefined)
+						zoneId: step.zoneId ?? ($selectedZoneStore || undefined),
+						// Preserve any multiSessionKey from the persisted step
+						// — defensive parity with the search-rooted path and
+						// the fallback path. Today's main browse history uses
+						// the default session, so this is undefined; future
+						// browse-rooted multi-sessions would still restore
+						// to the right Roon session.
+						multiSessionKey: step.multiSessionKey
 					};
 				} else {
 					nextOpts = {

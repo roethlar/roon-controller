@@ -191,6 +191,13 @@
 - [x] Library children indented in the rail to make the tree relationship visible
 - [x] 91 tests passing through both rounds of polish
 
+## Browse-rooted restore via breadcrumbs (done — see DEVLOG)
+- [x] `restoreBrowse` now walks browse-hierarchy steps via breadcrumb (mirrors Phase A's search-rooted walk); falls back to raw itemKey only for legacy no-breadcrumb steps
+- [x] `replaceHistory(rebuilt)` rewrites the persisted stack with fresh keys
+- [x] Fully-failed restore clears history and renders the welcome view (no rail-mirror, no persistent error toast)
+- [x] Breadcrumb path preserves `step.multiSessionKey` for parity
+- [x] 2 new tests in restore-robustness; 108 → 110 UI total
+
 ## Welcome / track-list / play-bar polish round (done — see DEVLOG)
 - [x] quickPlay restore depth — popInternal uses levels: 2
 - [x] Now-playing indicator on album track list (♫ + accent styling)

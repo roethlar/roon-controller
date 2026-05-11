@@ -1,6 +1,30 @@
 # Dev Log
 
-## 2026-05-08 (latest) — Welcome / track-list / play-bar polish round
+## 2026-05-11 (latest) — Browse-rooted restore via breadcrumbs
+
+User saw `⚠ Browse Error — Restore stopped at level 0: [BrowseService] browse failed` on every page load after a redeploy. Browse-hierarchy itemKeys are session-scoped exactly like search keys; a Roon Core or controller restart invalidates them all. Phase A taught the search-rooted restore to use breadcrumbs to find fresh keys, but the browse-rooted path was still trying raw stale keys — first step always failed.
+
+### Fix
+Browse-rooted `restoreBrowse` now mirrors the search-rooted breadcrumb walk:
+- For each step, if a breadcrumb is present, find the next item by title in the freshly-loaded current items, drill the FRESH key.
+- If no breadcrumb (legacy v2 entry), fall back to the raw itemKey path. Same failure mode as before for those.
+- After the walk, `replaceHistory(rebuilt)` rewrites the persisted stack with fresh keys so subsequent Forward (after Back) doesn't send Roon stale ones.
+- If nothing resolved (first step failed), clear history and reset `browseStore` so the page shows the welcome view, not the rail-mirroring browse root + persistent toast.
+
+R-N follow-up: the new breadcrumb-walk path now also preserves `step.multiSessionKey` (defensive parity with the search-rooted and fallback paths; today's main browse history uses the default session, so this is undefined in practice).
+
+### Tests (+2 from the prior 108)
+- Stale-key restore via breadcrumb: walk uses fresh itemKeys, never the persisted stale ones; persisted history is rewritten with fresh keys.
+- Fully-failed restore: history cleared, `browseStore` reset, welcome rendered (no rail-mirror, no persistent error toast).
+
+Existing "records but does not crash when a replay step fails" still passes — that test uses no-breadcrumb steps and asserts partial restore works.
+
+### Validation
+- Backend: 70 tests passing.
+- UI: 110 tests passing.
+- svelte-check 0/0, build clean, lint clean.
+
+## 2026-05-08 — Welcome / track-list / play-bar polish round
 
 Six fixes from a single round of UX feedback after the Recently Played deploy, plus three corrections from a static review of the polish patch:
 
