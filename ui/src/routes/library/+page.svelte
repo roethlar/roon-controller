@@ -332,29 +332,79 @@
 				popAll: true
 			});
 
-			// Walk each saved step. If any step fails (e.g. stale item_key
-			// after a Roon Core restart), stop where we are and surface a
-			// feedback toast — Home / Back are still functional from any
-			// partial state.
+			// Walk each saved step. Browse-hierarchy itemKeys are
+			// session-scoped — a Roon Core restart or a controller
+			// restart invalidates them all, and the raw replay would
+			// fail with `[BrowseService] browse failed` on the first
+			// step. So: prefer the breadcrumb walk (find the next
+			// item by title against the freshly-loaded current
+			// items) and use the persisted itemKey only as a fallback
+			// when no breadcrumb is present (legacy v2 entries).
+			//
+			// As we walk, rebuild a fresh history list with the new
+			// itemKeys so subsequent Forward (after Back) doesn't
+			// re-send Roon stale keys.
+			const rebuilt: BrowseHistoryStep[] = [];
+			let walkErr: string | undefined;
 			for (const step of history) {
-				const stepWithZone: BrowseOptions = {
-					...step,
-					zoneId: step.zoneId ?? ($selectedZoneStore || undefined),
-					hierarchy: step.hierarchy || 'browse'
-				};
-				// Strip breadcrumb before sending to Roon — it's a
-				// restore-time concern, not part of the browse request.
-				delete (stepWithZone as Partial<BrowseHistoryStep>).breadcrumb;
+				let nextOpts: BrowseOptions;
+				let freshKey: string | undefined;
+				if (step.breadcrumb) {
+					const match = matchBreadcrumb(last.items, step.breadcrumb);
+					if (!match?.itemKey) {
+						walkErr = `"${step.breadcrumb.title ?? '(untitled)'}" no longer in results`;
+						break;
+					}
+					freshKey = match.itemKey;
+					nextOpts = {
+						hierarchy: 'browse',
+						itemKey: match.itemKey,
+						zoneId: step.zoneId ?? ($selectedZoneStore || undefined)
+					};
+				} else {
+					nextOpts = {
+						...step,
+						zoneId: step.zoneId ?? ($selectedZoneStore || undefined),
+						hierarchy: step.hierarchy || 'browse'
+					};
+					delete (nextOpts as Partial<BrowseHistoryStep>).breadcrumb;
+				}
 				try {
-					last = await apiBrowse(fetch, stepWithZone);
+					last = await apiBrowse(fetch, nextOpts);
+					rebuilt.push({
+						...step,
+						itemKey: freshKey ?? step.itemKey
+					});
 				} catch (err) {
+					walkErr = (err as Error).message;
+					break;
+				}
+			}
+
+			// Replace persisted history with whatever we successfully
+			// walked. If the walk got nowhere, clear it entirely and
+			// reset to the welcome view rather than leaving the user
+			// staring at the browse root (which mirrors the rail).
+			if (rebuilt.length === 0) {
+				resetHistory();
+				resetBrowse();
+				if (walkErr) {
 					pushCommandFeedback({
 						source: 'browse',
 						command: 'browse:restore',
-						message: `Restore stopped at level ${last.level}: ${(err as Error).message}`
+						message: `Restore stopped: ${walkErr}.`
 					});
-					break;
 				}
+				return;
+			}
+
+			replaceHistory(rebuilt);
+			if (walkErr) {
+				pushCommandFeedback({
+					source: 'browse',
+					command: 'browse:restore',
+					message: `Restore stopped at level ${last.level}: ${walkErr}.`
+				});
 			}
 			setBrowseResult(last, targetHierarchy);
 		} catch (err) {

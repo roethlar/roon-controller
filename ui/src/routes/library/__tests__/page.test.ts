@@ -1268,6 +1268,82 @@ describe('Library page — restore robustness', () => {
 		const current = get(browseStore).current;
 		expect(current?.level).toBe(1);
 	});
+
+	it('walks browse-rooted history via breadcrumb when persisted itemKeys are stale (Roon Core restart)', async () => {
+		// Persisted itemKeys minted before the Core restart are now
+		// stale — drilling them returns "[BrowseService] browse failed".
+		// Breadcrumb-walk path finds the same items by title against
+		// the freshly-loaded results at each level.
+		pushHistory(
+			{ hierarchy: 'browse', itemKey: 'stale-library' },
+			undefined,
+			{ title: 'Library' }
+		);
+		pushHistory(
+			{ hierarchy: 'browse', itemKey: 'stale-albums' },
+			undefined,
+			{ title: 'Albums' }
+		);
+
+		// popAll returns fresh root.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [makeItem({ title: 'Library', itemKey: 'fresh-library' })]
+			})
+		);
+		// Fresh-library drill returns Library children incl. Albums.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [makeItem({ title: 'Albums', itemKey: 'fresh-albums' })]
+			})
+		);
+		// Fresh-albums drill returns the album grid.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({ level: 2, items: [makeItem({ title: 'Some Album' })] })
+		);
+
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
+		await tick();
+
+		// Walk used FRESH keys, never stale ones.
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
+			expect.objectContaining({ itemKey: 'fresh-library' })
+		);
+		expect(apiBrowse.mock.calls[2][1]).toEqual(
+			expect.objectContaining({ itemKey: 'fresh-albums' })
+		);
+		expect(
+			apiBrowse.mock.calls.some(
+				([, opts]) =>
+					opts.itemKey === 'stale-library' || opts.itemKey === 'stale-albums'
+			)
+		).toBe(false);
+
+		// Persisted history rewritten with fresh keys.
+		const persisted = get(browseHistoryStore).history;
+		expect(persisted.map((s) => s.itemKey)).toEqual(['fresh-library', 'fresh-albums']);
+	});
+
+	it('clears history and shows welcome when even the first browse-rooted step fails', async () => {
+		// Stale itemKey, no breadcrumb (legacy entry), and the raw
+		// drill fails. Result: history wiped, browseStore reset, page
+		// renders welcome instead of the rail-mirror at level 0.
+		pushHistory({ hierarchy: 'browse', itemKey: 'totally-stale' });
+
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 0 })); // popAll
+		apiBrowse.mockRejectedValueOnce(new Error('item_key not found')); // stale step
+
+		render(LibraryPage);
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+		await tick();
+
+		expect(get(browseHistoryStore).history).toEqual([]);
+		expect(get(browseStore).current).toBeNull();
+		expect(screen.getByText(/Pick something from/i)).toBeInTheDocument();
+	});
 });
 
 describe('Library page — track-list classification', () => {
