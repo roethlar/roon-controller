@@ -1,6 +1,30 @@
 # Dev Log
 
-## 2026-05-11 (latest) — Disconnected browse: clear loading + don't mutate history
+## 2026-05-11 (latest) — Disconnected-click readiness-first
+
+Round 6 caught three more bugs that the round-5 "clear loading + skip history" fix didn't fully address.
+
+### 1. Cross-hierarchy state corruption (e.g. browse → search-result while disconnected)
+`navigateSearchResult` and `resolveAlbumOrNavigate` both called `setSearchLoading('search') + resetHistory()` BEFORE calling `browse()`. When `browse()` then bailed because the socket was disconnected, the hierarchy was already switched to `'search'` and the prior history was already cleared. The store ended up with `hierarchy: 'search'` over a stale browse result — the next click would emit browse-session itemKeys against the search session.
+
+Fix: readiness-check-first pattern. Both `navigateSearchResult` and `resolveAlbumOrNavigate` now check `socket.connected` after the REST freshen/resolve but BEFORE `resetHistory`/hierarchy commit. `browse()` itself also checks the socket up front so it never optimistically sets hierarchy. The whole `emitBrowse` / `emitIfConnected` round-5 dance is replaced inside `browse()` and `pop()` with direct connection checks + direct `socket.emit` — equivalent fail-fast behavior with no state-mutation gap.
+
+### 2. `pop()` rollback could promote stale forward entry into history
+The rollback `popForward()` ran unconditionally on failed emit, even when `popHistory()` had been a no-op (defensive: Back triggered with empty history). A stale forward entry would then incorrectly land in history. Fix: readiness-first means `pop()` no longer needs the rollback path — if disconnected, we bail before touching state.
+
+### 3. Test fixture leak
+`fakeSocket.connected` wasn't reset in `beforeEach`. A disconnect-path test that crashed before its own restore would leave the disconnected state for later tests. Fix: `beforeEach` now resets `fakeSocket.connected = true`.
+
+### Tests (+2)
+- "disconnected click on a search result preserves prior browse hierarchy and history" — cross-hierarchy case: existing browse state + disconnected click on search result → emit skipped, hierarchy still `browse`, prior history intact, loading cleared, "Not connected" toast.
+- "disconnected Back with empty history + non-empty forward does NOT pull stale forward into history" — defensive case: forward stack with stale entry, history empty, disconnected Back → no emit, history and forward both untouched.
+
+### Validation
+- Backend: 80 tests.
+- UI: 118 → 120 tests.
+- svelte-check 0/0, both builds clean, lint clean.
+
+## 2026-05-11 — Disconnected browse: clear loading + don't mutate history
 
 Round-3 review caught a real bug in the round-2 fix. `emitIfConnected` returned `false` on disconnect, but `emitBrowse` ignored the return value. The chain was:
 

@@ -40,7 +40,7 @@ vi.mock('$app/navigation', () => ({
 
 // Import after mocks so the page picks them up.
 import LibraryPage from '../+page.svelte';
-import { browseHistoryStore, resetHistory, pushHistory } from '$lib/stores/browseHistoryStore';
+import { browseHistoryStore, resetHistory, pushHistory, popHistory } from '$lib/stores/browseHistoryStore';
 import {
 	browseStore,
 	resetBrowse,
@@ -90,6 +90,10 @@ beforeEach(() => {
 	apiBrowse.mockReset();
 	apiBrowseLoad.mockReset();
 	fakeSocket.emit.mockReset();
+	// Restore the connected flag — disconnect-path tests flip this to
+	// false, and an assertion failure before the test's own restore
+	// would otherwise leak the disconnected state into later tests.
+	fakeSocket.connected = true;
 	resetBrowse();
 	resetHistory();
 	setSelectedZone('');
@@ -773,6 +777,90 @@ describe('Library page — navigation actions', () => {
 		expect(await screen.findByText(/loading library data/i)).toBeInTheDocument();
 	});
 
+	it('disconnected click on a search result preserves prior browse hierarchy and history', async () => {
+		// Reproduces R6 finding #1: a search-result click resets
+		// history and commits hierarchy='search' before the actual
+		// browse emit. If the socket is disconnected when the emit
+		// would fire, prior browse history must NOT be cleared and
+		// hierarchy must NOT switch — otherwise subsequent clicks
+		// send browse-session itemKeys against the search session.
+
+		// Mount first so restoreBrowse runs against empty history
+		// (early-return). Then set up "prior browse state" via direct
+		// store mutations — avoids racing the mount restore.
+		render(LibraryPage);
+		await tick();
+
+		pushHistory({ hierarchy: 'browse', itemKey: 'albums-key' }, undefined, {
+			title: 'Albums'
+		});
+		setBrowseResult(
+			listResult({
+				level: 1,
+				items: [makeItem({ title: 'Some Album', itemKey: 'album-1' })]
+			}),
+			'browse'
+		);
+
+		// Stage a search result + disconnect.
+		setSearchLoading('beatles');
+		setSearchResults([
+			makeSearchResult({
+				resultType: 'album',
+				itemType: 'album',
+				title: 'Abbey Road',
+				subtitle: 'The Beatles',
+				itemKey: 'fresh-search-key'
+			})
+		]);
+		// Re-seed-search REST call (still works even with socket
+		// disconnected — different transport).
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Abbey Road',
+						subtitle: 'The Beatles',
+						itemKey: 'fresh-search-key',
+						itemType: 'album'
+					})
+				]
+			})
+		);
+
+		fakeSocket.connected = false;
+		await tick();
+
+		const tile = await screen.findByText('Abbey Road');
+		tile.closest('button')?.click();
+		// Wait until the navigateSearchResult async chain has reached
+		// the post-freshen readiness check (clears loading on the
+		// disconnected path). Polling on loading=false is sturdier
+		// than counting ticks across the await chain.
+		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalledTimes(1);
+			expect(get(browseStore).loading).toBe(false);
+		});
+
+		// browse:browse emit was skipped (readiness check rejected).
+		expect(fakeSocket.emit).not.toHaveBeenCalledWith(
+			'browse:browse',
+			expect.anything()
+		);
+
+		// Prior browse history preserved — not reset.
+		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual([
+			'albums-key'
+		]);
+
+		// Hierarchy did NOT switch to 'search'.
+		expect(get(browseStore).hierarchy).toBe('browse');
+
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message).toMatch(/Not connected/i);
+	});
+
 	it('clicking a list item while disconnected clears loading and does NOT record history', async () => {
 		// Simulate the socket dropping (object exists, .connected = false).
 		// emitIfConnected's path: skip emit, push feedback toast, return
@@ -809,9 +897,42 @@ describe('Library page — navigation actions', () => {
 		// Feedback toast surfaced the disconnect.
 		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
 		expect(get(commandFeedbackStore)?.message).toMatch(/Not connected/i);
+	});
 
-		// Restore for any later tests in the same describe block.
-		fakeSocket.connected = true;
+	it('disconnected Back with empty history + non-empty forward does NOT pull stale forward into history', async () => {
+		// Reproduces R6 finding #2 (now-resolved by the readiness-first
+		// pattern in pop()): if Back is somehow triggered while history
+		// is empty (defensive — nav store usually disables the button)
+		// and forward has a stale entry, the disconnected click must
+		// not "rollback" by popping that stale forward into history.
+		//
+		// Set up: empty history, populated forward stack. We push +
+		// pop to land in this state.
+		pushHistory({ hierarchy: 'browse', itemKey: 'k1' }, undefined, { title: 'A' });
+		popHistory(); // moves k1 from history → forward
+		expect(get(browseHistoryStore).history).toEqual([]);
+		expect(get(browseHistoryStore).forward.map((s) => s.itemKey)).toEqual(['k1']);
+
+		fakeSocket.connected = false;
+		render(LibraryPage);
+		await tick();
+
+		// Drive Back directly via the nav store — simulates the
+		// "somehow triggered" path.
+		const { browseNavStore } = await import('$lib/stores/browseNavStore');
+		const nav = get(browseNavStore);
+		nav.back();
+		await tick();
+
+		// Connection check rejected the click before any mutation.
+		expect(fakeSocket.emit).not.toHaveBeenCalledWith(
+			'browse:pop',
+			expect.anything()
+		);
+		// History still empty, forward stack untouched (stale entry
+		// did NOT get promoted into history).
+		expect(get(browseHistoryStore).history).toEqual([]);
+		expect(get(browseHistoryStore).forward.map((s) => s.itemKey)).toEqual(['k1']);
 	});
 });
 

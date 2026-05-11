@@ -509,16 +509,33 @@
 			zoneId: options.zoneId ?? ($selectedZoneStore || undefined)
 		};
 
-		// Set loading optimistically, then send. If the emit fails
-		// (socket disconnected), clear loading and skip history —
-		// nothing was sent so no response is coming. emitIfConnected
-		// already pushed a "Not connected" feedback toast.
-		setBrowseLoading(scopedOptions.hierarchy ?? 'browse');
-		const sent = emitBrowse('browse:browse', scopedOptions);
-		if (!sent) {
-			clearBrowseLoading();
+		// Check the socket BEFORE mutating any state. setBrowseLoading
+		// would switch the store's hierarchy field optimistically —
+		// safe for same-hierarchy clicks, but for cross-hierarchy
+		// navigation (e.g. browse → search via search-result click)
+		// a failed emit would leave the store with hierarchy='search'
+		// over the prior browse result. Subsequent clicks would then
+		// re-emit browse-session itemKeys against the search session
+		// and 500. Doing the readiness check first means a
+		// disconnected click leaves page state exactly as it was.
+		const liveSocket = socket ?? getSocket();
+		socket = liveSocket;
+		if (!liveSocket) {
+			setBrowseError('Realtime connection is unavailable.');
 			return;
 		}
+		if (!liveSocket.connected) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'browse:browse',
+				message: 'Not connected to server'
+			});
+			return;
+		}
+
+		// Past the readiness check — safe to mutate.
+		setBrowseLoading(scopedOptions.hierarchy ?? 'browse');
+		liveSocket.emit('browse:browse', scopedOptions);
 
 		if (opts.recordHistory) {
 			// Capture the active search query alongside any search-derived
@@ -532,6 +549,24 @@
 	}
 
 	function pop() {
+		// Same readiness-check-first pattern as browse(): check the
+		// socket BEFORE any state mutation so a disconnected Back
+		// click doesn't leave history mutated or loading stuck.
+		const liveSocket = socket ?? getSocket();
+		socket = liveSocket;
+		if (!liveSocket) {
+			setBrowseError('Realtime connection is unavailable.');
+			return;
+		}
+		if (!liveSocket.connected) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'browse:pop',
+				message: 'Not connected to server'
+			});
+			return;
+		}
+
 		popHistory();
 		const options: BrowsePopOptions = {
 			hierarchy: $browseStore.hierarchy,
@@ -539,14 +574,7 @@
 			multiSessionKey: activeMultiSessionKey()
 		};
 		setBrowseLoading(options.hierarchy);
-		const sent = emitBrowse('browse:pop', options);
-		if (!sent) {
-			// Pop never reached Roon. Undo the history mutation by
-			// pulling the step back off the forward stack, and clear
-			// the loading flag so the pane shows what it had.
-			popForward();
-			clearBrowseLoading();
-		}
+		liveSocket.emit('browse:pop', options);
 	}
 
 	/**
@@ -716,9 +744,30 @@
 	async function navigateSearchResult(result: SearchResult): Promise<void> {
 		if (!result.itemKey) return;
 
-		setBrowseLoading('search');
+		// Show loading without switching hierarchy yet — the hierarchy
+		// commit is the irreversible part. We defer it until after the
+		// connection readiness check below, so a disconnected click
+		// doesn't leave the store with hierarchy='search' over a stale
+		// browse result.
+		setBrowseLoading();
 		try {
 			const target = await freshenSearchItem(result);
+
+			// Readiness check BEFORE history mutation. If we're
+			// disconnected, bail without resetHistory / hierarchy switch —
+			// browse() would just bail anyway, but by then resetHistory
+			// has already run and the prior browse thread is lost.
+			const liveSocket = socket ?? getSocket();
+			socket = liveSocket;
+			if (!liveSocket?.connected) {
+				clearBrowseLoading();
+				pushCommandFeedback({
+					source: 'browse',
+					command: 'browse:browse',
+					message: 'Not connected to server'
+				});
+				return;
+			}
 
 			// Each search-result click starts a new navigation thread:
 			//   - prior browse history is from a different Roon hierarchy
@@ -726,11 +775,6 @@
 			// Search re-seeding mints fresh Roon item_keys, so browse the
 			// matched result from the new session rather than the stale key
 			// attached to the rendered search row.
-			// Restore-on-remount must replay only this thread, so reset
-			// before pushing. The store's hierarchy-switch guard would
-			// catch the browse-history case anyway, but doing it here
-			// makes the intent explicit and also covers within-search
-			// thread switches (a different result on the same query).
 			resetHistory();
 
 			const opts: BrowseOptions = {
@@ -916,10 +960,25 @@
 			return;
 		}
 
-		// Match confirmed — commit the hierarchy switch and land on the
-		// album as a fresh search-rooted thread (mirrors
-		// `navigateSearchResult`). The prior browse stack is intentionally
-		// cleared; Back walks search history from here.
+		// Match confirmed. Readiness check BEFORE the hierarchy commit
+		// so a disconnected click doesn't leave search context set
+		// over the prior browse view with an empty history.
+		const liveSocket = socket ?? getSocket();
+		socket = liveSocket;
+		if (!liveSocket?.connected) {
+			clearBrowseLoading();
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'browse:browse',
+				message: 'Not connected to server'
+			});
+			return;
+		}
+
+		// Commit the hierarchy switch and land on the album as a fresh
+		// search-rooted thread (mirrors `navigateSearchResult`). The
+		// prior browse stack is intentionally cleared; Back walks
+		// search history from here.
 		setSearchLoading(parsed.album);
 		resetHistory();
 		browse(

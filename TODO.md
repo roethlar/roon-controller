@@ -191,6 +191,12 @@
 - [x] Library children indented in the rail to make the tree relationship visible
 - [x] 91 tests passing through both rounds of polish
 
+## Disconnected-click readiness-first (done — see DEVLOG)
+- [x] `browse()` and `pop()` check `socket.connected` BEFORE any state mutation (no more optimistic hierarchy switch / popped-history-stuck-in-forward)
+- [x] `navigateSearchResult` + `resolveAlbumOrNavigate` check `socket.connected` after REST freshen, before `resetHistory` / hierarchy commit
+- [x] Test fixture: `fakeSocket.connected = true` in `beforeEach` so disconnect-path test failures don't cascade
+- [x] +2 tests: cross-hierarchy disconnected click, empty-history disconnected Back with stale forward
+
 ## Disconnected browse state (done — see DEVLOG)
 - [x] `emitBrowse` returns `boolean`; `browse()` clears loading + skips `pushHistory` on false
 - [x] `pop()` undoes the history pop via `popForward()` on emit failure
