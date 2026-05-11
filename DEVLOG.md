@@ -1,6 +1,16 @@
 # Dev Log
 
-## 2026-05-11 (latest) — Code review chunk B: defensive cleanup
+## 2026-05-11 (latest) — Volume slider rAF throttle (#7)
+
+The play-bar volume slider was emitting `transport:volume` on every `input` event — dragging it produced one socket call per pixel of mouse movement, plus a corresponding ack-toast storm if the connection blipped.
+
+Fix: rAF coalesce. The slider stores the latest value in a `pendingVolume` ref; the first `input` schedules a `requestAnimationFrame` callback; the callback emits `pendingVolume` and clears. Subsequent `input` events within the frame just update `pendingVolume`. Result: max ~60 emits/sec regardless of input rate, and the final drag-release value always lands.
+
+The incremental `±` buttons stay as direct `sendVolume()` calls — they're discrete clicks, not drag.
+
+UI tests still 113. svelte-check 0/0, build clean.
+
+## 2026-05-11 — Code review chunk B: defensive cleanup
 
 Four medium-severity issues from the same review.
 

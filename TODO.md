@@ -191,6 +191,9 @@
 - [x] Library children indented in the rail to make the tree relationship visible
 - [x] 91 tests passing through both rounds of polish
 
+## Volume slider rAF throttle (done — see DEVLOG)
+- [x] Slider coalesces emits to one per animation frame; final drag-release value still sent
+
 ## Code review chunk B — defensive cleanup (done — see DEVLOG)
 - [x] API client reads body once as text, parses JSON from that string (was losing non-JSON error responses)
 - [x] `ALLOWED_BROWSE_HIERARCHIES` allowlist enforced at REST + socket entry points

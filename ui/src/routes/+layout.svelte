@@ -210,11 +210,32 @@
 		});
 	}
 
+	// rAF-throttled volume slider. Native range inputs fire `input` on
+	// every pixel of drag — without throttling we flood Roon with
+	// commands AND get a stale-ack toast storm. We coalesce to one
+	// emit per animation frame (max 60Hz) and always send the LATEST
+	// pending value, including the final drag position when the user
+	// releases. The +/- buttons stay as direct sendVolume() calls;
+	// they're discrete clicks, not drag, so no need to throttle.
+	let pendingVolume: number | null = null;
+	let volumeRafId: number | null = null;
+
+	function flushVolume() {
+		volumeRafId = null;
+		if (pendingVolume === null) return;
+		const value = pendingVolume;
+		pendingVolume = null;
+		sendVolume(value);
+	}
+
 	function onVolumeSlide(e: Event) {
 		const target = e.currentTarget as HTMLInputElement;
 		const value = Number(target.value);
 		if (!Number.isFinite(value)) return;
-		sendVolume(value);
+		pendingVolume = value;
+		if (volumeRafId === null) {
+			volumeRafId = requestAnimationFrame(flushVolume);
+		}
 	}
 
 	function onVolumeStep(delta: number) {
