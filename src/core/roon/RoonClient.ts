@@ -45,7 +45,14 @@ export class RoonClient extends EventEmitter {
   }
 
   public start(): void {
-    const token = this.loadToken();
+    // Migrate any pre-existing config.json that earlier builds wrote to
+    // the working directory by accident. node-roon-api's default
+    // save_config() writes a `config.json` next to the process cwd; we
+    // used to provide a no-op `save_config` callback that the library
+    // ignores (it only honors set_persisted_state). The accidental file
+    // contains the real pairing token, so port it to the configured
+    // location and remove the cwd copy.
+    this.migrateLegacyConfigJson();
 
     this.roon = new RoonApi({
       extension_id: "com.roonlabs.webcontroller",
@@ -54,11 +61,15 @@ export class RoonClient extends EventEmitter {
       publisher: "Michael Coelho",
       email: "mcoelho@gmail.com",
       website: "https://github.com/mcoelho/roon-controller",
-      token,
       log_level: this.options.logger.level ?? "info",
-      save_config: (_roon: any, newToken: unknown) => {
-        this.persistToken(newToken);
-      },
+      // node-roon-api persists pairing state via these two callbacks
+      // (it reads `paired_core_id` + per-core `tokens` to resume
+      // pairing across restarts). The earlier `token` + `save_config`
+      // options were dead code — the library ignores `token` and only
+      // calls its own default save_config (which writes config.json
+      // in cwd, NOT at our configured path).
+      get_persisted_state: () => this.loadPersistedState(),
+      set_persisted_state: (state: unknown) => this.savePersistedState(state),
       core_paired: (core: any) => {
         this.onCorePaired(core);
       },
@@ -133,37 +144,105 @@ export class RoonClient extends EventEmitter {
     this.emit("core-status", { coreStatus: "unpaired" });
   }
 
-  private loadToken(): unknown {
+  /**
+   * Read the pairing state from `tokenPath`. Returns `{}` (the shape
+   * node-roon-api defaults to) on missing file or parse error so the
+   * library can proceed to discover/re-pair.
+   */
+  private loadPersistedState(): Record<string, unknown> {
     try {
       const filePath = path.resolve(this.options.tokenPath);
-      if (fs.existsSync(filePath)) {
-        const buffer = fs.readFileSync(filePath, "utf-8");
-        return JSON.parse(buffer);
+      if (!fs.existsSync(filePath)) return {};
+      const buffer = fs.readFileSync(filePath, "utf-8");
+      const parsed = JSON.parse(buffer);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
       }
+      this.options.logger.warn(
+        { filePath },
+        "Persisted Roon state is not an object; ignoring"
+      );
+      return {};
     } catch (error) {
       this.options.logger.warn(
         { err: error },
-        "Failed to read saved Roon token"
+        "Failed to read persisted Roon state"
       );
+      return {};
     }
-    return null;
   }
 
-  private persistToken(token: unknown): void {
+  /**
+   * Write the pairing state to `tokenPath`. The file holds Roon's
+   * pairing identity (paired_core_id + per-core tokens) — treat as
+   * a secret (mode 0o600). Atomic via tmp + rename so a crash
+   * mid-write can't leave a torn file.
+   */
+  private savePersistedState(state: unknown): void {
     try {
       const filePath = path.resolve(this.options.tokenPath);
       const dir = path.dirname(filePath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
-      // Restrictive mode: token grants Roon control identity, treat as a secret.
-      fs.writeFileSync(filePath, JSON.stringify(token, null, 2), {
+      const tmp = `${filePath}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(state, null, 2), {
         encoding: "utf-8",
         mode: 0o600,
       });
-      this.options.logger.info({ filePath }, "Saved Roon pairing token");
+      fs.renameSync(tmp, filePath);
+      this.options.logger.debug(
+        { filePath },
+        "Persisted Roon pairing state"
+      );
     } catch (error) {
-      this.options.logger.error({ err: error }, "Failed to save Roon token");
+      this.options.logger.error(
+        { err: error },
+        "Failed to save Roon pairing state"
+      );
+    }
+  }
+
+  /**
+   * One-time migration from the cwd `config.json` the library writes
+   * by default. If the configured tokenPath is empty AND a
+   * `config.json` exists in cwd, copy it over and remove the cwd
+   * file so it can't drift back into use.
+   */
+  private migrateLegacyConfigJson(): void {
+    try {
+      const targetPath = path.resolve(this.options.tokenPath);
+      if (fs.existsSync(targetPath)) return;
+      const legacyPath = path.resolve("config.json");
+      if (!fs.existsSync(legacyPath)) return;
+      // Read first to validate JSON; don't migrate garbage.
+      const raw = fs.readFileSync(legacyPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        this.options.logger.warn(
+          { legacyPath },
+          "Legacy config.json is not an object; not migrating"
+        );
+        return;
+      }
+      const dir = path.dirname(targetPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      }
+      fs.writeFileSync(targetPath, JSON.stringify(parsed, null, 2), {
+        encoding: "utf-8",
+        mode: 0o600,
+      });
+      fs.unlinkSync(legacyPath);
+      this.options.logger.info(
+        { from: legacyPath, to: targetPath },
+        "Migrated Roon pairing state from legacy config.json"
+      );
+    } catch (error) {
+      this.options.logger.warn(
+        { err: error },
+        "Legacy config.json migration skipped"
+      );
     }
   }
 }

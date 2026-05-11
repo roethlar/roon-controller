@@ -53,7 +53,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `HOST` | Bind address. `0.0.0.0` makes the UI reachable on the LAN; set `127.0.0.1` for localhost-only (recommended behind a reverse proxy) | `0.0.0.0` |
 | `PORT` | HTTP port (serves API + UI) | `3333` |
 | `LOG_LEVEL` | Pino log level. `trace` enables raw Roon payload dumps for debugging | `info` |
-| `ROON_TOKEN_PATH` | Pairing token path | `./config/roon-token.json` |
+| `ROON_TOKEN_PATH` | Roon pairing-state file (paired_core_id + per-core tokens) | `./config/roon-token.json` |
 | `IMAGE_CACHE_PATH` | Artwork disk cache | `./data/image-cache` |
 | `IMAGE_CACHE_MAX_BYTES` | Disk cache cap (bytes); LRU eviction when exceeded | `10737418240` (10 GB) |
 | `CLIENT_ORIGIN` | Comma-separated Socket.IO CORS allowlist, or `*` for any | `*` |
@@ -134,7 +134,9 @@ npm --prefix ui run build
 
 On first run: Roon → Settings → Extensions → enable **Custom Roon Controller**.
 
-Token is cached at `ROON_TOKEN_PATH` and reconnect is automatic thereafter.
+Roon's pairing state — `paired_core_id` plus a per-core token map — is persisted to `ROON_TOKEN_PATH` (mode `0o600`, atomic write). Reconnect is automatic on subsequent starts.
+
+Older builds accidentally let `node-roon-api` write `config.json` in the working directory. On first run, an existing `config.json` in the cwd is migrated to `ROON_TOKEN_PATH` and the cwd copy removed. No action required from you.
 
 ## Handoff
 

@@ -38,6 +38,30 @@ export function emitWithAck<T = undefined>(
 	const timeoutMs = options.timeoutMs ?? 5000;
 
 	return new Promise<AckResponse<T>>((resolve) => {
+		// Fail fast when the socket is disconnected. socket.io's default
+		// behavior is to BUFFER an emit issued while disconnected and
+		// flush it on reconnect — for transport-style commands
+		// (play/pause/seek/volume/queue) that's wrong: a play issued + UI-
+		// timed-out 30s ago shouldn't fire when reconnect lands. We
+		// reject here so the caller sees the failure immediately and the
+		// user gets a feedback toast; the buffered emit never happens
+		// because we never call socket.emit().
+		if (!socket.connected) {
+			const response: AckResponse<T> = {
+				success: false,
+				error: 'Not connected to server'
+			};
+			if (options.feedback) {
+				pushCommandFeedback({
+					source: options.feedback.source,
+					command: options.feedback.command,
+					message: response.error
+				});
+			}
+			resolve(response);
+			return;
+		}
+
 		let settled = false;
 		const settle = (response: AckResponse<T>) => {
 			if (settled) return;

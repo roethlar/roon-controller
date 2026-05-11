@@ -191,6 +191,14 @@
 - [x] Library children indented in the rail to make the tree relationship visible
 - [x] 91 tests passing through both rounds of polish
 
+## Code review chunk A — token persistence, lockfile, socket buffering (done — see DEVLOG)
+- [x] `RoonClient` wires `get_persisted_state` / `set_persisted_state` to `tokenPath` (was using a dead `save_config` callback; node-roon-api's default wrote `config.json` in cwd)
+- [x] One-time migration of legacy `config.json` from cwd → `tokenPath`
+- [x] Atomic write (tmp + rename), 0o600
+- [x] `package.json` and `package-lock.json` use `git+https://github.com/roonlabs/...git` instead of `git+ssh://` so Docker `npm ci` works without git/ssh
+- [x] `emitWithAck` fails fast when `socket.connected === false` instead of letting socket.io buffer + replay transport commands on reconnect
+- [x] 9 new RoonClient tests (load / save / migration / corrupt JSON / no clobber); 3 new emit tests (disconnected reject, feedback toast, connected happy path)
+
 ## Browse-rooted restore via breadcrumbs (done — see DEVLOG)
 - [x] `restoreBrowse` now walks browse-hierarchy steps via breadcrumb (mirrors Phase A's search-rooted walk); falls back to raw itemKey only for legacy no-breadcrumb steps
 - [x] `replaceHistory(rebuilt)` rewrites the persisted stack with fresh keys

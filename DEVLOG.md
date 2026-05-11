@@ -1,6 +1,32 @@
 # Dev Log
 
-## 2026-05-11 (latest) — Browse-rooted restore via breadcrumbs
+## 2026-05-11 (latest) — Code review chunk A: token persistence, lockfile, socket buffering
+
+GPT review caught three high-severity issues. All real bugs.
+
+### 1. Token persistence was broken (worked by accident on systemd, lost on Docker restart)
+
+`RoonClient` passed `token` and `save_config` options to node-roon-api. The library actually uses `get_persisted_state` / `set_persisted_state` callbacks; if those aren't supplied, it falls back to `save_config("roonstate", state)` which writes a hardcoded `config.json` next to the process cwd. Our `save_config` callback in options was never called. Result:
+
+- On systemd: `WorkingDirectory=/opt/roon-controller`, so `config.json` landed there and pairing did persist — but at the wrong path. `ROON_TOKEN_PATH` was a no-op.
+- On Docker: the cwd `config.json` was outside the documented `./config` volume mount, so pairing was lost on container recreation despite README claims to the contrary.
+
+Fix: provide proper `get_persisted_state` (read JSON at `tokenPath`) and `set_persisted_state` (atomic write to `tokenPath` with mode `0o600`). One-time migration: if a pre-existing `config.json` is found in cwd at startup AND `tokenPath` doesn't exist, copy it over and remove the cwd file. 9 new tests.
+
+### 2. `package-lock.json` had `git+ssh://` URLs for Roon deps
+
+`npm ci` in a clean Docker image (`node:22-alpine`) has no git/ssh tooling and no GitHub SSH key, so fresh installs would fail. Swapped lockfile + `package.json` to `git+https://github.com/roonlabs/...git`. Verified anonymous fetch works in a tmp scratch.
+
+### 3. Socket commands buffered & could replay after reconnect
+
+`emitWithAck` called `socket.emit()` without checking `socket.connected`. socket.io buffers emits made while disconnected and flushes on reconnect. For transport commands (play/pause/seek/volume/queue), that's wrong: a play issued + UI-timed-out 30s ago shouldn't fire when the server comes back. Now: if `!socket.connected`, reject synchronously with "Not connected to server" + feedback toast; never call `socket.emit()` so nothing gets buffered. 3 new tests.
+
+### Validation
+- Backend: 70 → 79 tests passing.
+- UI: 110 → 113 tests passing.
+- svelte-check 0/0, both builds clean, lint clean.
+
+## 2026-05-11 — Browse-rooted restore via breadcrumbs
 
 User saw `⚠ Browse Error — Restore stopped at level 0: [BrowseService] browse failed` on every page load after a redeploy. Browse-hierarchy itemKeys are session-scoped exactly like search keys; a Roon Core or controller restart invalidates them all. Phase A taught the search-rooted restore to use breadcrumbs to find fresh keys, but the browse-rooted path was still trying raw stale keys — first step always failed.
 
