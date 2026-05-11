@@ -94,6 +94,38 @@ export function emitWithAck<T = undefined>(
 	});
 }
 
+/**
+ * Fire-and-forget emit for events whose response arrives as a
+ * server-side broadcast (e.g. `browse:browse` → `browse-result`),
+ * not via ack. Like `emitWithAck`, fails fast when disconnected so
+ * socket.io can't buffer the emit + replay it on reconnect: a
+ * browse issued + lost 30s ago would otherwise come back as a
+ * surprise navigation when the connection returns.
+ *
+ * Returns true if the emit went out, false if disconnected. Caller
+ * can use the return value to skip downstream work (e.g. setting
+ * loading state) when delivery isn't going to happen.
+ */
+export function emitIfConnected(
+	socket: Socket,
+	event: string,
+	payload?: unknown,
+	feedback?: { source: CommandSource; command: string }
+): boolean {
+	if (!socket.connected) {
+		if (feedback) {
+			pushCommandFeedback({
+				source: feedback.source,
+				command: feedback.command,
+				message: 'Not connected to server'
+			});
+		}
+		return false;
+	}
+	socket.emit(event, payload);
+	return true;
+}
+
 function parseAck<T>(raw: unknown): AckResponse<T> {
 	if (raw && typeof raw === 'object' && 'success' in raw) {
 		const r = raw as Record<string, unknown>;

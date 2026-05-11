@@ -1,6 +1,31 @@
 # Dev Log
 
-## 2026-05-11 (latest) — Volume slider rAF throttle (#7)
+## 2026-05-11 (latest) — Code review round 2: Docker git, pageSize, image keys, browse emits
+
+Four follow-ups from the next-round review of `71a6a43 / fb5eb93 / 31b9130`. All real misses.
+
+### 1. Docker build still broke without git (lockfile fix wasn't enough)
+The previous patch swapped `git+ssh://` → `git+https://` so anonymous fetch worked. But `npm ci` still shells out to `git` to clone the repo, and the `node:22-alpine` base image has no git binary. Result: Docker builds still failed on the Roon deps.
+Fix: `RUN apk add --no-cache git` in the backend-build stage and the production-runtime stage. The frontend stage doesn't need git (no Roon deps).
+
+### 2. `BrowseService.loadItemsForList` still honored unbounded pageSize
+The MAX_COUNT clamp in chunk B covered the `count` param of `load.options`, but the internal `loadItemsForList` helper still used `options.pageSize` (which can be `Infinity`) to decide how many items to chain-load. A hostile or buggy client could ask the backend to do many sequential round-trips against a huge Roon list.
+Fix: clamp the computed page size to `MAX_COUNT (5000)`. `Infinity` and oversized values silently snap. Test added: 10k-item list + `pageSize: Infinity` results in exactly 50 page calls × 100 items = 5000 loaded.
+
+### 3. Search.svelte still interpolated raw image keys
+Chunk B switched four call sites to `imageUrl()` but missed the search-result tile. Roon's `image_key` is opaque and may contain reserved URL characters (`/`, `?`, `#`, `%`).
+Fix: Search.svelte uses `imageUrl(result.imageKey, { width, height })`.
+
+### 4. Browse/search raw `socket.emit` calls still buffered while disconnected
+`emitWithAck` fail-fast (chunk A) covered ack-based commands. Browse/search use fire-and-forget emits — they don't take an ack; the response comes back as a server-broadcast `browse-result` / `search-result`. Those raw `socket.emit` calls bypassed the connected check. socket.io still buffered + replayed them on reconnect — less dangerous than transport replay but stale browse results landing on whatever the user has navigated to is bad UX.
+Fix: added `emitIfConnected(socket, event, payload, feedback?)` in `$lib/socket/emit.ts` — checks `socket.connected`, returns false + pushes feedback toast if disconnected. Updated four call sites: Search.svelte's submit, Library's pendingSearch effect, Library's `emitBrowse` helper, Library's `searchArtist`. 4 new tests.
+
+### Validation
+- Backend: 79 → 80 (+1 pageSize clamp).
+- UI: 113 → 117 (+4 emitIfConnected).
+- svelte-check 0/0, both builds clean, lint clean.
+
+## 2026-05-11 — Volume slider rAF throttle (#7)
 
 The play-bar volume slider was emitting `transport:volume` on every `input` event — dragging it produced one socket call per pixel of mouse movement, plus a corresponding ack-toast storm if the connection blipped.
 

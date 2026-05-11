@@ -317,10 +317,15 @@ export class BrowseService {
 
   /**
    * After a browse() call, fetch items via load(). By default loads one
-   * page (PAGE_SIZE items) starting from `options.offset`. Pass
-   * `pageSize: Infinity` to load the entire list (e.g. for small action
-   * lists or quickPlay lookups). Larger lists should be paged via
-   * `BrowseService.load()` from the client.
+   * page (PAGE_SIZE items) starting from `options.offset`. Caller can
+   * request a larger initial slice via `pageSize`; the value is clamped
+   * to `MAX_COUNT` so a hostile or buggy client can't ask the backend
+   * to chain many sequential load() roundtrips on a huge list. Larger
+   * lists should be paged via `BrowseService.load()` from the client.
+   *
+   * `Infinity` is accepted historically (some tests + the original
+   * "load everything" intent) but treated identically — clamped to
+   * `MAX_COUNT`.
    */
   private async loadItemsForList(
     browseResponse: any,
@@ -336,15 +341,21 @@ export class BrowseService {
     }
 
     const totalCount = count;
-    const startOffset =
-      typeof options.offset === "number" && Number.isFinite(options.offset) ? options.offset : 0;
+    const startOffset = BrowseService.clamp(options.offset, {
+      min: 0,
+      max: BrowseService.MAX_OFFSET,
+      defaultValue: 0,
+    });
 
-    const requestedPage =
+    // Compute requested page size, then clamp so a single browse call
+    // can't chain unbounded sequential load() calls.
+    const rawRequested =
       options.pageSize === Infinity
         ? totalCount
         : typeof options.pageSize === "number" && options.pageSize > 0
           ? Math.floor(options.pageSize)
           : BrowseService.PAGE_SIZE;
+    const requestedPage = Math.min(rawRequested, BrowseService.MAX_COUNT);
     const targetEnd = Math.min(totalCount, startOffset + requestedPage);
 
     this.logger.debug(

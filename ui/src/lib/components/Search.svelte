@@ -3,6 +3,8 @@
 	import { browseStore, setSearchError, setSearchLoading } from '$lib/stores/browseStore';
 	import { selectedZoneStore } from '$lib/stores/selectedZoneStore';
 	import { getSocket } from '$lib/socket/client';
+	import { emitIfConnected } from '$lib/socket/emit';
+	import { imageUrl } from '$lib/imageUrl';
 	import type { BrowseSearchOptions, SearchResult } from '@shared/types';
 
 	type SearchMode = 'full' | 'input' | 'results';
@@ -62,8 +64,18 @@
 			multiSessionKey: SEARCH_SESSION_KEY,
 			popAll: true
 		};
+		// emitIfConnected fails fast if the socket dropped; without
+		// it socket.io would buffer the emit and replay on reconnect,
+		// landing stale search results when the user has moved on.
+		if (
+			!emitIfConnected(liveSocket, 'browse:search', options, {
+				source: 'browse',
+				command: 'browse:search'
+			})
+		) {
+			return;
+		}
 		setSearchLoading(query);
-		liveSocket.emit('browse:search', options);
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
@@ -180,7 +192,7 @@
 								onclick={() => onResultClick?.(result)}
 							>
 								{#if result.imageKey}
-									<img src="/api/image/{result.imageKey}?scale=fit&width=120&height=120" alt={result.title} />
+									<img src={imageUrl(result.imageKey, { width: 120, height: 120 })} alt={result.title} />
 								{:else}
 									<div class="result-fallback">{result.resultType.charAt(0).toUpperCase()}</div>
 								{/if}

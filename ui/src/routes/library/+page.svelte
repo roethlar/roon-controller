@@ -33,6 +33,7 @@
 	} from '$lib/stores';
 	import { zoneMapStore } from '$lib/stores/zonesStore';
 	import { getSocket } from '$lib/socket/client';
+	import { emitIfConnected } from '$lib/socket/emit';
 	import { browse as apiBrowse, browseLoad as apiBrowseLoad } from '$lib/api/client';
 	import type {
 		BrowseItem,
@@ -436,16 +437,23 @@
 		const query = $pendingSearchStore;
 		if (query) {
 			pendingSearchStore.set(null);
-			setSearchLoading(query);
 			const liveSocket = socket ?? getSocket();
 			socket = liveSocket;
-			if (liveSocket) {
-				liveSocket.emit('browse:search', {
-					input: query,
-					zoneId: $selectedZoneStore || undefined,
-					multiSessionKey: SEARCH_SESSION_KEY,
-					popAll: true
-				});
+			if (
+				liveSocket &&
+				emitIfConnected(
+					liveSocket,
+					'browse:search',
+					{
+						input: query,
+						zoneId: $selectedZoneStore || undefined,
+						multiSessionKey: SEARCH_SESSION_KEY,
+						popAll: true
+					},
+					{ source: 'browse', command: 'browse:search' }
+				)
+			) {
+				setSearchLoading(query);
 			}
 		}
 	});
@@ -459,7 +467,13 @@
 			return;
 		}
 
-		liveSocket.emit(event, payload);
+		// Fail fast on disconnect so the buffered emit doesn't replay
+		// after reconnect (would land a stale browse result on
+		// whatever the user is now looking at).
+		emitIfConnected(liveSocket, event, payload, {
+			source: 'browse',
+			command: event
+		});
 	}
 
 	function activeMultiSessionKey(): string | undefined {
@@ -616,13 +630,22 @@
 		const liveSocket = socket ?? getSocket();
 		socket = liveSocket;
 		if (!liveSocket) return;
+		if (
+			!emitIfConnected(
+				liveSocket,
+				'browse:search',
+				{
+					input: name,
+					zoneId: $selectedZoneStore || undefined,
+					multiSessionKey: SEARCH_SESSION_KEY,
+					popAll: true
+				},
+				{ source: 'browse', command: 'browse:search' }
+			)
+		) {
+			return;
+		}
 		setSearchLoading(name);
-		liveSocket.emit('browse:search', {
-			input: name,
-			zoneId: $selectedZoneStore || undefined,
-			multiSessionKey: SEARCH_SESSION_KEY,
-			popAll: true
-		});
 	}
 
 	async function resetSearchSession(): Promise<BrowseResult | null> {

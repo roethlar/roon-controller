@@ -250,6 +250,35 @@ describe('BrowseService', () => {
       expect(mockBrowseApi.load).toHaveBeenCalledTimes(3);
       expect(result.items).toHaveLength(totalCount);
     });
+
+    it('clamps pageSize to MAX_COUNT so a single browse call cannot chain unbounded loads', async () => {
+      // 10,000-item list, caller asks for pageSize=Infinity. The
+      // service must cap at MAX_COUNT (5_000) — i.e. 50 page calls
+      // at PAGE_SIZE=100, not 100. Without the clamp a malicious or
+      // buggy client could ask the backend to chain 100+ sequential
+      // load() round-trips against Roon.
+      const totalCount = 10_000;
+      const browseResponse = {
+        action: 'list',
+        list: { title: 'Huge', level: 1, count: totalCount },
+      };
+      mockBrowseApi.browse.mockImplementation((_p: any, cb: Function) => {
+        cb(false, browseResponse);
+      });
+      mockBrowseApi.load.mockImplementation((params: any, cb: Function) => {
+        const items = Array.from({ length: params.count }, (_, i) => ({
+          title: `Item ${params.offset + i}`,
+          item_key: `k${params.offset + i}`,
+        }));
+        cb(false, { items, offset: params.offset, list: { count: totalCount, level: 1 } });
+      });
+
+      const result = await service.browse({ hierarchy: 'browse', pageSize: Infinity });
+
+      // 5_000 items loaded in 50 pages of 100.
+      expect(mockBrowseApi.load).toHaveBeenCalledTimes(50);
+      expect(result.items).toHaveLength(5_000);
+    });
   });
 
   describe('pop', () => {

@@ -191,6 +191,13 @@
 - [x] Library children indented in the rail to make the tree relationship visible
 - [x] 91 tests passing through both rounds of polish
 
+## Code review round 2 — Docker git, pageSize, image keys, browse emits (done — see DEVLOG)
+- [x] Dockerfile installs `git` in backend-build + runtime stages (git+https URLs still need the git binary)
+- [x] `BrowseService.loadItemsForList` clamps computed pageSize to `MAX_COUNT` so a single browse can't chain unbounded sequential load() calls
+- [x] Search.svelte switched to `imageUrl()` helper (was missed in chunk B)
+- [x] `emitIfConnected()` helper for fire-and-forget emits; browse/search call sites no longer buffer+replay while disconnected
+- [x] 5 new tests (1 pageSize clamp, 4 emitIfConnected)
+
 ## Volume slider rAF throttle (done — see DEVLOG)
 - [x] Slider coalesces emits to one per animation frame; final drag-release value still sent
 

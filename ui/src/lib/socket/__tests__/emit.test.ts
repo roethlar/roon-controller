@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { emitWithAck } from '../emit';
+import { emitWithAck, emitIfConnected } from '../emit';
 import { commandFeedbackStore, clearCommandFeedback } from '$lib/stores/commandFeedbackStore';
 
 function makeSocket(connected: boolean) {
@@ -61,5 +61,52 @@ describe('emitWithAck — fail-fast when disconnected', () => {
 
 		expect(result.success).toBe(true);
 		expect(socket.emit).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('emitIfConnected — fire-and-forget emit guard', () => {
+	it('skips emit and returns false when disconnected', () => {
+		const socket = makeSocket(false);
+		const sent = emitIfConnected(
+			socket as unknown as Parameters<typeof emitIfConnected>[0],
+			'browse:search',
+			{ input: 'beatles' },
+			{ source: 'browse', command: 'browse:search' }
+		);
+
+		expect(sent).toBe(false);
+		expect(socket.emit).not.toHaveBeenCalled();
+	});
+
+	it('pushes a feedback toast on disconnected emit', () => {
+		const socket = makeSocket(false);
+		emitIfConnected(
+			socket as unknown as Parameters<typeof emitIfConnected>[0],
+			'browse:search',
+			{ input: 'beatles' },
+			{ source: 'browse', command: 'browse:search' }
+		);
+		expect(get(commandFeedbackStore)?.message).toBe('Not connected to server');
+	});
+
+	it('emits and returns true when connected', () => {
+		const socket = makeSocket(true);
+		const sent = emitIfConnected(
+			socket as unknown as Parameters<typeof emitIfConnected>[0],
+			'browse:search',
+			{ input: 'beatles' }
+		);
+		expect(sent).toBe(true);
+		expect(socket.emit).toHaveBeenCalledWith('browse:search', { input: 'beatles' });
+	});
+
+	it('does not push a feedback toast when no feedback option is given', () => {
+		const socket = makeSocket(false);
+		emitIfConnected(
+			socket as unknown as Parameters<typeof emitIfConnected>[0],
+			'browse:search',
+			{ input: 'beatles' }
+		);
+		expect(get(commandFeedbackStore)).toBeNull();
 	});
 });
