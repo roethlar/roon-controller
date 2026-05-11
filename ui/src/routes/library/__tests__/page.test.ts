@@ -772,6 +772,47 @@ describe('Library page — navigation actions', () => {
 
 		expect(await screen.findByText(/loading library data/i)).toBeInTheDocument();
 	});
+
+	it('clicking a list item while disconnected clears loading and does NOT record history', async () => {
+		// Simulate the socket dropping (object exists, .connected = false).
+		// emitIfConnected's path: skip emit, push feedback toast, return
+		// false. browse() must clear the optimistic loading flag and
+		// skip pushHistory so the user doesn't end up with a ghost
+		// history entry for navigation that never happened.
+		fakeSocket.connected = false;
+
+		setBrowseResult(
+			listResult({
+				level: 0,
+				items: [makeItem({ title: 'Albums', itemKey: 'albums' })]
+			}),
+			'browse'
+		);
+
+		render(LibraryPage);
+		const albums = await screen.findByText('Albums');
+		albums.closest('button')?.click();
+		await tick();
+
+		// emit was never called (disconnected guard).
+		expect(fakeSocket.emit).not.toHaveBeenCalledWith(
+			'browse:browse',
+			expect.anything()
+		);
+
+		// browseStore is no longer in loading state.
+		expect(get(browseStore).loading).toBe(false);
+
+		// History was NOT mutated — no ghost entry.
+		expect(get(browseHistoryStore).history).toEqual([]);
+
+		// Feedback toast surfaced the disconnect.
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message).toMatch(/Not connected/i);
+
+		// Restore for any later tests in the same describe block.
+		fakeSocket.connected = true;
+	});
 });
 
 describe('Library page — quickPlay', () => {

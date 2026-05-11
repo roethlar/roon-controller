@@ -8,6 +8,7 @@
 		browseStore,
 		setBrowseError,
 		setBrowseLoading,
+		clearBrowseLoading,
 		setSearchLoading,
 		setBrowseResult,
 		appendBrowseItems,
@@ -458,19 +459,26 @@
 		}
 	});
 
-	function emitBrowse(event: string, payload: BrowseOptions | BrowsePopOptions) {
+	/**
+	 * Returns true if the emit actually went out. Callers MUST check
+	 * the return value before mutating state that assumes a
+	 * response is incoming (loading flag, history push) — otherwise
+	 * a disconnected click leaves the pane stuck on "Loading..." with
+	 * a ghost history entry for navigation that never happened.
+	 */
+	function emitBrowse(event: string, payload: BrowseOptions | BrowsePopOptions): boolean {
 		const liveSocket = socket ?? getSocket();
 		socket = liveSocket;
 
 		if (!liveSocket) {
 			setBrowseError('Realtime connection is unavailable.');
-			return;
+			return false;
 		}
 
 		// Fail fast on disconnect so the buffered emit doesn't replay
 		// after reconnect (would land a stale browse result on
 		// whatever the user is now looking at).
-		emitIfConnected(liveSocket, event, payload, {
+		return emitIfConnected(liveSocket, event, payload, {
 			source: 'browse',
 			command: event
 		});
@@ -501,8 +509,16 @@
 			zoneId: options.zoneId ?? ($selectedZoneStore || undefined)
 		};
 
+		// Set loading optimistically, then send. If the emit fails
+		// (socket disconnected), clear loading and skip history —
+		// nothing was sent so no response is coming. emitIfConnected
+		// already pushed a "Not connected" feedback toast.
 		setBrowseLoading(scopedOptions.hierarchy ?? 'browse');
-		emitBrowse('browse:browse', scopedOptions);
+		const sent = emitBrowse('browse:browse', scopedOptions);
+		if (!sent) {
+			clearBrowseLoading();
+			return;
+		}
 
 		if (opts.recordHistory) {
 			// Capture the active search query alongside any search-derived
@@ -523,7 +539,14 @@
 			multiSessionKey: activeMultiSessionKey()
 		};
 		setBrowseLoading(options.hierarchy);
-		emitBrowse('browse:pop', options);
+		const sent = emitBrowse('browse:pop', options);
+		if (!sent) {
+			// Pop never reached Roon. Undo the history mutation by
+			// pulling the step back off the forward stack, and clear
+			// the loading flag so the pane shows what it had.
+			popForward();
+			clearBrowseLoading();
+		}
 	}
 
 	/**

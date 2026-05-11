@@ -191,6 +191,12 @@
 - [x] Library children indented in the rail to make the tree relationship visible
 - [x] 91 tests passing through both rounds of polish
 
+## Disconnected browse state (done — see DEVLOG)
+- [x] `emitBrowse` returns `boolean`; `browse()` clears loading + skips `pushHistory` on false
+- [x] `pop()` undoes the history pop via `popForward()` on emit failure
+- [x] New `clearBrowseLoading()` store helper
+- [x] 1 new Library-page test for disconnected click
+
 ## Code review round 2 — Docker git, pageSize, image keys, browse emits (done — see DEVLOG)
 - [x] Dockerfile installs `git` in backend-build + runtime stages (git+https URLs still need the git binary)
 - [x] `BrowseService.loadItemsForList` clamps computed pageSize to `MAX_COUNT` so a single browse can't chain unbounded sequential load() calls

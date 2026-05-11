@@ -1,6 +1,30 @@
 # Dev Log
 
-## 2026-05-11 (latest) — Code review round 2: Docker git, pageSize, image keys, browse emits
+## 2026-05-11 (latest) — Disconnected browse: clear loading + don't mutate history
+
+Round-3 review caught a real bug in the round-2 fix. `emitIfConnected` returned `false` on disconnect, but `emitBrowse` ignored the return value. The chain was:
+
+1. User clicks a list item.
+2. `browse()` sets loading optimistically.
+3. `emitBrowse()` calls `emitIfConnected()` which skips the emit because `socket.connected === false`. Returns `false`.
+4. `browse()` ignored that; called `pushHistory()`.
+5. Result: pane stuck on "Loading…" forever, with a ghost history entry for navigation that never happened.
+
+### Fix
+- `emitBrowse(event, payload)` now returns `boolean`.
+- `browse()` checks the return; on `false`, calls `clearBrowseLoading()` and skips `pushHistory`. The "Not connected to server" feedback toast was already pushed by `emitIfConnected`.
+- `pop()` also fixed: it pops history *before* emitting (so the forward stack has the popped step). If the emit fails, we now `popForward()` to undo the history mutation, then `clearBrowseLoading()`.
+- New `clearBrowseLoading()` in `browseStore` — clears the loading flag without touching `current` or `hierarchy`.
+
+### Test (+1)
+Library page test: socket present but `connected: false`. Clicking a list item must NOT emit, must clear loading, must NOT mutate history, and must surface a "Not connected" toast.
+
+### Validation
+- Backend: 80 tests (unchanged).
+- UI: 117 → 118 tests.
+- svelte-check 0/0, both builds clean, lint clean.
+
+## 2026-05-11 — Code review round 2: Docker git, pageSize, image keys, browse emits
 
 Four follow-ups from the next-round review of `71a6a43 / fb5eb93 / 31b9130`. All real misses.
 

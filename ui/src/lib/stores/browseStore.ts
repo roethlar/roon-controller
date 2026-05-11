@@ -111,6 +111,16 @@ export function setBrowseLoading(hierarchy?: string): void {
 	}));
 }
 
+/**
+ * Clear the loading flag without touching `current` or `hierarchy`.
+ * Used when an optimistically-set loading state needs to be undone
+ * because the underlying request never went out (e.g. socket
+ * disconnected before emit).
+ */
+export function clearBrowseLoading(): void {
+	internalStore.update((state) => ({ ...state, loading: false }));
+}
+
 export function setBrowseError(message: string): void {
 	internalStore.update((state) => ({
 		...state,
