@@ -230,6 +230,13 @@ IMAGE_CACHE_PATH=${INSTALL_DIR}/data/image-cache
 # Default: 10 GB.
 IMAGE_CACHE_MAX_BYTES=10737418240
 
+# JSON file for "Recently played on this controller" persistence.
+# Atomic write, mode 0o600.
+RECENTLY_PLAYED_PATH=${INSTALL_DIR}/data/recently-played.json
+
+# Max entries kept in the rolling Recently Played list (1-1000).
+# RECENTLY_PLAYED_CAP=50
+
 # Comma-separated list of allowed origins for Socket.IO CORS, or "*" for any.
 # Tighten this when fronting the controller with a reverse proxy or
 # exposing beyond the LAN.

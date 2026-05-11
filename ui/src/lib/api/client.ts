@@ -39,13 +39,25 @@ async function request<T>(fetchFn: FetchLike, input: RequestInfo, init?: Request
 	});
 
 	if (!response.ok) {
-		let body: unknown;
-		try {
-			body = await response.json();
-		} catch (error) {
-			body = await response.text();
+		// Read the body once as text, then attempt JSON parse from
+		// that. The previous code called response.json() then
+		// response.text() — but `json()` consumes the body, so the
+		// follow-up `text()` throws and the caller loses the
+		// intended ApiError. Reading text first keeps non-JSON
+		// error bodies (e.g. proxy/HTML pages) intact.
+		const raw = await response.text().catch(() => '');
+		let body: unknown = raw;
+		if (raw) {
+			try {
+				body = JSON.parse(raw);
+			} catch {
+				body = raw;
+			}
 		}
-		const message = (body as ErrorResponse)?.error ?? response.statusText;
+		const fromObject =
+			body && typeof body === 'object' ? (body as ErrorResponse).error : undefined;
+		const fromText = typeof body === 'string' && body ? body : undefined;
+		const message = fromObject || fromText || response.statusText;
 		throw new ApiError(message, response.status, body);
 	}
 

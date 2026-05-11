@@ -4,6 +4,7 @@
 	import { emitWithAck } from '$lib/socket/emit';
 	import { selectedZoneStore, queueStore, setQueueSnapshot, pushCommandFeedback } from '$lib/stores';
 	import { zoneMapStore } from '$lib/stores/zonesStore';
+	import { imageUrl } from '$lib/imageUrl';
 	import type { LoopModeRequest, QueueItem, ZoneQueue, ZonePlaybackSettingsRequest } from '@shared/types';
 
 	let socket = $state(getSocket());
@@ -214,7 +215,7 @@
 					<article class="queue-item" class:current={isCurrentRow(index)}>
 						<div class="item-art">
 							{#if item.image_key}
-								<img src="/api/image/{item.image_key}?scale=fit&width=120&height=120" alt={itemTitle(item)} />
+								<img src={imageUrl(item.image_key, { width: 120, height: 120 })} alt={itemTitle(item)} />
 							{:else}
 								<div class="fallback">#{item.queue_item_id}</div>
 							{/if}

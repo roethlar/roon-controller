@@ -56,6 +56,8 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `ROON_TOKEN_PATH` | Roon pairing-state file (paired_core_id + per-core tokens) | `./config/roon-token.json` |
 | `IMAGE_CACHE_PATH` | Artwork disk cache | `./data/image-cache` |
 | `IMAGE_CACHE_MAX_BYTES` | Disk cache cap (bytes); LRU eviction when exceeded | `10737418240` (10 GB) |
+| `RECENTLY_PLAYED_PATH` | JSON file for "Recently played on this controller" persistence | `./data/recently-played.json` |
+| `RECENTLY_PLAYED_CAP` | Max entries kept in the rolling list (1-1000) | `50` |
 | `CLIENT_ORIGIN` | Comma-separated Socket.IO CORS allowlist, or `*` for any | `*` |
 | `TRUST_PROXY` | Set to `true` when fronted by a reverse proxy so rate limits identify the real client IP | unset |
 

@@ -1,6 +1,29 @@
 # Dev Log
 
-## 2026-05-11 (latest) — Code review chunk A: token persistence, lockfile, socket buffering
+## 2026-05-11 (latest) — Code review chunk B: defensive cleanup
+
+Four medium-severity issues from the same review.
+
+### 4. API client lost non-JSON error responses
+`request()` called `response.json()` first and `response.text()` in the catch — but `json()` consumes the body, so the follow-up `text()` threw too and callers lost the original error. Changed to read body once as text, then parse JSON from that string. Non-JSON responses (HTML proxy errors, plain-text 502s) now surface their content as the ApiError message.
+
+### 5. Browse inputs were under-validated
+- REST routes and socket handlers only checked `hierarchy` was present. Negative offsets, very large `count`/`pageSize`, and arbitrary hierarchy strings forwarded straight to Roon, which returned generic errors.
+- Added `ALLOWED_BROWSE_HIERARCHIES` allowlist in `src/server/util.ts` (mirrors the documented + probed set: browse, search, playlists, settings, internet_radio, albums, artists, genres, composers, tracks). REST + socket browse handlers reject unknown hierarchies with `400` / socket error before reaching the service.
+- Added `BrowseService.clamp()` for numeric inputs: offset clamped to `[0, 1_000_000]`; count clamped to `[1, 5_000]` with `PAGE_SIZE` default; pop levels clamped to `[1, 32]`. Out-of-range values silently snap to safe values rather than 400ing.
+
+### 6. Image keys not URL-safe
+Roon's `image_key` is opaque and may legally contain `/`, `?`, `#`, `%`. The UI was interpolating raw keys into URL path segments at four call sites. Added a centralized `imageUrl(key, { width, height })` helper that uses `encodeURIComponent`. All call sites switched.
+
+### 8. RECENTLY_PLAYED_* env vars undocumented
+The vars were parsed in `env.ts` but missing from README, `.env.example`, and the three installer templates (Linux/macOS/Windows). Added everywhere; macOS plist gets it in `EnvironmentVariables`, Windows NSSM gets it in `AppEnvironmentExtra`. README docs both knobs.
+
+### Validation
+- Backend: 79 tests passing (no new tests this round; the changes are defensive validation/encoding with low surface area).
+- UI: 113 tests passing.
+- svelte-check 0/0, both builds clean, lint clean.
+
+## 2026-05-11 — Code review chunk A: token persistence, lockfile, socket buffering
 
 GPT review caught three high-severity issues. All real bugs.
 

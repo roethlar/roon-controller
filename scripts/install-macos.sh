@@ -152,6 +152,8 @@ LOG_LEVEL=info
 ROON_TOKEN_PATH=${INSTALL_DIR}/config/roon-token.json
 IMAGE_CACHE_PATH=${INSTALL_DIR}/data/image-cache
 IMAGE_CACHE_MAX_BYTES=10737418240
+RECENTLY_PLAYED_PATH=${INSTALL_DIR}/data/recently-played.json
+# RECENTLY_PLAYED_CAP=50
 # CLIENT_ORIGIN=http://roon.lan,http://192.168.1.10:${PORT}
 # TRUST_PROXY=true
 EOF
@@ -190,6 +192,8 @@ cat > "$PLIST_PATH" <<EOF
       <string>${INSTALL_DIR}/data/image-cache</string>
       <key>IMAGE_CACHE_MAX_BYTES</key>
       <string>10737418240</string>
+      <key>RECENTLY_PLAYED_PATH</key>
+      <string>${INSTALL_DIR}/data/recently-played.json</string>
     </dict>
 
     <key>WorkingDirectory</key>

@@ -38,6 +38,7 @@
 	import { browse as apiBrowse } from '$lib/api/client';
 	import ErrorToast from '$lib/components/ErrorToast.svelte';
 	import Search from '$lib/components/Search.svelte';
+	import { imageUrl } from '$lib/imageUrl';
 	import type {
 		TransportControlRequest,
 		SeekRequest,
@@ -577,7 +578,7 @@
 	<div class="pb-track">
 		<div class="pb-art">
 			{#if nowPlaying?.image_key}
-				<img src="/api/image/{nowPlaying.image_key}?scale=fit&width=80&height=80" alt="Artwork" />
+				<img src={imageUrl(nowPlaying.image_key, { width: 80, height: 80 })} alt="Artwork" />
 			{/if}
 		</div>
 		<div class="pb-meta">

@@ -140,6 +140,8 @@ LOG_LEVEL=info
 ROON_TOKEN_PATH=$InstallDir\config\roon-token.json
 IMAGE_CACHE_PATH=$InstallDir\data\image-cache
 IMAGE_CACHE_MAX_BYTES=10737418240
+RECENTLY_PLAYED_PATH=$InstallDir\data\recently-played.json
+# RECENTLY_PLAYED_CAP=50
 # CLIENT_ORIGIN=http://roon.lan,http://192.168.1.10:$Port
 # TRUST_PROXY=true
 "@ | Set-Content -Path $EnvFile -Encoding UTF8
@@ -163,7 +165,7 @@ New-Item -ItemType Directory -Path (Join-Path $InstallDir "logs") -Force | Out-N
 # Set environment variables for the service. Optional vars (CLIENT_ORIGIN,
 # TRUST_PROXY) are intentionally omitted — set them with
 # `nssm set RoonController AppEnvironmentExtra ...` if needed.
-$envString = "NODE_ENV=production HOST=0.0.0.0 PORT=$Port LOG_LEVEL=info ROON_TOKEN_PATH=$InstallDir\config\roon-token.json IMAGE_CACHE_PATH=$InstallDir\data\image-cache IMAGE_CACHE_MAX_BYTES=10737418240"
+$envString = "NODE_ENV=production HOST=0.0.0.0 PORT=$Port LOG_LEVEL=info ROON_TOKEN_PATH=$InstallDir\config\roon-token.json IMAGE_CACHE_PATH=$InstallDir\data\image-cache IMAGE_CACHE_MAX_BYTES=10737418240 RECENTLY_PLAYED_PATH=$InstallDir\data\recently-played.json"
 & $NssmBin set $ServiceName AppEnvironmentExtra $envString
 
 # ── Start ──────────────────────────────────────────────────────────────────────

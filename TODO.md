@@ -191,6 +191,13 @@
 - [x] Library children indented in the rail to make the tree relationship visible
 - [x] 91 tests passing through both rounds of polish
 
+## Code review chunk B — defensive cleanup (done — see DEVLOG)
+- [x] API client reads body once as text, parses JSON from that string (was losing non-JSON error responses)
+- [x] `ALLOWED_BROWSE_HIERARCHIES` allowlist enforced at REST + socket entry points
+- [x] `BrowseService.clamp()` for offset/count/pop_levels
+- [x] Centralized `imageUrl()` helper with `encodeURIComponent`; all 5 call sites switched
+- [x] `RECENTLY_PLAYED_PATH` and `RECENTLY_PLAYED_CAP` documented in README, `.env.example`, and all three installer templates
+
 ## Code review chunk A — token persistence, lockfile, socket buffering (done — see DEVLOG)
 - [x] `RoonClient` wires `get_persisted_state` / `set_persisted_state` to `tokenPath` (was using a dead `save_config` callback; node-roon-api's default wrote `config.json` in cwd)
 - [x] One-time migration of legacy `config.json` from cwd → `tokenPath`

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';
 	import Search from '$lib/components/Search.svelte';
+	import { imageUrl } from '$lib/imageUrl';
 	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
 	import {
 		browseStore,
@@ -1191,7 +1192,7 @@
 								>
 									<div class="item-art">
 										{#if item.imageKey}
-											<img src="/api/image/{item.imageKey}?scale=fit&width=320&height=320" alt={item.title} />
+											<img src={imageUrl(item.imageKey, { width: 320, height: 320 })} alt={item.title} />
 										{:else}
 											<span class="art-placeholder">{item.title.charAt(0)}</span>
 										{/if}
@@ -1230,7 +1231,7 @@
 						<div class="hero-art">
 							{#if heroNowPlaying.image_key}
 								<img
-									src="/api/image/{heroNowPlaying.image_key}?scale=fit&width=320&height=320"
+									src={imageUrl(heroNowPlaying.image_key, { width: 320, height: 320 })}
 									alt="Now playing artwork"
 								/>
 							{:else}
@@ -1288,7 +1289,7 @@
 									<div class="rp-art">
 										{#if entry.image_key}
 											<img
-												src="/api/image/{entry.image_key}?scale=fit&width=160&height=160"
+												src={imageUrl(entry.image_key, { width: 160, height: 160 })}
 												alt={entry.album ?? entry.title ?? 'Artwork'}
 											/>
 										{:else}

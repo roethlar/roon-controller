@@ -191,6 +191,26 @@ export class BrowseService {
 
   // ── Parameter Mapping ────────────────────────────────────────────────
 
+  /**
+   * Clamp a numeric input that we forward to Roon. Negative values
+   * and non-finite values are coerced to `defaultValue`; values
+   * above `max` are clamped to `max`. Pass `min: 0` for offsets,
+   * `min: 1` for counts/levels.
+   */
+  private static clamp(
+    value: unknown,
+    { min, max, defaultValue }: { min: number; max: number; defaultValue: number }
+  ): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return defaultValue;
+    if (value < min) return min;
+    if (value > max) return max;
+    return Math.floor(value);
+  }
+
+  private static readonly MAX_OFFSET = 1_000_000;
+  private static readonly MAX_COUNT = 5_000;
+  private static readonly MAX_POP_LEVELS = 32;
+
   private mapBrowseOptions(options: BrowseOptions): Record<string, unknown> {
     const params: Record<string, unknown> = {
       hierarchy: options.hierarchy,
@@ -209,7 +229,11 @@ export class BrowseService {
     }
 
     if (typeof options.setDisplayOffset === "number") {
-      params.set_display_offset = options.setDisplayOffset;
+      params.set_display_offset = BrowseService.clamp(options.setDisplayOffset, {
+        min: 0,
+        max: BrowseService.MAX_OFFSET,
+        defaultValue: 0,
+      });
     }
 
     if (typeof options.refresh === "boolean") {
@@ -241,13 +265,18 @@ export class BrowseService {
       params.zone_or_output_id = options.zoneId;
     }
 
-    params.offset =
-      typeof options.offset === "number" && Number.isFinite(options.offset)
-        ? options.offset
-        : 0;
+    params.offset = BrowseService.clamp(options.offset, {
+      min: 0,
+      max: BrowseService.MAX_OFFSET,
+      defaultValue: 0,
+    });
 
     if (typeof options.count === "number" && Number.isFinite(options.count)) {
-      params.count = options.count;
+      params.count = BrowseService.clamp(options.count, {
+        min: 1,
+        max: BrowseService.MAX_COUNT,
+        defaultValue: BrowseService.PAGE_SIZE,
+      });
     }
 
     if (options.multiSessionKey) {
@@ -269,12 +298,11 @@ export class BrowseService {
       params.zone_or_output_id = options.zoneId;
     }
 
-    if (typeof options.levels === "number") {
-      params.pop_levels = options.levels;
-    } else {
-      // Default: pop one level
-      params.pop_levels = 1;
-    }
+    params.pop_levels = BrowseService.clamp(options.levels, {
+      min: 1,
+      max: BrowseService.MAX_POP_LEVELS,
+      defaultValue: 1,
+    });
 
     if (options.multiSessionKey) {
       params.multi_session_key = options.multiSessionKey;

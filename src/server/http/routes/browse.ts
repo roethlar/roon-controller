@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { BrowseService } from '../../../core/roon/BrowseService';
+import { isAllowedHierarchy } from '../../util';
 import {
   BrowseOptions,
   BrowseLoadOptions,
@@ -28,6 +29,10 @@ export const createBrowseRouter = (browseService: BrowseService): Router => {
         const response: ErrorResponse = { error: 'hierarchy required' };
         return res.status(400).json(response);
       }
+      if (!isAllowedHierarchy(options.hierarchy)) {
+        const response: ErrorResponse = { error: `unknown hierarchy "${options.hierarchy}"` };
+        return res.status(400).json(response);
+      }
 
       const result: BrowseResult = await browseService.browse(options);
       res.json(result);
@@ -48,6 +53,10 @@ export const createBrowseRouter = (browseService: BrowseService): Router => {
         const response: ErrorResponse = { error: 'hierarchy required' };
         return res.status(400).json(response);
       }
+      if (!isAllowedHierarchy(options.hierarchy)) {
+        const response: ErrorResponse = { error: `unknown hierarchy "${options.hierarchy}"` };
+        return res.status(400).json(response);
+      }
 
       const result: BrowseResult = await browseService.load(options);
       res.json(result);
@@ -66,6 +75,10 @@ export const createBrowseRouter = (browseService: BrowseService): Router => {
 
       if (!options.hierarchy) {
         const response: ErrorResponse = { error: 'hierarchy required' };
+        return res.status(400).json(response);
+      }
+      if (!isAllowedHierarchy(options.hierarchy)) {
+        const response: ErrorResponse = { error: `unknown hierarchy "${options.hierarchy}"` };
         return res.status(400).json(response);
       }
 

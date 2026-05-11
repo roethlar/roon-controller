@@ -18,7 +18,7 @@ import {
 import { TransportService } from "../../core/roon/TransportService";
 import { BrowseService } from "../../core/roon/BrowseService";
 import { RoonClient } from "../../core/roon/RoonClient";
-import { errorMessage } from "../util";
+import { errorMessage, isAllowedHierarchy } from "../util";
 
 const VALID_LOOP_VALUES: readonly LoopModeRequest[] = ["disabled", "loop", "loop_one", "next"];
 
@@ -369,6 +369,10 @@ export const attachSocketServer = (
           sendError(socket, "browse:error", "browse:browse", "hierarchy required", ack);
           return;
         }
+        if (!isAllowedHierarchy(options.hierarchy)) {
+          sendError(socket, "browse:error", "browse:browse", `unknown hierarchy "${options.hierarchy}"`, ack);
+          return;
+        }
         await handleAsync(
           socket,
           "browse:error",
@@ -390,6 +394,10 @@ export const attachSocketServer = (
           sendError(socket, "browse:error", "browse:load", "hierarchy required", ack);
           return;
         }
+        if (!isAllowedHierarchy(options.hierarchy)) {
+          sendError(socket, "browse:error", "browse:load", `unknown hierarchy "${options.hierarchy}"`, ack);
+          return;
+        }
         await handleAsync(
           socket,
           "browse:error",
@@ -409,6 +417,10 @@ export const attachSocketServer = (
       async (options: BrowsePopOptions, ack?: AckFn) => {
         if (!options?.hierarchy) {
           sendError(socket, "browse:error", "browse:pop", "hierarchy required", ack);
+          return;
+        }
+        if (!isAllowedHierarchy(options.hierarchy)) {
+          sendError(socket, "browse:error", "browse:pop", `unknown hierarchy "${options.hierarchy}"`, ack);
           return;
         }
         await handleAsync(
