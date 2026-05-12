@@ -594,6 +594,23 @@
 	}
 
 	function forward() {
+		// Readiness check BEFORE popForward — otherwise a disconnected
+		// click moves the entry from the forward stack to history without
+		// ever issuing the emit, leaving a ghost history entry.
+		const liveSocket = socket ?? getSocket();
+		socket = liveSocket;
+		if (!liveSocket) {
+			setBrowseError('Realtime connection is unavailable.');
+			return;
+		}
+		if (!liveSocket.connected) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'browse:browse',
+				message: 'Not connected to server'
+			});
+			return;
+		}
 		const next = popForward();
 		if (next) {
 			// Strip breadcrumb before re-issuing — it's a restore-time
@@ -939,6 +956,10 @@
 				popAll: true
 			});
 		} catch {
+			// Clear loading before falling back — navigate(item) → browse()
+			// bails on disconnect without touching loading, so the upfront
+			// setBrowseLoading() above would stick.
+			clearBrowseLoading();
 			navigate(item);
 			return;
 		}
@@ -956,6 +977,9 @@
 		if (!match?.itemKey) {
 			// No album match; fall back to the contextual row's own
 			// action menu — same behavior as the pre-resolver code.
+			// Clear loading first: navigate(item) → browse() bails on
+			// disconnect without touching loading.
+			clearBrowseLoading();
 			navigate(item);
 			return;
 		}

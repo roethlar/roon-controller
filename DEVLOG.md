@@ -1,6 +1,25 @@
 # Dev Log
 
-## 2026-05-11 (latest) — Disconnected-click readiness-first
+## 2026-05-12 (latest) — Disconnected Forward + resolver-fallback
+
+Round 7 caught two more instances of the same state-before-check bug class fixed in rounds 5 and 6.
+
+### 1. `forward()` ghost history entry
+`forward()` called `popForward()` (which moves an entry from the forward stack into history) and then `browse()`. If the socket was disconnected, `browse()` bailed on its readiness check, leaving a ghost history entry pointing at a destination the user never reached. Fix: readiness check runs BEFORE `popForward()` — matches the pattern in `pop()` and `browse()`.
+
+### 2. `resolveAlbumOrNavigate()` stuck loading on disconnected fallback
+The album-by-artist resolver sets `loading: true` up front (so the spinner shows during the resolver search). On resolver miss or thrown error it falls back to `navigate(item)` → `browse()`. If the socket was disconnected at the fallback, `browse()` bailed without touching loading, leaving the pane stuck on "Loading library data…". Fix: explicit `clearBrowseLoading()` before each `navigate(item)` fallback.
+
+### Tests (+2)
+- "disconnected Forward with non-empty forward stack preserves both stacks and emits nothing" — emit skipped, history empty, forward stack untouched (no ghost promotion).
+- "disconnected 'album by artist' fallback clears loading and emits nothing" — resolver search runs (HTTP), fallback path triggers, loading=false, no emit, no history entry, "Not connected" toast.
+
+### Validation
+- Backend: 80 tests.
+- UI: 120 → 122 tests.
+- svelte-check 0/0, both builds clean, lint clean.
+
+## 2026-05-11 — Disconnected-click readiness-first
 
 Round 6 caught three more bugs that the round-5 "clear loading + skip history" fix didn't fully address.
 

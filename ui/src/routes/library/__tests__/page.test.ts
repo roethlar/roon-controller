@@ -934,6 +934,41 @@ describe('Library page — navigation actions', () => {
 		expect(get(browseHistoryStore).history).toEqual([]);
 		expect(get(browseHistoryStore).forward.map((s) => s.itemKey)).toEqual(['k1']);
 	});
+
+	it('disconnected Forward with non-empty forward stack preserves both stacks and emits nothing', async () => {
+		// R7 finding #1: forward() must not move an entry from the
+		// forward stack to history if the emit will be rejected. The
+		// readiness check has to run BEFORE popForward(), otherwise a
+		// disconnected click leaves a ghost history entry pointing at
+		// a destination the user never reached.
+		//
+		// Set up: empty history, populated forward stack (push + pop
+		// puts the entry on the forward side).
+		pushHistory({ hierarchy: 'browse', itemKey: 'fwd-key' }, undefined, { title: 'Forward Target' });
+		popHistory();
+		expect(get(browseHistoryStore).history).toEqual([]);
+		expect(get(browseHistoryStore).forward.map((s) => s.itemKey)).toEqual(['fwd-key']);
+
+		fakeSocket.connected = false;
+		render(LibraryPage);
+		await tick();
+
+		// Drive Forward through the nav store the same way the play
+		// bar's Forward button does.
+		const { browseNavStore } = await import('$lib/stores/browseNavStore');
+		get(browseNavStore).forward();
+		await tick();
+
+		// Readiness check rejected the click — no emit issued.
+		expect(fakeSocket.emit).not.toHaveBeenCalledWith(
+			'browse:browse',
+			expect.anything()
+		);
+		// Both stacks unchanged — the forward entry was NOT promoted
+		// into history.
+		expect(get(browseHistoryStore).history).toEqual([]);
+		expect(get(browseHistoryStore).forward.map((s) => s.itemKey)).toEqual(['fwd-key']);
+	});
 });
 
 describe('Library page — quickPlay', () => {
@@ -1052,6 +1087,61 @@ describe('Library page — quickPlay', () => {
 			expect.objectContaining({ hierarchy: 'browse', itemKey: 'album-ref-key' })
 		);
 		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual(['album-ref-key']);
+	});
+
+	it('disconnected "album by artist" fallback clears loading and emits nothing', async () => {
+		// R7 finding #2: resolveAlbumOrNavigate sets loading up front
+		// (so the spinner appears while the resolver search runs).
+		// When the resolver misses, it falls back to navigate(item) →
+		// browse(). If the socket is disconnected at that point, browse()
+		// bails on the readiness check without ever clearing the
+		// loading flag — leaving the pane stuck on "Loading library
+		// data…". Verify the fallback clears loading explicitly.
+		const albumRef = makeItem({
+			title: 'On Ocean to Ocean by Tori Amos',
+			subtitle: 'Tori Amos',
+			itemKey: 'album-ref-key',
+			hint: 'action_list'
+		});
+		setUpRoot([albumRef]);
+		// Resolver search returns no album match — fallback path triggers.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [makeItem({ title: 'Unrelated', itemType: 'album', itemKey: 'other' })]
+			})
+		);
+
+		fakeSocket.connected = false;
+		setSelectedZone('zone-a');
+		render(LibraryPage);
+		const btn = await screen.findByRole('button', { name: 'On Ocean to Ocean by Tori Amos' });
+		btn.click();
+
+		// Wait until the resolver chain has reached the fallback path
+		// and cleared loading. Polling on loading=false is sturdier
+		// than counting ticks across the await chain.
+		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalledTimes(1);
+			expect(get(browseStore).loading).toBe(false);
+		});
+
+		// Resolver search ran (HTTP, not socket — so it executed
+		// despite the disconnect).
+		expect(apiBrowse.mock.calls[0][1]).toEqual(
+			expect.objectContaining({ hierarchy: 'search', input: 'On Ocean to Ocean' })
+		);
+		// browse:browse emit was skipped (readiness check rejected
+		// the fallback navigate).
+		expect(fakeSocket.emit).not.toHaveBeenCalledWith(
+			'browse:browse',
+			expect.anything()
+		);
+		// No ghost history entry from the failed fallback.
+		expect(get(browseHistoryStore).history).toEqual([]);
+
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message).toMatch(/Not connected/i);
 	});
 
 	it('jumps to the resolved album when the search match is a real album result', async () => {
