@@ -83,13 +83,6 @@ export function setSearchLoading(query?: string): void {
 	}));
 }
 
-export function clearSearchLoading(): void {
-	internalStore.update((state) => ({
-		...state,
-		searchLoading: false
-	}));
-}
-
 export function setSearchError(message: string): void {
 	internalStore.update((state) => ({
 		...state,

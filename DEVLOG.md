@@ -1,5 +1,24 @@
 # Dev Log
 
+## 2026-05-12 (later, R9) — Recently Played must not touch search-panel state
+
+The R8 P2 fix ("clear searchLoading in finally") was the wrong fix. R9 review caught that `setSearchLoading(entry.title)` itself was wrong: it updates `lastSearchQuery` to the Recently Played title while leaving `lastSearch` (the actual results) alone. If the user had previously searched "beatles" and was looking at those results, clicking Recently Played "Hey Jude" would relabel the visible Beatles results as results for "Hey Jude". The Search component renders `lastSearch` with `lastSearchQuery`, and downstream code re-seeds the search session using `$browseStore.lastSearchQuery`, so subsequent clicks on the mislabeled results could re-query the Recently Played title instead of the original search.
+
+### Fix
+- Removed `setSearchLoading(entry.title)` from `handleRecentlyPlayedClick`. The function re-seeds Roon's server-side search session as a side-effect of the resolver, but `browseStore` search-panel state (`lastSearch` / `lastSearchQuery` / `searchLoading`) is user-facing UI state that belongs to the actual Search UI. Per-tile feedback already exists via `recentlyPlayedClickInFlight` (bound to the tile's `disabled` attribute).
+- Removed the paired `clearSearchLoading()` call in `finally` (added in R8 P2).
+- Deleted the `clearSearchLoading()` helper from `browseStore` — no remaining callers.
+
+### Tests
+Replaced the two R8 P2 tests (which were vacuously true after this fix) with R9 preservation tests:
+- "preserves prior search-panel state on no-match (does not relabel old results)" — seed prior search → click RP tile → no match → assert `lastSearchQuery === 'beatles'`, `lastSearch` is the prior result array (identity), `searchLoading` unchanged.
+- "preserves prior search-panel state on successful quickPlay (does not relabel old results)" — same seed → click → match → Play Now → assert all three preserved.
+
+### Validation
+- Backend: 80 tests.
+- UI: 124 tests (net unchanged: −2 vacuous + 2 new).
+- svelte-check 0/0, both builds clean, lint clean.
+
 ## 2026-05-12 (later) — Disconnected quickPlay-fallback + Recently Played searchLoading leak
 
 Round 8 caught two more bugs in the same family.

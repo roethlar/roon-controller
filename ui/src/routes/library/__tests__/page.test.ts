@@ -1969,10 +1969,31 @@ describe('Library page — Recently Played tile click', () => {
 		);
 	});
 
-	it('pushes a feedback toast when no track in library matches the entry', async () => {
+	it('preserves prior search-panel state on no-match (does not relabel old results)', async () => {
+		// R9 finding: handleRecentlyPlayedClick must not touch
+		// browseStore's search panel state. The function re-seeds
+		// Roon's server-side search session with the title, but
+		// lastSearch / lastSearchQuery / searchLoading are user-facing
+		// state for the Search UI — clobbering lastSearchQuery while
+		// leaving stale lastSearch in place would mislabel the prior
+		// "beatles" results as results for "Hey Jude".
 		setSelectedZone('zone-a');
 
-		// Search returns nothing track-shaped.
+		// Seed prior search state — the user previously searched
+		// "beatles" and the panel is showing those results.
+		setSearchLoading('beatles');
+		const priorResults = [
+			makeSearchResult({
+				resultType: 'album',
+				itemType: 'album',
+				title: 'Abbey Road',
+				subtitle: 'The Beatles',
+				itemKey: 'prior-album-key'
+			})
+		];
+		setSearchResults(priorResults);
+
+		// Recently Played click resolver: search returns nothing matching.
 		apiBrowse.mockResolvedValueOnce(
 			listResult({
 				level: 0,
@@ -2004,20 +2025,34 @@ describe('Library page — Recently Played tile click', () => {
 		const navCalls = apiBrowse.mock.calls.filter(
 			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
 		);
-		expect(navCalls).toHaveLength(1); // just the search
+		expect(navCalls).toHaveLength(1); // just the search seed
 
-		// R8 finding #2: setSearchLoading ran during the click — the
-		// finally block must clear it so the search panel doesn't
-		// stay stuck on "Searching…" after the no-match toast.
-		expect(get(browseStore).searchLoading).toBe(false);
+		// Prior search panel state preserved exactly.
+		const store = get(browseStore);
+		expect(store.lastSearchQuery).toBe('beatles');
+		expect(store.lastSearch).toBe(priorResults);
+		// setSearchResults above sets searchLoading=false. Recently
+		// Played must not flip it back to true.
+		expect(store.searchLoading).toBe(false);
 	});
 
-	it('clears searchLoading after a successful quickPlay so the search panel does not stay stuck', async () => {
-		// R8 finding #2 (success path): setSearchLoading is set after
-		// the search seed; quickPlay's Play Now execute path does not
-		// touch searchLoading. The Recently Played click handler must
-		// clear it in its finally block.
+	it('preserves prior search-panel state on successful quickPlay (does not relabel old results)', async () => {
+		// R9 finding (success path): even a successful Recently Played
+		// match → Play Now must not touch the search panel state.
 		setSelectedZone('zone-a');
+
+		// Seed prior search state.
+		setSearchLoading('beatles');
+		const priorResults = [
+			makeSearchResult({
+				resultType: 'album',
+				itemType: 'album',
+				title: 'Abbey Road',
+				subtitle: 'The Beatles',
+				itemKey: 'prior-album-key'
+			})
+		];
+		setSearchResults(priorResults);
 
 		// Search returns a matching track.
 		apiBrowse.mockResolvedValueOnce(
@@ -2050,14 +2085,22 @@ describe('Library page — Recently Played tile click', () => {
 		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
 		tile.click();
 
-		// Wait until the chain has reached the finally block.
+		// Wait until the full chain has run.
 		await waitFor(() => {
 			const navCalls = apiBrowse.mock.calls.filter(
 				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
 			);
 			expect(navCalls).toHaveLength(3);
-			expect(get(browseStore).searchLoading).toBe(false);
 		});
+
+		// Prior search panel state preserved exactly — Play Now did
+		// not relabel the user's "beatles" results as "Hey Jude".
+		const store = get(browseStore);
+		expect(store.lastSearchQuery).toBe('beatles');
+		expect(store.lastSearch).toBe(priorResults);
+		// setSearchResults above sets searchLoading=false. Recently
+		// Played must not flip it back to true.
+		expect(store.searchLoading).toBe(false);
 	});
 
 	it('rejects matches whose subtitle does not contain the recorded artist', async () => {

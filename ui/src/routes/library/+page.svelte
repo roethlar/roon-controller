@@ -10,7 +10,6 @@
 		setBrowseLoading,
 		clearBrowseLoading,
 		setSearchLoading,
-		clearSearchLoading,
 		setBrowseResult,
 		appendBrowseItems,
 		resetBrowse
@@ -141,6 +140,14 @@
 
 		recentlyPlayedClickInFlight = true;
 		try {
+			// Note: this re-seeds Roon's search session with entry.title,
+			// but we deliberately do NOT touch browseStore's search panel
+			// state (lastSearch / lastSearchQuery / searchLoading).
+			// The user's previous search results must remain visible and
+			// correctly labeled — clobbering lastSearchQuery while
+			// leaving stale lastSearch would mislabel the prior results.
+			// The tile's own `disabled` binding to
+			// `recentlyPlayedClickInFlight` provides per-tile feedback.
 			const search = await apiBrowse(fetch, {
 				hierarchy: 'search',
 				input: entry.title,
@@ -148,7 +155,6 @@
 				multiSessionKey: SEARCH_SESSION_KEY,
 				popAll: true
 			});
-			setSearchLoading(entry.title);
 
 			const titleLower = entry.title.toLowerCase();
 			const artistLower = entry.artist?.toLowerCase();
@@ -187,12 +193,6 @@
 			});
 		} finally {
 			recentlyPlayedClickInFlight = false;
-			// setSearchLoading above is never paired with a clear by the
-			// downstream paths (no-match returns; quickPlay's Play Now
-			// success doesn't touch searchLoading). Clear it here so a
-			// Recently Played click can't leave the search panel stuck
-			// on "Searching…" (R8 finding #2).
-			clearSearchLoading();
 		}
 	}
 
