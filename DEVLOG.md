@@ -1,6 +1,26 @@
 # Dev Log
 
-## 2026-05-12 (latest) — Disconnected Forward + resolver-fallback
+## 2026-05-12 (later) — Disconnected quickPlay-fallback + Recently Played searchLoading leak
+
+Round 8 caught two more bugs in the same family.
+
+### 1. `quickPlay()` search-track fallback resetHistory before bailed emit
+When a search-result track click landed on a row whose action lookup returned no playable action, the fallback ran `resetHistory()` (because `resetSearch=true` means "new navigation thread") and then `browse()`. If the socket dropped between the REST action lookup and the fallback emit, `browse()` bailed on its readiness check but the prior history was already wiped. Fix: explicit readiness check before `resetHistory()` in the fallback, matching the pattern in `navigateSearchResult` / `resolveAlbumOrNavigate`.
+
+### 2. Recently Played click leaked `searchLoading: true`
+`handleRecentlyPlayedClick` calls `setSearchLoading(entry.title)` after the REST search seed, but nothing in the downstream paths clears it — the no-match path returns, and the matched-track quickPlay's Play Now execute doesn't touch `searchLoading`. Result: a successful Recently Played click leaves the search panel stuck on "Searching…" indefinitely. Fix: added `clearSearchLoading()` helper to `browseStore` and clear in the function's `finally` block, covering success / no-match / thrown-error paths uniformly.
+
+### Tests (+2 net)
+- "disconnected search-track quickPlay fallback preserves existing history and emits nothing" — disconnect between freshen and action lookup → no `resetHistory`, no emit, prior history intact, "Not connected" toast.
+- "clears searchLoading after a successful quickPlay so the search panel does not stay stuck" — full happy path through Play Now, asserts `browseStore.searchLoading === false` after the chain.
+- Existing "pushes a feedback toast when no track in library matches the entry" extended with a `searchLoading === false` assertion for the no-match path.
+
+### Validation
+- Backend: 80 tests.
+- UI: 122 → 124 tests.
+- svelte-check 0/0, both builds clean, lint clean.
+
+## 2026-05-12 — Disconnected Forward + resolver-fallback
 
 Round 7 caught two more instances of the same state-before-check bug class fixed in rounds 5 and 6.
 

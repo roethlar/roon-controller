@@ -861,6 +861,81 @@ describe('Library page — navigation actions', () => {
 		expect(get(commandFeedbackStore)?.message).toMatch(/Not connected/i);
 	});
 
+	it('disconnected search-track quickPlay fallback preserves existing history and emits nothing', async () => {
+		// R8 finding #1: quickPlay's no-play-action fallback runs
+		// `if (options.resetSearch) resetHistory()` BEFORE the fallback
+		// browse(). With resetSearch=true (search-track click) and a
+		// socket that drops between the REST action lookup and the
+		// fallback emit, the old code wiped the prior history while
+		// browse() bailed on its own readiness check — losing user
+		// state for navigation that never happened.
+
+		// Mount, then seed prior browse history + a search result.
+		render(LibraryPage);
+		await tick();
+
+		pushHistory({ hierarchy: 'browse', itemKey: 'albums-key' }, undefined, {
+			title: 'Albums'
+		});
+		setSelectedZone('zone-a');
+		setSearchLoading('tori amos');
+		setSearchResults([
+			makeSearchResult({
+				resultType: 'track',
+				itemType: 'track',
+				title: 'Cornflake Girl',
+				subtitle: 'Tori Amos',
+				itemKey: 'stale-track-key',
+				hint: 'action_list'
+			})
+		]);
+		// freshenSearchItem REST call → fresh track itemKey.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Cornflake Girl',
+						subtitle: 'Tori Amos',
+						itemType: 'track',
+						itemKey: 'fresh-track-key',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+		// Action lookup returns no playable action → fallback path.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [makeItem({ title: 'Metadata only', itemKey: 'm', hint: 'list', isPlayable: false })]
+			})
+		);
+
+		fakeSocket.connected = false;
+		await tick();
+
+		screen.getByText('Cornflake Girl').closest('button')?.click();
+
+		// Wait for both REST calls (freshen + action lookup) to land.
+		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalledTimes(2);
+		});
+
+		// Fallback emit was skipped (readiness check rejected).
+		expect(fakeSocket.emit).not.toHaveBeenCalledWith(
+			'browse:browse',
+			expect.anything()
+		);
+		// Prior history preserved — resetHistory did NOT run.
+		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual([
+			'albums-key'
+		]);
+
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message).toMatch(/Not connected/i);
+	});
+
 	it('clicking a list item while disconnected clears loading and does NOT record history', async () => {
 		// Simulate the socket dropping (object exists, .connected = false).
 		// emitIfConnected's path: skip emit, push feedback toast, return
@@ -1930,6 +2005,59 @@ describe('Library page — Recently Played tile click', () => {
 			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
 		);
 		expect(navCalls).toHaveLength(1); // just the search
+
+		// R8 finding #2: setSearchLoading ran during the click — the
+		// finally block must clear it so the search panel doesn't
+		// stay stuck on "Searching…" after the no-match toast.
+		expect(get(browseStore).searchLoading).toBe(false);
+	});
+
+	it('clears searchLoading after a successful quickPlay so the search panel does not stay stuck', async () => {
+		// R8 finding #2 (success path): setSearchLoading is set after
+		// the search seed; quickPlay's Play Now execute path does not
+		// touch searchLoading. The Recently Played click handler must
+		// clear it in its finally block.
+		setSelectedZone('zone-a');
+
+		// Search returns a matching track.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Hey Jude',
+						subtitle: 'The Beatles',
+						itemKey: 'fresh-track-key',
+						itemType: 'track',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+		// quickPlay action-list lookup → Play Now found.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [makeItem({ title: 'Play Now', itemKey: 'pn', hint: 'action', isPlayable: true })]
+			})
+		);
+		// Execute Play Now.
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
+		tile.click();
+
+		// Wait until the chain has reached the finally block.
+		await waitFor(() => {
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(3);
+			expect(get(browseStore).searchLoading).toBe(false);
+		});
 	});
 
 	it('rejects matches whose subtitle does not contain the recorded artist', async () => {

@@ -10,6 +10,7 @@
 		setBrowseLoading,
 		clearBrowseLoading,
 		setSearchLoading,
+		clearSearchLoading,
 		setBrowseResult,
 		appendBrowseItems,
 		resetBrowse
@@ -186,6 +187,12 @@
 			});
 		} finally {
 			recentlyPlayedClickInFlight = false;
+			// setSearchLoading above is never paired with a clear by the
+			// downstream paths (no-match returns; quickPlay's Play Now
+			// success doesn't touch searchLoading). Clear it here so a
+			// Recently Played click can't leave the search panel stuck
+			// on "Searching…" (R8 finding #2).
+			clearSearchLoading();
 		}
 	}
 
@@ -853,6 +860,20 @@
 				// of "new navigation thread" reset as navigateSearchResult,
 				// so clear history before pushing.
 				if (options.resetSearch) {
+					// Readiness check BEFORE resetHistory — otherwise a
+					// disconnect between the REST action lookup and the
+					// fallback emit wipes the prior history while browse()
+					// bails on its own readiness check (R8 finding #1).
+					const liveSocket = socket ?? getSocket();
+					socket = liveSocket;
+					if (!liveSocket?.connected) {
+						pushCommandFeedback({
+							source: 'browse',
+							command: 'browse:browse',
+							message: 'Not connected to server'
+						});
+						return;
+					}
 					resetHistory();
 				}
 				const fallbackOpts: BrowseOptions = {
