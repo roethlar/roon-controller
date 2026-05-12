@@ -1,5 +1,20 @@
 # Dev Log
 
+## 2026-05-12 (R10) — Recently Played quickPlay must not record history under stale query
+
+Recently Played calls `quickPlay({hierarchy:'search', resetSearch:false})`. If the action-list lookup for the matched track returns no playable action (rare for tracks but possible), `quickPlay` falls back to a `browse()` that records history. `browse()` writes `$browseStore.lastSearchQuery` into the history entry — and after R9, that query is deliberately preserved as the user's *prior visible search* (e.g., "beatles"), not the Recently Played title. A future `restoreBrowse` would then re-seed the wrong search session and try to walk the breadcrumb in the wrong results.
+
+### Fix
+Added a `playOnly?: boolean` option to `quickPlay`. When true, the no-play-action path surfaces a feedback toast (`Couldn't play "<title>".`) instead of falling back to an action-menu browse. Recently Played passes `playOnly: true`; browse-hierarchy and search-result quickPlay continue using the existing fallback (their lastSearchQuery is meaningful for those flows).
+
+### Test (+1)
+- "matched track with no play action: toast + no fallback browse + prior search preserved" — seed prior "beatles" search, action lookup returns no playable action, assert: no `browse:browse` emit, empty history, prior search state intact, feedback toast surfaced.
+
+### Validation
+- Backend: 80 tests.
+- UI: 124 → 125 tests.
+- svelte-check 0/0, both builds clean, lint clean.
+
 ## 2026-05-12 (later, R9) — Recently Played must not touch search-panel state
 
 The R8 P2 fix ("clear searchLoading in finally") was the wrong fix. R9 review caught that `setSearchLoading(entry.title)` itself was wrong: it updates `lastSearchQuery` to the Recently Played title while leaving `lastSearch` (the actual results) alone. If the user had previously searched "beatles" and was looking at those results, clicking Recently Played "Hey Jude" would relabel the visible Beatles results as results for "Hey Jude". The Search component renders `lastSearch` with `lastSearchQuery`, and downstream code re-seeds the search session using `$browseStore.lastSearchQuery`, so subsequent clicks on the mislabeled results could re-query the Recently Played title instead of the original search.

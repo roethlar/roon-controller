@@ -2036,6 +2036,89 @@ describe('Library page — Recently Played tile click', () => {
 		expect(store.searchLoading).toBe(false);
 	});
 
+	it('matched track with no play action: toast + no fallback browse + prior search preserved', async () => {
+		// R10 finding: quickPlay's no-play-action fallback would
+		// browse to an action menu and call pushHistory under the
+		// current $browseStore.lastSearchQuery. After R9 that query
+		// is deliberately preserved as the user's prior visible
+		// search (e.g. "beatles"), so a Recently Played fallback
+		// would land in history labeled with the wrong query and
+		// let a future restore re-seed the wrong search session.
+		// playOnly:true makes the no-play-action path a feedback
+		// toast instead, preserving search state and avoiding the
+		// corrupt history entry.
+		setSelectedZone('zone-a');
+
+		// Prior search state visible.
+		setSearchLoading('beatles');
+		const priorResults = [
+			makeSearchResult({
+				resultType: 'album',
+				itemType: 'album',
+				title: 'Abbey Road',
+				subtitle: 'The Beatles',
+				itemKey: 'prior-album-key'
+			})
+		];
+		setSearchResults(priorResults);
+
+		// Search returns a matching track.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Hey Jude',
+						subtitle: 'The Beatles',
+						itemKey: 'fresh-track-key',
+						itemType: 'track',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+		// Action-list lookup returns no playable action.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [
+					makeItem({ title: 'Metadata', itemKey: 'meta', hint: 'list', isPlayable: false })
+				]
+			})
+		);
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
+		tile.click();
+
+		// Wait for both REST calls (search seed + action lookup).
+		await waitFor(() => {
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(2);
+		});
+
+		// No fallback browse:browse emit — history was not recorded.
+		expect(fakeSocket.emit).not.toHaveBeenCalledWith(
+			'browse:browse',
+			expect.anything()
+		);
+		expect(get(browseHistoryStore).history).toEqual([]);
+
+		// Prior search panel state preserved exactly.
+		const store = get(browseStore);
+		expect(store.lastSearchQuery).toBe('beatles');
+		expect(store.lastSearch).toBe(priorResults);
+		expect(store.searchLoading).toBe(false);
+
+		// Toast surfaced the failure.
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message).toMatch(/Couldn't play "Hey Jude"/);
+	});
+
 	it('preserves prior search-panel state on successful quickPlay (does not relabel old results)', async () => {
 		// R9 finding (success path): even a successful Recently Played
 		// match → Play Now must not touch the search panel state.

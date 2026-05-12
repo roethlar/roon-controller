@@ -182,8 +182,14 @@
 			// QuickPlay the matched track via its fresh search itemKey.
 			await quickPlay(match, {
 				hierarchy: 'search',
-				multiSessionKey: SEARCH_SESSION_KEY
+				multiSessionKey: SEARCH_SESSION_KEY,
 				// resetSearch:false — we just freshened above.
+				// playOnly: don't fall back to an action-menu browse on
+				// missing play action. The fallback would record history
+				// under the user's prior visible lastSearchQuery (R9
+				// preserves it on RP clicks), letting restore re-seed
+				// the wrong search session (R10 finding).
+				playOnly: true
 			});
 		} catch (err) {
 			pushCommandFeedback({
@@ -825,7 +831,19 @@
 	 */
 	async function quickPlay(
 		item: BrowseItem,
-		options: { hierarchy?: string; multiSessionKey?: string; resetSearch?: boolean } = {}
+		options: {
+			hierarchy?: string;
+			multiSessionKey?: string;
+			resetSearch?: boolean;
+			// When true, a missing play action produces a feedback toast
+			// instead of falling back to an action-menu browse. The
+			// fallback browse pushes history with the current
+			// $browseStore.lastSearchQuery, which for a Recently Played
+			// click is the user's prior visible search — not the title
+			// we just seeded. Recording history under the wrong query
+			// would let restore re-seed the wrong search session.
+			playOnly?: boolean;
+		} = {}
 	) {
 		if (!item.itemKey) return;
 
@@ -854,6 +872,14 @@
 
 			const playAction = actionResult.items.find((i) => i.isPlayable || i.hint === 'action');
 			if (!playAction?.itemKey) {
+				if (options.playOnly) {
+					pushCommandFeedback({
+						source: 'browse',
+						command: 'play',
+						message: `Couldn't play "${item.title}".`
+					});
+					return;
+				}
 				// quickPlay couldn't find a play action — fall back to
 				// rendering the action list. If the user got here from a
 				// search result (resetSearch=true), this is the same kind
