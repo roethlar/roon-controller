@@ -73,7 +73,8 @@ vi.mock('$lib/stores', async (importOriginal) => {
 import Layout from '../+layout.svelte';
 import {
 	browseHistoryStore,
-	resetHistory
+	resetHistory,
+	type BrowseHistoryStep
 } from '$lib/stores/browseHistoryStore';
 import { pendingSearchStore } from '$lib/stores/pendingSearchStore';
 import { setNowPlaying, resetNowPlaying } from '$lib/stores/nowPlayingStore';
@@ -234,12 +235,14 @@ describe('Layout — Explore rail click', () => {
 		});
 	});
 
-	it('navigates to /library when clicked from another route', async () => {
-		// The walk must still happen BEFORE goto — Library's mount
-		// reads the freshly-pushed history to restore the target view.
-		// A regression that short-circuited to a bare `goto('/library')`
-		// would land the user on the wrong state; pin the full
-		// label-walk + history contract here too.
+	it('navigates to /library when clicked from another route, with history pushed BEFORE goto', async () => {
+		// The walk must complete AND history must be pushed BEFORE goto.
+		// Library's mount reads the freshly-pushed history to restore
+		// the target view; if goto fires first the mount restores from
+		// the prior (likely empty) history and the user lands on the
+		// wrong state. End-state assertions can't catch
+		// goto-then-pushHistory ordering bugs — snapshot history
+		// synchronously at goto() call time instead.
 		pageState.set({ url: new URL('http://localhost/queue') });
 		railWritable.set({
 			entries: [
@@ -255,6 +258,16 @@ describe('Layout — Explore rail click', () => {
 			})
 		);
 		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
+
+		let historyAtGoto: BrowseHistoryStep[] | null = null;
+		gotoMock.mockImplementation(() => {
+			// Snapshot the FIRST goto only — a regression that fires
+			// goto early would still call it again at the end; capturing
+			// the last call would mask the ordering bug.
+			if (historyAtGoto === null) {
+				historyAtGoto = get(browseHistoryStore).history;
+			}
+		});
 
 		renderLayout();
 		const railBtn = await screen.findByRole('button', { name: 'Albums' });
@@ -272,10 +285,13 @@ describe('Layout — Explore rail click', () => {
 			expect.objectContaining({ hierarchy: 'browse', itemKey: 'albums-key' })
 		);
 
-		const persisted = get(browseHistoryStore).history;
-		expect(persisted).toHaveLength(1);
-		expect(persisted[0].itemKey).toBe('albums-key');
-		expect(persisted[0].breadcrumb?.title).toBe('Albums');
+		// The ordering assertion: at the moment goto fired, history
+		// already had the walked step. A regression calling goto first
+		// and pushing afterward would leave historyAtGoto empty.
+		expect(historyAtGoto).not.toBeNull();
+		expect(historyAtGoto!).toHaveLength(1);
+		expect(historyAtGoto![0].itemKey).toBe('albums-key');
+		expect(historyAtGoto![0].breadcrumb?.title).toBe('Albums');
 	});
 });
 
