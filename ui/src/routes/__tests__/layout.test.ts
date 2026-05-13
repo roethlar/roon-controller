@@ -221,9 +221,25 @@ describe('Layout — Explore rail click', () => {
 
 		// Already on /library — no route navigation needed.
 		expect(gotoMock).not.toHaveBeenCalled();
+
+		// Right pane was updated in-place via setBrowseResult. Without
+		// this assertion, a regression dropping the `setBrowseResult(cur,
+		// 'browse')` call would still satisfy the history/goto checks
+		// above while the user's pane never refreshed.
+		await waitFor(() => {
+			const store = get(browseStore);
+			expect(store.hierarchy).toBe('browse');
+			expect(store.current?.level).toBe(1);
+			expect(store.current?.items[0]?.itemKey).toBe('album-1');
+		});
 	});
 
 	it('navigates to /library when clicked from another route', async () => {
+		// The walk must still happen BEFORE goto — Library's mount
+		// reads the freshly-pushed history to restore the target view.
+		// A regression that short-circuited to a bare `goto('/library')`
+		// would land the user on the wrong state; pin the full
+		// label-walk + history contract here too.
 		pageState.set({ url: new URL('http://localhost/queue') });
 		railWritable.set({
 			entries: [
@@ -245,8 +261,21 @@ describe('Layout — Explore rail click', () => {
 		await fireEvent.click(railBtn);
 
 		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalledTimes(2);
 			expect(gotoMock).toHaveBeenCalledWith('/library');
 		});
+
+		expect(apiBrowse.mock.calls[0][1]).toEqual(
+			expect.objectContaining({ hierarchy: 'browse', popAll: true })
+		);
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
+			expect.objectContaining({ hierarchy: 'browse', itemKey: 'albums-key' })
+		);
+
+		const persisted = get(browseHistoryStore).history;
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0].itemKey).toBe('albums-key');
+		expect(persisted[0].breadcrumb?.title).toBe('Albums');
 	});
 });
 
