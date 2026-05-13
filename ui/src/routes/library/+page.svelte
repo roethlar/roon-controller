@@ -4,6 +4,7 @@
 	import Search from '$lib/components/Search.svelte';
 	import ItemGrid from '$lib/components/ItemGrid.svelte';
 	import TrackList from '$lib/components/TrackList.svelte';
+	import { trackTitle } from '$lib/trackTitle';
 	import { imageUrl } from '$lib/imageUrl';
 	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
 	import {
@@ -1225,12 +1226,6 @@
 		if (after) after.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 
-	/** Strip the leading "N. " prefix from a track title. Used by
-	 *  isNowPlayingTrack so a numbered row ("3. Song") matches the
-	 *  Roon now-playing event's title. */
-	function trackTitle(title: string): string {
-		return title.replace(/^\d+\.\s*/, '');
-	}
 </script>
 
 <div class="library-shell">

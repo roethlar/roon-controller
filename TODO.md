@@ -252,8 +252,13 @@
 - [x] R10: added `playOnly` option to `quickPlay`; Recently Played opts in so a no-play-action match toasts instead of recording history under the user's prior `lastSearchQuery`
 - [x] +9 UI tests covering each path (120 → 125)
 
-## Search-result rendering consistency (open — large)
-- [ ] Search results currently render in a grouped/paginated panel; browse views render as list / grid / track-list. Unify so search results match the surrounding browse layout. Significant Search.svelte refactor.
+## Search-result rendering consistency (done — see DEVLOG)
+- [x] Extracted `ItemGrid` and `TrackList` from `library/+page.svelte` as reusable components (3 commits — extract, extract, unify)
+- [x] `Search.svelte` dispatches per-type groups: `track` → `TrackList`, everything else → `ItemGrid`
+- [x] Pulled `trackTitle` / `trackNum` to `$lib/trackTitle.ts`; both consumers share it
+- [x] Keyed `{#each}` in both components prevents re-mount on list churn
+- [x] UX shift on tracks: row-body click no longer plays; the ▶ button (aria-labelled per track) is the canonical play target
+- [ ] **Live verification pending**: card sizing in the search-results panel (now 320×320 sourced, scaled to fit `minmax(180px, 1fr)`) needs a sanity check on real Roon results — particularly track-heavy queries where the search panel was previously a tighter list.
 
 ## Layout integration tests (first pass done — see DEVLOG)
 - [x] Stubs for `$app/navigation` + `$app/stores` so vite's resolver doesn't fail on direct `+layout.svelte` imports

@@ -1,5 +1,38 @@
 # Dev Log
 
+## 2026-05-13 (later) — Search result rendering unified with browse layouts
+
+Search results used to render in a separate panel with custom `.result-item` cards (52×52 art, grid of `minmax(190px, 1fr)`) that looked nothing like the surrounding browse pane (large 320×320 cards on `minmax(180px, 1fr)`, or numbered track rows). Long-deferred TODO item; this lands the visual unification.
+
+### Refactor
+Extracted two reusable Svelte components from `library/+page.svelte`:
+- `ui/src/lib/components/ItemGrid.svelte` — card-grid layout for albums/artists/etc.
+- `ui/src/lib/components/TrackList.svelte` — numbered rows with Play / More buttons + now-playing ♫ indicator.
+
+Each was extracted in its own commit (`7a457cb`, `df79611`) with zero behavior change on the library view. `Search.svelte` was then refactored to dispatch each result-type group:
+- `track` → `TrackList`
+- everything else (artist / album / composer / label / playlist / genre / radio / unknown) → `ItemGrid`
+
+Per-group pagination + "Show more X" chrome kept; only the inner item rendering changed. ~110 lines of custom Search CSS deleted.
+
+### UX note
+Clicking a search result formerly worked anywhere on the row (whole row was a button). For non-track results, this is unchanged (`ItemGrid` wraps each card in a button). For tracks, clicking now requires the ▶ play button rather than the row body. The play button has `aria-label="Play <title>"` and is always visible on touch.
+
+### Cleanup (post /simplify review)
+- Pulled `trackTitle` / `trackNum` into a shared `$lib/trackTitle.ts`; both `+page.svelte` (for `isNowPlayingTrack` title matching) and `TrackList.svelte` now use it.
+- Added keyed `{#each}` to both components so list churn doesn't re-mount unchanged rows / restart entrance animations.
+- Deduped a per-row `trackTitle(item.title)` double call via `{@const displayTitle}`.
+- Dropped a YAGNI `imageSize` prop from `ItemGrid`.
+
+### Tests
+- Three search-track tests in `library/__tests__/page.test.ts` updated: search-track click now targets `aria-label="Play <title>"` (was `getByText(title).closest('button')`, which no longer reaches a button under TrackList).
+- No new tests; the unification is visual and the existing search-result tests cover the click → quickPlay path.
+
+### Validation
+- UI: 130 tests pass.
+- svelte-check 0/0, lint clean, both builds clean.
+- **Visual parity NOT yet verified against a live Roon Core.** Search-result panel now uses the same large card style as the browse pane, which may make the panel feel larger; intentional.
+
 ## 2026-05-13 — Layout test harness (first pass)
 
 `+layout.svelte` (1226 lines) had zero tests despite being the home of every cross-route navigation surface — rail clicks, header search, play-bar links, mobile hamburger. The recent R7 finding (where `resolveAndNavigate` had dropped the `searchQuery` argument to `pushHistory`) was caught by static review only; a layout-level test would have failed on it.

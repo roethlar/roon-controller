@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { trackNum, trackTitle } from '$lib/trackTitle';
 	import type { BrowseItem } from '@shared/types';
 
 	let {
@@ -17,19 +18,12 @@
 		/** Outer guard (e.g. quickPlay-in-flight) that disables all play buttons. */
 		playDisabled?: boolean;
 	} = $props();
-
-	function trackNum(title: string, index: number): string {
-		return title.match(/^(\d+)\./)?.[1] ?? String(index + 1);
-	}
-
-	function trackTitle(title: string): string {
-		return title.replace(/^\d+\.\s*/, '');
-	}
 </script>
 
 <ol class="track-list">
-	{#each items as item, index}
+	{#each items as item, index (item.itemKey ?? index)}
 		{@const playing = isNowPlaying?.(item) ?? false}
+		{@const displayTitle = trackTitle(item.title)}
 		<li class="track-row" class:playing>
 			<span class="track-num">
 				{#if playing}
@@ -39,7 +33,7 @@
 				{/if}
 			</span>
 			<div class="track-info">
-				<span class="track-title">{trackTitle(item.title)}</span>
+				<span class="track-title">{displayTitle}</span>
 				{#if item.subtitle}
 					<span class="track-sub">{item.subtitle}</span>
 				{/if}
@@ -50,6 +44,7 @@
 					class="track-play"
 					onclick={() => onItemClick(item)}
 					disabled={!item.itemKey || playDisabled}
+					aria-label="Play {displayTitle}"
 					title="Play now"
 				>▶</button>
 				{#if item.itemKey && onMoreClick}
@@ -183,9 +178,8 @@
 		cursor: not-allowed;
 	}
 
-	/* Touch devices: always show actions (no hover). The desktop hover
-	   rule above keeps them hidden by default; both breakpoints exist
-	   so phones (≤600) and tablets (≤820) both reveal them. */
+	/* Touch / narrow viewports: always show actions. Hover-reveal on
+	   desktop, persistent here since there's no hover signal. */
 	@media (max-width: 820px) {
 		.track-actions {
 			opacity: 1;

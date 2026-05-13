@@ -4,8 +4,9 @@
 	import { selectedZoneStore } from '$lib/stores/selectedZoneStore';
 	import { getSocket } from '$lib/socket/client';
 	import { emitIfConnected } from '$lib/socket/emit';
-	import { imageUrl } from '$lib/imageUrl';
-	import type { BrowseSearchOptions, SearchResult } from '@shared/types';
+	import ItemGrid from './ItemGrid.svelte';
+	import TrackList from './TrackList.svelte';
+	import type { BrowseItem, BrowseSearchOptions, SearchResult } from '@shared/types';
 
 	type SearchMode = 'full' | 'input' | 'results';
 	let {
@@ -142,6 +143,13 @@
 		const current = pageSize[type] ?? PAGE_SIZE;
 		pageSize = { ...pageSize, [type]: current + PAGE_SIZE };
 	}
+
+	// The grid / track-list components type their callbacks as BrowseItem
+	// (the broader type). Items are SearchResult[] in this component, so
+	// the cast back is safe.
+	function handleClick(item: BrowseItem) {
+		onResultClick?.(item as SearchResult);
+	}
 </script>
 
 <div class="search-shell" class:input-only={mode === 'input'}>
@@ -176,6 +184,7 @@
 				{/if}
 			</p>
 			{#each grouped as group}
+				{@const visible = group.items.slice(0, shownCount(group.type, group.items.length))}
 				<section class="group">
 					<header class="group-header">
 						<h3>{group.label}</h3>
@@ -183,28 +192,11 @@
 							{shownCount(group.type, group.items.length)} of {group.items.length}
 						</span>
 					</header>
-					<div class="group-items">
-						{#each group.items.slice(0, shownCount(group.type, group.items.length)) as result}
-							<button
-								type="button"
-								class="result-item"
-								disabled={!result.itemKey}
-								onclick={() => onResultClick?.(result)}
-							>
-								{#if result.imageKey}
-									<img src={imageUrl(result.imageKey, { width: 120, height: 120 })} alt={result.title} />
-								{:else}
-									<div class="result-fallback">{result.resultType.charAt(0).toUpperCase()}</div>
-								{/if}
-								<div class="result-meta">
-									<p class="title">{result.title}</p>
-									{#if result.subtitle}
-										<p class="subtitle">{result.subtitle}</p>
-									{/if}
-								</div>
-							</button>
-						{/each}
-					</div>
+					{#if group.type === 'track'}
+						<TrackList items={visible} onItemClick={handleClick} />
+					{:else}
+						<ItemGrid items={visible} onItemClick={handleClick} />
+					{/if}
 					{#if group.items.length > shownCount(group.type, group.items.length)}
 						<button type="button" class="show-more" onclick={() => showMore(group.type)}>
 							Show more {group.label.toLowerCase()}
@@ -319,65 +311,6 @@
 	.group-count {
 		font-size: 0.72rem;
 		font-family: var(--font-mono);
-		color: var(--text-soft);
-	}
-
-	.group-items {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-		gap: 0.5rem;
-	}
-
-	.result-item {
-		display: grid;
-		grid-template-columns: 52px 1fr;
-		gap: 0.55rem;
-		padding: 0.5rem;
-		border: 1px solid var(--border);
-		border-radius: 10px;
-		background: var(--surface-2);
-		text-align: left;
-		color: var(--text);
-		cursor: pointer;
-	}
-
-	.result-item:hover:not(:disabled) {
-		border-color: var(--accent-2);
-	}
-
-	.result-item:disabled {
-		opacity: 0.65;
-		cursor: default;
-	}
-
-	.result-item img,
-	.result-fallback {
-		width: 52px;
-		height: 52px;
-		border-radius: 8px;
-	}
-
-	.result-item img {
-		object-fit: cover;
-	}
-
-	.result-fallback {
-		display: grid;
-		place-items: center;
-		background: var(--surface-3);
-		font-size: 1.2rem;
-		font-weight: 700;
-		color: var(--text-soft);
-	}
-
-	.result-meta .title {
-		font-weight: 650;
-		line-height: 1.25;
-	}
-
-	.result-meta .subtitle {
-		margin-top: 0.2rem;
-		font-size: 0.8rem;
 		color: var(--text-soft);
 	}
 

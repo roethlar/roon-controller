@@ -5,19 +5,17 @@
 	let {
 		items,
 		onItemClick,
-		jumpId,
-		imageSize = 320
+		jumpId
 	}: {
 		items: BrowseItem[];
 		onItemClick: (item: BrowseItem) => void;
 		/** Optional id resolver for alphabetic jump bar anchoring. */
 		jumpId?: (item: BrowseItem, index: number) => string | undefined;
-		imageSize?: number;
 	} = $props();
 </script>
 
 <div class="items-grid">
-	{#each items as item, index}
+	{#each items as item, index (item.itemKey ?? index)}
 		<div
 			class="item-wrapper"
 			style={`--delay: ${Math.min(index * 20, 240)}ms`}
@@ -32,7 +30,7 @@
 			>
 				<div class="item-art">
 					{#if item.imageKey}
-						<img src={imageUrl(item.imageKey, { width: imageSize, height: imageSize })} alt={item.title} />
+						<img src={imageUrl(item.imageKey, { width: 320, height: 320 })} alt={item.title} />
 					{:else}
 						<span class="art-placeholder">{item.title.charAt(0)}</span>
 					{/if}

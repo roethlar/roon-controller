@@ -653,7 +653,9 @@ describe('Library page — navigation actions', () => {
 		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
 		await tick();
 
-		screen.getByText('Cornflake Girl').closest('button')?.click();
+		// Search-track results render via TrackList now — the play
+		// button is the canonical click target.
+		screen.getByRole('button', { name: 'Play Cornflake Girl' }).click();
 
 		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
 		expect(apiBrowse.mock.calls[1][1]).toEqual(
@@ -915,7 +917,7 @@ describe('Library page — navigation actions', () => {
 		fakeSocket.connected = false;
 		await tick();
 
-		screen.getByText('Cornflake Girl').closest('button')?.click();
+		screen.getByRole('button', { name: 'Play Cornflake Girl' }).click();
 
 		// Wait for both REST calls (freshen + action lookup) to land.
 		await waitFor(() => {
@@ -1387,7 +1389,7 @@ describe('Library page — quickPlay', () => {
 		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
 
 		await tick();
-		screen.getByText('Play Album').closest('button')?.click();
+		screen.getByRole('button', { name: 'Play Play Album' }).click();
 		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
 		await tick();
 
