@@ -1,5 +1,32 @@
 # Dev Log
 
+## 2026-05-13 — Layout test harness (first pass)
+
+`+layout.svelte` (1226 lines) had zero tests despite being the home of every cross-route navigation surface — rail clicks, header search, play-bar links, mobile hamburger. The recent R7 finding (where `resolveAndNavigate` had dropped the `searchQuery` argument to `pushHistory`) was caught by static review only; a layout-level test would have failed on it.
+
+### Added
+- `ui/src/test/app-stubs/navigation.ts` + `stores.ts` — minimal stubs for `$app/navigation` / `$app/stores` so vite's import resolver doesn't fail on `+layout.svelte`. Existing `$app/environment` stub was already in place.
+- `ui/src/routes/__tests__/layout.test.ts` — 5 tests covering the four explicit residual-risk paths from TODO.md:
+  - **Header search submit** routes through `pendingSearchStore` + `goto('/library')` (R7 fix path).
+  - **Mobile hamburger** opens the sidebar; clicking the scrim closes it.
+  - **Explore rail click on /library** label-walks via `apiBrowse`, pushes history with breadcrumbs, no `goto`.
+  - **Explore rail click from /queue** triggers `goto('/library')` after the walk.
+  - **Play-bar artist click** (R7 regression guard) — asserts `searchQuery` lands on the persisted history state, the breadcrumb carries `itemType: 'artist'`, and `browseStore.hierarchy` switches to `'search'`.
+
+### Mocking approach
+The layout pulls in socket / API / explore-rail / store-init plumbing. Tests use `vi.mock` to:
+- intercept `$lib/api/client` (so `apiBrowse` is a controllable spy);
+- replace `$lib/stores/exploreRailStore` with a test-controlled writable (the real resolver is covered by `exploreRailStore.test.ts`);
+- override `$lib/stores`' `initializeStores` to a no-op (one shared mock instead of three per-store loader stubs);
+- swap `$app/navigation`'s `goto` and `$app/stores`' `page` for spies/writables.
+
+Children snippet uses `createRawSnippet` so the non-optional `{@render children()}` in the layout doesn't throw at mount.
+
+### Validation
+- Backend: 80 tests.
+- UI: 125 → 130 tests.
+- svelte-check 0/0, both builds clean, lint clean.
+
 ## 2026-05-12 (R10) — Recently Played quickPlay must not record history under stale query
 
 Recently Played calls `quickPlay({hierarchy:'search', resetSearch:false})`. If the action-list lookup for the matched track returns no playable action (rare for tracks but possible), `quickPlay` falls back to a `browse()` that records history. `browse()` writes `$browseStore.lastSearchQuery` into the history entry — and after R9, that query is deliberately preserved as the user's *prior visible search* (e.g., "beatles"), not the Recently Played title. A future `restoreBrowse` would then re-seed the wrong search session and try to walk the breadcrumb in the wrong results.

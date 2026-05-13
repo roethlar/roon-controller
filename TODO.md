@@ -255,9 +255,12 @@
 ## Search-result rendering consistency (open — large)
 - [ ] Search results currently render in a grouped/paginated panel; browse views render as list / grid / track-list. Unify so search results match the surrounding browse layout. Significant Search.svelte refactor.
 
-## Layout integration tests (in progress — residual risk from R7)
-- [ ] Add a layout test harness so things like rail clicks, play-bar links, mobile hamburger are covered. The recent searchQuery-not-passed regression in `resolveAndNavigate` was caught only by static review; a layout-level test would have failed on it.
-- [ ] The R7–R10 rounds did extend the page-level test coverage for disconnected paths, but the layout (`+layout.svelte`, 1226 lines) still has zero tests.
+## Layout integration tests (first pass done — see DEVLOG)
+- [x] Stubs for `$app/navigation` + `$app/stores` so vite's resolver doesn't fail on direct `+layout.svelte` imports
+- [x] `ui/src/routes/__tests__/layout.test.ts`: header search submit (R7 fix), mobile hamburger, Explore rail click on /library, Explore rail click from /queue, play-bar artist click (R7 `searchQuery` regression guard)
+- [x] 5 new tests (125 → 130 UI total)
+- [ ] Follow-up — shared test fixtures: `listResult` / `makeItem` / `fakeSocket` are now duplicated between `library/__tests__/page.test.ts`, `routes/__tests__/layout.test.ts`, and `lib/components/__tests__/Search.test.ts`. Worth factoring into `ui/src/test/fixtures/`.
+- [ ] Follow-up — secondary layout surfaces: volume slider, theme toggle, transport controls (play/pause/next/prev/seek), `openAlbumOfNowPlaying`. Not flagged as regression risk today but they have zero coverage.
 
 ## Recently Played, locally tracked (done — see DEVLOG)
 - [x] Confirmed via full hierarchy probe + RoonApiBrowse docs that recent-activity is not in the public API
