@@ -244,11 +244,20 @@
 - [x] Recently Played as horizontal-scroll row
 - [x] R-N follow-ups: searchQuery passed to pushHistory in resolveAndNavigate; itemType normalizer accepts plural/case variants
 
+## Disconnected-click hardening rounds R7–R10 (done — see DEVLOG)
+- [x] R7 P1: `forward()` checks `socket.connected` before `popForward()` (ghost-history fix, mirrors R6 `pop()` pattern)
+- [x] R7 P2: `resolveAlbumOrNavigate` clears loading on each `navigate(item)` fallback (no more stuck "Loading library data…" on disconnect)
+- [x] R8 P1: `quickPlay()` search-fallback gates `resetHistory()` on `socket.connected` (no more wiped history while emit bails)
+- [x] R8 P2 → R9 superseded: removed the spurious `setSearchLoading(entry.title)` from Recently Played (it was mislabeling the user's visible search results with the Recently Played title; `clearSearchLoading` helper deleted)
+- [x] R10: added `playOnly` option to `quickPlay`; Recently Played opts in so a no-play-action match toasts instead of recording history under the user's prior `lastSearchQuery`
+- [x] +9 UI tests covering each path (120 → 125)
+
 ## Search-result rendering consistency (open — large)
 - [ ] Search results currently render in a grouped/paginated panel; browse views render as list / grid / track-list. Unify so search results match the surrounding browse layout. Significant Search.svelte refactor.
 
-## Layout integration tests (open — residual risk from R7)
+## Layout integration tests (in progress — residual risk from R7)
 - [ ] Add a layout test harness so things like rail clicks, play-bar links, mobile hamburger are covered. The recent searchQuery-not-passed regression in `resolveAndNavigate` was caught only by static review; a layout-level test would have failed on it.
+- [ ] The R7–R10 rounds did extend the page-level test coverage for disconnected paths, but the layout (`+layout.svelte`, 1226 lines) still has zero tests.
 
 ## Recently Played, locally tracked (done — see DEVLOG)
 - [x] Confirmed via full hierarchy probe + RoonApiBrowse docs that recent-activity is not in the public API
