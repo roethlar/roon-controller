@@ -653,9 +653,7 @@ describe('Library page — navigation actions', () => {
 		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
 		await tick();
 
-		// Search-track results render via TrackList now — the play
-		// button is the canonical click target.
-		screen.getByRole('button', { name: 'Play Cornflake Girl' }).click();
+		screen.getByText('Cornflake Girl').closest('button')?.click();
 
 		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
 		expect(apiBrowse.mock.calls[1][1]).toEqual(
@@ -711,6 +709,60 @@ describe('Library page — navigation actions', () => {
 				expect.objectContaining({
 					hierarchy: 'search',
 					itemKey: 'fresh-album-key',
+					multiSessionKey: 'library-search'
+				})
+			);
+		});
+	});
+
+	it('navigates a track search result that is NOT an action_list (no quickPlay)', async () => {
+		// handleSearchResultClick only quick-plays tracks with
+		// hint === 'action_list'. A track result with a different
+		// hint must drill via navigateSearchResult instead — and
+		// because Search renders every result type through ItemGrid
+		// (a plain card, no "Play" button), the click affordance
+		// doesn't misrepresent the action.
+		render(LibraryPage);
+		await tick();
+
+		setSearchLoading('tori amos');
+		setSearchResults([
+			makeSearchResult({
+				resultType: 'track',
+				itemType: 'track',
+				title: 'Winter',
+				subtitle: 'Tori Amos',
+				itemKey: 'old-track-key',
+				hint: 'list'
+			})
+		]);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Winter',
+						subtitle: 'Tori Amos',
+						itemType: 'track',
+						itemKey: 'fresh-track-key',
+						hint: 'list'
+					})
+				]
+			})
+		);
+		await tick();
+
+		screen.getByText('Winter').closest('button')?.click();
+
+		// One apiBrowse call — the navigateSearchResult re-seed/freshen.
+		// quickPlay would have chained an action-list lookup (2+ calls).
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(1));
+		await waitFor(() => {
+			expect(fakeSocket.emit).toHaveBeenCalledWith(
+				'browse:browse',
+				expect.objectContaining({
+					hierarchy: 'search',
+					itemKey: 'fresh-track-key',
 					multiSessionKey: 'library-search'
 				})
 			);
@@ -917,7 +969,7 @@ describe('Library page — navigation actions', () => {
 		fakeSocket.connected = false;
 		await tick();
 
-		screen.getByRole('button', { name: 'Play Cornflake Girl' }).click();
+		screen.getByText('Cornflake Girl').closest('button')?.click();
 
 		// Wait for both REST calls (freshen + action lookup) to land.
 		await waitFor(() => {
@@ -1389,7 +1441,7 @@ describe('Library page — quickPlay', () => {
 		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
 
 		await tick();
-		screen.getByRole('button', { name: 'Play Play Album' }).click();
+		screen.getByText('Play Album').closest('button')?.click();
 		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(3));
 		await tick();
 

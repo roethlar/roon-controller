@@ -178,9 +178,12 @@
 		cursor: not-allowed;
 	}
 
-	/* Touch / narrow viewports: always show actions. Hover-reveal on
-	   desktop, persistent here since there's no hover signal. */
-	@media (max-width: 820px) {
+	/* No-hover / coarse-pointer devices: always show actions. The
+	   hover-reveal above is unreachable without a hover-capable
+	   pointer, so the play/more buttons would otherwise be invisible.
+	   Keyed on input capability, not viewport width — a large tablet
+	   above any width breakpoint still has no hover. */
+	@media (hover: none), (pointer: coarse) {
 		.track-actions {
 			opacity: 1;
 		}

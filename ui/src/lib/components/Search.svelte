@@ -5,7 +5,6 @@
 	import { getSocket } from '$lib/socket/client';
 	import { emitIfConnected } from '$lib/socket/emit';
 	import ItemGrid from './ItemGrid.svelte';
-	import TrackList from './TrackList.svelte';
 	import type { BrowseItem, BrowseSearchOptions, SearchResult } from '@shared/types';
 
 	type SearchMode = 'full' | 'input' | 'results';
@@ -144,9 +143,14 @@
 		pageSize = { ...pageSize, [type]: current + PAGE_SIZE };
 	}
 
-	// The grid / track-list components type their callbacks as BrowseItem
-	// (the broader type). Items are SearchResult[] in this component, so
-	// the cast back is safe.
+	// ItemGrid types its callback as BrowseItem (the broader type).
+	// Items are SearchResult[] here, so the cast back is safe.
+	//
+	// Every result type — including tracks — renders through ItemGrid.
+	// A search "track" result isn't an album-ordered track listing:
+	// it can be playable (hint: action_list) or navigable, and the
+	// caller's onResultClick decides which. A TrackList row with a
+	// hardcoded "Play" button would misrepresent the navigable case.
 	function handleClick(item: BrowseItem) {
 		onResultClick?.(item as SearchResult);
 	}
@@ -192,11 +196,7 @@
 							{shownCount(group.type, group.items.length)} of {group.items.length}
 						</span>
 					</header>
-					{#if group.type === 'track'}
-						<TrackList items={visible} onItemClick={handleClick} />
-					{:else}
-						<ItemGrid items={visible} onItemClick={handleClick} />
-					{/if}
+					<ItemGrid items={visible} onItemClick={handleClick} />
 					{#if group.items.length > shownCount(group.type, group.items.length)}
 						<button type="button" class="show-more" onclick={() => showMore(group.type)}>
 							Show more {group.label.toLowerCase()}
