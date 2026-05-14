@@ -411,6 +411,52 @@ describe("RecentlyPlayedService", () => {
       expect(svc.getEntries()).toEqual([]);
     });
 
+    it("dedupes legacy duplicates from the persisted file on load", async () => {
+      // A file written before move-to-front dedup can hold the same
+      // track twice. loadFromDisk must collapse it, keeping the
+      // newest (first) occurrence — otherwise the duplicate surfaces
+      // via /api/recently-played until that track happens to replay.
+      const filePath = await makeTmpPath();
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      const seed = [
+        {
+          title: "A",
+          artist: "Artist",
+          album: "Album",
+          duration: 180,
+          image_key: "img",
+          zone_id: "z1",
+          played_at: "2026-05-14T03:00:00.000Z",
+        },
+        {
+          title: "B",
+          zone_id: "z1",
+          played_at: "2026-05-14T02:00:00.000Z",
+        },
+        {
+          title: "A",
+          artist: "Artist",
+          album: "Album",
+          duration: 180,
+          image_key: "img",
+          zone_id: "z1",
+          played_at: "2026-05-14T01:00:00.000Z",
+        },
+      ];
+      await fs.writeFile(filePath, JSON.stringify(seed), "utf-8");
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      await svc.start();
+
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["A", "B"]);
+      expect(svc.getEntries()[0].played_at).toBe("2026-05-14T03:00:00.000Z");
+    });
+
     it("filters out implausible entries when loading", async () => {
       const filePath = await makeTmpPath();
       await fs.mkdir(path.dirname(filePath), { recursive: true });

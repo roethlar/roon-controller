@@ -1,5 +1,24 @@
 # Dev Log
 
+## 2026-05-14 (later) — Recently Played: review follow-ups (key collision, load dedup, socket guard)
+
+Three findings from the review of the bubble-to-front commit:
+
+### 1. Dedupe key could collide on metadata containing `|`
+`recentlyPlayedDedupeKey` joined free-form fields with `|`, so `title:"A|B" artist:"C"` and `title:"A" artist:"B|C"` produced the same key. Harmless when the key only *suppressed* within a window; dangerous now that it *removes/bubbles* — a collision would delete the wrong entry. Switched to `JSON.stringify([...])` tuple serialization. Also fixes a subtler case: a missing field (`null`) vs. an empty string (`""`) are now distinct keys.
+
+### 2. Legacy duplicates not cleaned on load
+`loadFromDisk` loaded persisted entries as-is. A `recently-played.json` written before move-to-front dedup could hold duplicates that would surface via `/api/recently-played` until each track happened to replay. Added `dedupeRecentlyPlayed()` (keep-first-occurrence, since the file is newest-first) and run it in `loadFromDisk`. The REST endpoint returns `getEntries()`, so a deduped load means the REST response is clean too — no separate frontend REST-path dedup needed.
+
+### 3. Socket idempotence guard too loose
+`appendRecentlyPlayedFromSocket` treated `played_at + zone_id` as enough to identify a duplicate broadcast. Backend timestamps come from millisecond `Date.now()`; two fast track changes in the same zone within one millisecond would make the guard wrongly drop the second (distinct) track. Guard now also compares the dedupe key.
+
+### Tests
+- New `src/shared/__tests__/recentlyPlayed.test.ts` — key collision (`|` in metadata), null-vs-empty-string, field-level distinction, `dedupeRecentlyPlayed` first-occurrence/no-op/empty.
+- Backend: `loadFromDisk` dedup test (legacy file with a duplicate → collapsed, newest kept).
+- Frontend: two distinct tracks sharing `played_at` + `zone_id` both survive the idempotence guard.
+- Backend 81 → 89, UI 132 → 133. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-14 — Recently Played: replays bubble to the top instead of duplicating
 
 ### The bug

@@ -98,7 +98,7 @@ describe('recentlyPlayedStore', () => {
 		expect(entries[0].zone_id).toBe('zone-b');
 	});
 
-	it('appendFromSocket dedupes when head matches (same played_at + zone_id)', async () => {
+	it('appendFromSocket dedupes when head matches (same entry broadcast twice)', async () => {
 		const entry = makeEntry({
 			title: 'Dup',
 			played_at: '2026-05-08T00:00:00.000Z',
@@ -108,6 +108,25 @@ describe('recentlyPlayedStore', () => {
 		appendRecentlyPlayedFromSocket(entry);
 
 		expect(get(recentlyPlayedStore).entries).toHaveLength(1);
+	});
+
+	it('appendFromSocket keeps two distinct tracks that share played_at + zone_id', async () => {
+		// Two fast track changes in the same zone can land on the same
+		// millisecond timestamp. The idempotence guard must not collapse
+		// them — it also compares the dedupe key, so distinct tracks
+		// both make it through.
+		const sharedTs = '2026-05-08T00:00:00.000Z';
+		appendRecentlyPlayedFromSocket(
+			makeEntry({ title: 'First', played_at: sharedTs, zone_id: 'zone-a' })
+		);
+		appendRecentlyPlayedFromSocket(
+			makeEntry({ title: 'Second', played_at: sharedTs, zone_id: 'zone-a' })
+		);
+
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
+			'Second',
+			'First'
+		]);
 	});
 
 	it('appendFromSocket caps the list at 50 entries', () => {

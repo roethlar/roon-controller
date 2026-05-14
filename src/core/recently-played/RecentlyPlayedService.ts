@@ -3,7 +3,10 @@ import { promises as fs } from "fs";
 import path from "path";
 import { Logger } from "pino";
 import type { NowPlaying, RecentlyPlayedEntry } from "../../shared/types";
-import { recentlyPlayedDedupeKey } from "../../shared/recentlyPlayed";
+import {
+  recentlyPlayedDedupeKey,
+  dedupeRecentlyPlayed,
+} from "../../shared/recentlyPlayed";
 import type { TransportService } from "../roon/TransportService";
 
 export interface RecentlyPlayedServiceOptions {
@@ -252,9 +255,12 @@ export class RecentlyPlayedService extends EventEmitter {
         this.entries = [];
         return;
       }
-      this.entries = parsed
-        .filter((it): it is RecentlyPlayedEntry => isPlausibleEntry(it))
-        .slice(0, this.cap);
+      // Dedupe on load: a file written before move-to-front dedup
+      // existed can hold duplicates. Without this they'd surface via
+      // /api/recently-played until each track happened to replay.
+      this.entries = dedupeRecentlyPlayed(
+        parsed.filter((it): it is RecentlyPlayedEntry => isPlausibleEntry(it))
+      ).slice(0, this.cap);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
       if (code === "ENOENT") {

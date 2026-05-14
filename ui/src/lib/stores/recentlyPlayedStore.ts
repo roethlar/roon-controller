@@ -65,11 +65,21 @@ export function appendRecentlyPlayedFromSocket(
 	entry: RecentlyPlayedEntry
 ): void {
 	internalStore.update((s) => {
+		const key = recentlyPlayedDedupeKey(entry);
+		// Idempotence guard: the exact same entry broadcast twice is a
+		// no-op (return the same reference so subscribers don't re-run).
+		// Must compare the dedupe key too — played_at + zone_id alone
+		// would wrongly collapse two distinct tracks that changed in
+		// the same millisecond in the same zone.
 		const head = s.entries[0];
-		if (head && head.played_at === entry.played_at && head.zone_id === entry.zone_id) {
+		if (
+			head &&
+			head.played_at === entry.played_at &&
+			head.zone_id === entry.zone_id &&
+			recentlyPlayedDedupeKey(head) === key
+		) {
 			return s;
 		}
-		const key = recentlyPlayedDedupeKey(entry);
 		const deduped = s.entries.filter((e) => recentlyPlayedDedupeKey(e) !== key);
 		const entries = [entry, ...deduped].slice(0, CAP);
 		return { ...s, entries, loaded: true };
