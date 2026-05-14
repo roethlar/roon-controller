@@ -274,12 +274,14 @@
 - [x] `GET /api/recently-played` + `recently-played-inserted` socket broadcast
 - [x] UI store + welcome view section, honest "on this controller" labelling
 
-## Recently Played: bubble-to-front (done — see DEVLOG)
+## Recently Played: bubble-to-front + clear-all (done — see DEVLOG)
 - [x] Fixed duplicate-on-replay: deployed version logged a second entry when a track was replayed past its noise window
 - [x] Move-to-front model — `handleNowPlaying` filters any prior same-key entry before unshift; list holds at most one entry per track
-- [x] Shared `recentlyPlayedDedupeKey` in `src/shared/recentlyPlayed.ts` so backend service + frontend store agree on duplicate identity
-- [x] `appendRecentlyPlayedFromSocket` mirrors the bubble client-side (drops prior same-key entry on each socket insert)
-- [x] Tests: 2 backend tests rewritten (duplicate → bubble) + 1 new backend + 1 new frontend (80→81 backend, 131→132 UI)
+- [x] Shared `recentlyPlayedDedupeKey` + `dedupeRecentlyPlayed` in `src/shared/recentlyPlayed.ts` (JSON-tuple key, collision-proof) so backend service + frontend store agree on duplicate identity
+- [x] `appendRecentlyPlayedFromSocket` mirrors the bubble client-side; idempotence guard compares the dedupe key too
+- [x] `loadFromDisk` dedupes legacy persisted files on load
+- [x] Clear-all: `RecentlyPlayedService.clear()` + `cleared` event, `DELETE /api/recently-played`, `recently-played-cleared` socket broadcast, store `clearRecentlyPlayedEntries`, "Clear" button in the welcome view
+- [x] Tests across the round trip (backend 80→92, UI 131→137)
 
 ## Recently Added (deferred)
 - [ ] Not in the public API. Could approximate by drilling `albums` hierarchy with `set_display_offset` to the end (last albums alphabetically aren't necessarily most-recently-added; not useful). True "Recently Added" requires private API access we don't have.

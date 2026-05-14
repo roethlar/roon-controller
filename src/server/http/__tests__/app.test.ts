@@ -103,4 +103,25 @@ describe('HTTP app routing', () => {
     expect(body.entries.length).toBeGreaterThanOrEqual(1);
     expect(body.entries[0].title).toBe('Test Track');
   });
+
+  it('DELETE /api/recently-played wipes the list', async () => {
+    // Seed one entry, confirm it lands, then DELETE and confirm empty.
+    const transport = (app.recentlyPlayed as any).transportService;
+    transport.emit('now-playing-updated', {
+      zone_id: 'zone-y',
+      now_playing: {
+        zone_id: 'zone-y',
+        title: 'Doomed Track',
+        state: 'playing',
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(app.recentlyPlayed.getEntries().length).toBeGreaterThan(0);
+
+    const res = await fetch(`${app.url}/api/recently-played`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: unknown[] };
+    expect(body.entries).toEqual([]);
+    expect(app.recentlyPlayed.getEntries()).toEqual([]);
+  });
 });

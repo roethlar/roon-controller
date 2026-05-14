@@ -300,6 +300,52 @@ describe("RecentlyPlayedService", () => {
     });
   });
 
+  describe("clear()", () => {
+    it("empties the list, emits `cleared`, and persists the empty list", async () => {
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      let clearedCount = 0;
+      svc.on("cleared", () => clearedCount++);
+      await svc.start();
+
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
+      transport.fireNowPlaying("zone-b", nowPlaying({ title: "B", zone_id: "zone-b" }));
+      expect(svc.getEntries()).toHaveLength(2);
+
+      svc.clear();
+
+      expect(svc.getEntries()).toEqual([]);
+      expect(clearedCount).toBe(1);
+
+      // The empty list is persisted, so a reload stays empty.
+      await flushWrites(svc);
+      expect(await readPersisted(filePath)).toEqual([]);
+    });
+
+    it("clear() on an already-empty list still emits (idempotent across clients)", async () => {
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      let clearedCount = 0;
+      svc.on("cleared", () => clearedCount++);
+      await svc.start();
+
+      svc.clear();
+
+      expect(svc.getEntries()).toEqual([]);
+      expect(clearedCount).toBe(1);
+    });
+  });
+
   describe("cap enforcement", () => {
     it("keeps only the most recent N entries", async () => {
       const transport = new FakeTransport();

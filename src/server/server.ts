@@ -144,6 +144,12 @@ export const startServer = (
     socketContext.io.emit("recently-played-inserted", entry);
   });
 
+  // A user-initiated wipe — broadcast so every client's list empties,
+  // not just the one that issued the DELETE.
+  recentlyPlayedService.on("cleared", () => {
+    socketContext.io.emit("recently-played-cleared");
+  });
+
   transportService.on("queue-updated", (data) => {
     socketContext.io.emit("queue-updated", data);
   });

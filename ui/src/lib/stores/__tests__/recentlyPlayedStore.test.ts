@@ -12,6 +12,7 @@ import {
 	recentlyPlayedStore,
 	loadRecentlyPlayed,
 	appendRecentlyPlayedFromSocket,
+	clearRecentlyPlayedEntries,
 	resetRecentlyPlayed
 } from '../recentlyPlayedStore';
 
@@ -127,6 +128,30 @@ describe('recentlyPlayedStore', () => {
 			'Second',
 			'First'
 		]);
+	});
+
+	it('clearRecentlyPlayedEntries empties the list but keeps loaded=true', async () => {
+		fetchRecentlyPlayed.mockResolvedValueOnce([
+			makeEntry({ title: 'A' }),
+			makeEntry({ title: 'B' })
+		]);
+		await loadRecentlyPlayed(fetch);
+		expect(get(recentlyPlayedStore).entries).toHaveLength(2);
+
+		clearRecentlyPlayedEntries();
+
+		const state = get(recentlyPlayedStore);
+		expect(state.entries).toEqual([]);
+		// loaded stays true — the list is known-empty, not unloaded, so
+		// the welcome view shows nothing rather than a loading state.
+		expect(state.loaded).toBe(true);
+	});
+
+	it('clearRecentlyPlayedEntries on an already-empty store is a harmless no-op', () => {
+		clearRecentlyPlayedEntries();
+		const state = get(recentlyPlayedStore);
+		expect(state.entries).toEqual([]);
+		expect(state.loaded).toBe(true);
 	});
 
 	it('appendFromSocket caps the list at 50 entries', () => {

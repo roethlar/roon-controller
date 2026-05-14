@@ -13,10 +13,12 @@ import type { BrowseResult, BrowseItem, SearchResult } from '@shared/types';
 
 const apiBrowse = vi.fn<(_fetch: unknown, opts: any) => Promise<BrowseResult>>();
 const apiBrowseLoad = vi.fn<(_fetch: unknown, opts: any) => Promise<BrowseResult>>();
+const apiClearRecentlyPlayed = vi.fn<(_fetch: unknown) => Promise<void>>();
 
 vi.mock('$lib/api/client', () => ({
 	browse: (...args: any[]) => apiBrowse(...(args as [unknown, any])),
-	browseLoad: (...args: any[]) => apiBrowseLoad(...(args as [unknown, any]))
+	browseLoad: (...args: any[]) => apiBrowseLoad(...(args as [unknown, any])),
+	clearRecentlyPlayed: (...args: any[]) => apiClearRecentlyPlayed(...(args as [unknown]))
 }));
 
 const fakeSocket = {
@@ -89,6 +91,7 @@ function makeSearchResult(
 beforeEach(() => {
 	apiBrowse.mockReset();
 	apiBrowseLoad.mockReset();
+	apiClearRecentlyPlayed.mockReset();
 	fakeSocket.emit.mockReset();
 	// Restore the connected flag — disconnect-path tests flip this to
 	// false, and an assertion failure before the test's own restore
@@ -99,6 +102,7 @@ beforeEach(() => {
 	setSelectedZone('');
 	// Default: any apiBrowse call returns an empty browse root.
 	apiBrowse.mockResolvedValue(listResult({ level: 0 }));
+	apiClearRecentlyPlayed.mockResolvedValue(undefined);
 });
 
 // ---------------- Tests ----------------
@@ -2269,5 +2273,45 @@ describe('Library page — Recently Played tile click', () => {
 			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
 			expect(get(commandFeedbackStore)?.message).toMatch(/Couldn't find/);
 		});
+	});
+
+	it('Clear button calls the DELETE endpoint and empties the list', async () => {
+		render(LibraryPage);
+		await tick();
+
+		// The tile is present before clearing.
+		expect(screen.queryByRole('button', { name: /Play 'Hey Jude'/i })).not.toBeNull();
+
+		const clearBtn = await screen.findByRole('button', { name: 'Clear' });
+		clearBtn.click();
+
+		await waitFor(() => {
+			expect(apiClearRecentlyPlayed).toHaveBeenCalledTimes(1);
+		});
+
+		// Store emptied on REST success — the section disappears (it's
+		// gated on entries.length > 0), so the tile is gone.
+		const { recentlyPlayedStore } = await import('$lib/stores/recentlyPlayedStore');
+		await waitFor(() => {
+			expect(get(recentlyPlayedStore).entries).toEqual([]);
+		});
+		expect(screen.queryByRole('button', { name: /Play 'Hey Jude'/i })).toBeNull();
+	});
+
+	it('Clear button surfaces a feedback toast when the DELETE fails', async () => {
+		apiClearRecentlyPlayed.mockRejectedValueOnce(new Error('network down'));
+		render(LibraryPage);
+		await tick();
+
+		const clearBtn = await screen.findByRole('button', { name: 'Clear' });
+		clearBtn.click();
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message).toMatch(/Couldn't clear recently played/);
+		});
+		// List left intact — the failed clear didn't touch the store.
+		const { recentlyPlayedStore } = await import('$lib/stores/recentlyPlayedStore');
+		expect(get(recentlyPlayedStore).entries).toHaveLength(1);
 	});
 });

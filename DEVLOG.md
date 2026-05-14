@@ -1,5 +1,23 @@
 # Dev Log
 
+## 2026-05-14 (later) — Recently Played: clear-all
+
+A "Clear" action for the Recently Played list — it's local controller history, and users want to prune it.
+
+### Round trip
+- **Service**: `RecentlyPlayedService.clear()` — empties the list, persists the empty list (survives restart), emits a new `cleared` event. No-op-safe: clearing an empty list still persists + emits, which keeps the operation idempotent across clients without special-casing.
+- **REST**: `DELETE /api/recently-played` → `service.clear()` → `{ entries: [] }`.
+- **Socket**: `server.ts` wires `cleared` → `io.emit("recently-played-cleared")` so every client's list empties, not just the one that issued the DELETE.
+- **Frontend client**: `clearRecentlyPlayed(fetch)` → `DELETE`.
+- **Store**: `clearRecentlyPlayedEntries()` — sets `entries: []` but keeps `loaded: true` (the list is *known* empty, not unloaded, so the welcome view shows nothing rather than a loading state). Distinct from `resetRecentlyPlayed` which returns to the unloaded initial state.
+- **Socket handler**: `recently-played-cleared` → `clearRecentlyPlayedEntries()`.
+- **UI**: a "Clear" button in the Recently Played header. Its handler calls the REST DELETE *and* clears the store on success — so a disconnected socket doesn't leave the initiating client showing a stale list. The socket echo also clears the store; clearing twice is a harmless no-op, so the two paths converge.
+
+### Tests
+- Backend: `clear()` empties + emits `cleared` + persists `[]`; `clear()` on an empty list still emits. `DELETE /api/recently-played` route test.
+- Frontend: store `clearRecentlyPlayedEntries` (empties, keeps `loaded`); page Clear-button test (calls DELETE, empties list, section disappears) + failure-path test (toast surfaced, list intact).
+- Backend 89 → 92, UI 133 → 137. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-14 (later) — Recently Played: review follow-ups (key collision, load dedup, socket guard)
 
 Three findings from the review of the bubble-to-front commit:

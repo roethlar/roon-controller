@@ -86,6 +86,19 @@ export function appendRecentlyPlayedFromSocket(
 	});
 }
 
+/**
+ * Empty the list in response to a user-initiated clear. Distinct from
+ * `resetRecentlyPlayed` (which returns to the unloaded initial state):
+ * here the list is *known* empty, so `loaded` stays true and the
+ * welcome view shows nothing rather than a loading state. Called both
+ * by the UI's Clear action (optimistically, on REST success) and by
+ * the `recently-played-cleared` socket handler — clearing an
+ * already-empty list is a harmless no-op, so the two paths converge.
+ */
+export function clearRecentlyPlayedEntries(): void {
+	internalStore.update((s) => ({ ...s, entries: [], loaded: true }));
+}
+
 export function resetRecentlyPlayed(): void {
 	internalStore.set({ ...initialState });
 }

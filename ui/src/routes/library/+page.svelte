@@ -31,6 +31,7 @@
 		welcomeStatsStore,
 		loadWelcomeStats,
 		recentlyPlayedStore,
+		clearRecentlyPlayedEntries,
 		nowPlayingList,
 		type BrowseBreadcrumb,
 		type BrowseHistoryStep
@@ -38,7 +39,11 @@
 	import { zoneMapStore } from '$lib/stores/zonesStore';
 	import { getSocket } from '$lib/socket/client';
 	import { emitIfConnected } from '$lib/socket/emit';
-	import { browse as apiBrowse, browseLoad as apiBrowseLoad } from '$lib/api/client';
+	import {
+		browse as apiBrowse,
+		browseLoad as apiBrowseLoad,
+		clearRecentlyPlayed
+	} from '$lib/api/client';
 	import type {
 		BrowseItem,
 		BrowseOptions,
@@ -202,6 +207,31 @@
 			});
 		} finally {
 			recentlyPlayedClickInFlight = false;
+		}
+	}
+
+	let clearRecentInFlight = $state(false);
+
+	/**
+	 * Wipe the Recently Played list. The DELETE also broadcasts
+	 * `recently-played-cleared`, so other clients update via socket;
+	 * we clear our own store on success too, so a disconnected socket
+	 * doesn't leave this client showing a stale list.
+	 */
+	async function clearRecentEntries(): Promise<void> {
+		if (clearRecentInFlight) return;
+		clearRecentInFlight = true;
+		try {
+			await clearRecentlyPlayed(fetch);
+			clearRecentlyPlayedEntries();
+		} catch (err) {
+			pushCommandFeedback({
+				source: 'browse',
+				command: 'recently-played',
+				message: `Couldn't clear recently played: ${(err as Error).message}`
+			});
+		} finally {
+			clearRecentInFlight = false;
 		}
 	}
 
@@ -1385,6 +1415,12 @@
 						<header class="recently-played-header">
 							<h3>Recently played</h3>
 							<p class="recently-played-note">on this controller</p>
+							<button
+								type="button"
+								class="recently-played-clear"
+								disabled={clearRecentInFlight}
+								onclick={clearRecentEntries}
+							>Clear</button>
 						</header>
 						<div class="recently-played-grid">
 							{#each $recentlyPlayedStore.entries.slice(0, 12) as entry}
@@ -1574,6 +1610,27 @@
 		letter-spacing: 0.12em;
 		text-transform: uppercase;
 		color: var(--text-soft);
+	}
+
+	.recently-played-clear {
+		margin-left: auto;
+		padding: 0.28rem 0.62rem;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		background: var(--surface-2);
+		color: var(--text-soft);
+		font-size: 0.76rem;
+		cursor: pointer;
+	}
+
+	.recently-played-clear:hover:not(:disabled) {
+		border-color: var(--accent-2);
+		color: var(--text);
+	}
+
+	.recently-played-clear:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.recently-played-grid {

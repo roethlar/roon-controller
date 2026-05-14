@@ -55,10 +55,14 @@ export interface RecentlyPlayedServiceOptions {
  *   Suppressed (noise-window) updates do NOT emit. Listeners
  *   broadcasting this to clients should mirror the bubble: drop any
  *   prior occurrence of the same track before prepending.
+ * - `cleared`: emitted when the list is emptied via `clear()` (a
+ *   user-initiated wipe). Carries no payload.
  */
 export declare interface RecentlyPlayedService {
   on(event: "inserted", listener: (entry: RecentlyPlayedEntry) => void): this;
+  on(event: "cleared", listener: () => void): this;
   emit(event: "inserted", entry: RecentlyPlayedEntry): boolean;
+  emit(event: "cleared"): boolean;
 }
 
 export class RecentlyPlayedService extends EventEmitter {
@@ -134,6 +138,19 @@ export class RecentlyPlayedService extends EventEmitter {
   /** Snapshot of the current list, newest first. */
   public getEntries(): RecentlyPlayedEntry[] {
     return [...this.entries];
+  }
+
+  /**
+   * Empty the list (user-initiated wipe). Persists the empty list so
+   * the clear survives a restart, and emits `cleared` so the socket
+   * layer can broadcast it. No-op-safe if the list is already empty —
+   * still persists + emits, which keeps a clear idempotent across
+   * clients without special-casing.
+   */
+  public clear(): void {
+    this.entries = [];
+    this.schedulePersist();
+    this.emit("cleared");
   }
 
   // ── Internal ──────────────────────────────────────────────────────
