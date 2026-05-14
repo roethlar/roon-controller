@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import type { RecentlyPlayedEntry } from '@shared/types';
+import { recentlyPlayedDedupeKey } from '@shared/recentlyPlayed';
 import { fetchRecentlyPlayed } from '../api/client';
 
 /**
@@ -55,6 +56,10 @@ export async function loadRecentlyPlayed(fetchFn: typeof fetch): Promise<void> {
  * the off-chance the same entry is broadcast twice — checks the
  * current head before unshifting. Caps the list to mirror what the
  * backend persists.
+ *
+ * Mirrors the backend's bubble-to-front: drops any prior occurrence
+ * of the same track (by shared dedupe key) before unshifting, so a
+ * replayed track moves to the top instead of duplicating.
  */
 export function appendRecentlyPlayedFromSocket(
 	entry: RecentlyPlayedEntry
@@ -64,7 +69,9 @@ export function appendRecentlyPlayedFromSocket(
 		if (head && head.played_at === entry.played_at && head.zone_id === entry.zone_id) {
 			return s;
 		}
-		const entries = [entry, ...s.entries].slice(0, CAP);
+		const key = recentlyPlayedDedupeKey(entry);
+		const deduped = s.entries.filter((e) => recentlyPlayedDedupeKey(e) !== key);
+		const entries = [entry, ...deduped].slice(0, CAP);
 		return { ...s, entries, loaded: true };
 	});
 }

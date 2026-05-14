@@ -1,5 +1,29 @@
 # Dev Log
 
+## 2026-05-14 — Recently Played: replays bubble to the top instead of duplicating
+
+### The bug
+Deployed `RecentlyPlayedService` showed duplicate entries: play track X, play a few other tracks, play X again — and X appeared twice. The original design was a *chronological play log* with a noise-suppression window: `shouldSuppress` dropped same-track re-emits within `max(suppressionWindowMs=30s, duration + 5s grace)`. A genuine replay *outside* that window was treated as a legitimately distinct entry and `unshift`ed — producing the duplicate. (A 4-minute song has a ~245s window; play it, listen to a couple more, replay it → duplicate.)
+
+The user's expectation — and the correct model — is move-to-front: a replay bubbles to the top, the list holds at most one entry per track.
+
+### Why the noise window has to stay
+`now-playing-updated` fires on *every* `zones_changed` (pause, seek, volume, queue edit), not just track changes, so the same track's event arrives many times during one play. The wide noise window is what filters that. It can't distinguish a within-window *restart* from a within-window *re-emit* — Roon's event stream gives us nothing to tell them apart — so a quick restart still collapses with the noise. Deliberate trade-off, documented in `shouldSuppress`.
+
+### The fix
+`handleNowPlaying`: after `shouldSuppress` returns false (brand-new track *or* a genuine replay past the window), `filter` out any prior entry with the same dedupe key, then `unshift`. `filter` (not splice-one) also cleans up legacy duplicates left by the old behavior.
+
+Dedupe key extracted to `src/shared/recentlyPlayed.ts` (`recentlyPlayedDedupeKey`) — `title|artist|album|duration|image_key`, deliberately excluding `zone_id` / `played_at`. Shared so the backend service and the frontend store agree on what a duplicate is.
+
+Frontend `appendRecentlyPlayedFromSocket` mirrors the bubble: the `recently-played-inserted` socket event still carries one entry, and the store now drops any prior same-key entry before unshifting. Without this the server would dedup but the client would still show a stale duplicate.
+
+### Tests
+- Backend: two tests that asserted duplicate-on-replay rewritten to assert the bubble (one entry, fresh `played_at`, `inserted` re-emitted). New test for the reported scenario: play A, play B, replay A → `["A", "B"]`. (80 → 81.)
+- Frontend: new store test — a socket replay of A (even from a different zone) drops the prior A and unshifts the fresh one. (131 → 132.)
+
+### Validation
+svelte-check 0/0, both builds clean, lint clean.
+
 ## 2026-05-13 (later) — Search result rendering unified with browse layouts
 
 Search results used to render in a separate panel with custom `.result-item` cards (52×52 art, grid of `minmax(190px, 1fr)`) that looked nothing like the surrounding browse pane (large 320×320 cards on `minmax(180px, 1fr)`, or numbered track rows). Long-deferred TODO item; this lands the visual unification.

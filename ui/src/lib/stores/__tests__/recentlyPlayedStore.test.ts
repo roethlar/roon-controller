@@ -75,6 +75,29 @@ describe('recentlyPlayedStore', () => {
 		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['Newer', 'Older']);
 	});
 
+	it('appendFromSocket bubbles a replayed track to the top instead of duplicating', async () => {
+		fetchRecentlyPlayed.mockResolvedValueOnce([
+			makeEntry({ title: 'A', played_at: '2026-05-08T00:00:01.000Z' }),
+			makeEntry({ title: 'B', played_at: '2026-05-08T00:00:00.000Z' })
+		]);
+		await loadRecentlyPlayed(fetch);
+
+		// Backend bubbled a replay of A. The store must drop the prior
+		// A and unshift the fresh one — even from a different zone,
+		// since the shared dedupe key excludes zone_id / played_at.
+		appendRecentlyPlayedFromSocket(
+			makeEntry({
+				title: 'A',
+				zone_id: 'zone-b',
+				played_at: '2026-05-08T00:00:05.000Z'
+			})
+		);
+
+		const entries = get(recentlyPlayedStore).entries;
+		expect(entries.map((e) => e.title)).toEqual(['A', 'B']);
+		expect(entries[0].zone_id).toBe('zone-b');
+	});
+
 	it('appendFromSocket dedupes when head matches (same played_at + zone_id)', async () => {
 		const entry = makeEntry({
 			title: 'Dup',

@@ -3,6 +3,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { Logger } from "pino";
 import type { NowPlaying, RecentlyPlayedEntry } from "../../shared/types";
+import { recentlyPlayedDedupeKey } from "../../shared/recentlyPlayed";
 import type { TransportService } from "../roon/TransportService";
 
 export interface RecentlyPlayedServiceOptions {
@@ -39,11 +40,18 @@ export interface RecentlyPlayedServiceOptions {
  * are missed. The persisted file is local to this controller; it
  * doesn't pull history from Roon Core (no public API for that).
  *
+ * Dedup model: the list holds at most one entry per track. A genuine
+ * replay (same track, after the noise window) bubbles to the top —
+ * the prior occurrence is removed and a fresh entry unshifted. Rapid
+ * re-emits within the noise window (seek/pause/metadata-refresh,
+ * group-play) are dropped entirely. See `shouldSuppress`.
+ *
  * Events:
- * - `inserted`: emitted only when a NEW entry is actually added to
- *   the list. Suppressed (dedupe-collapsed) updates do NOT emit.
- *   Listeners can use this to broadcast a socket update without
- *   spamming clients on seek/pause noise.
+ * - `inserted`: emitted whenever the list's head changes — a new
+ *   track OR a replay bubbling up. Carries the entry now at the top.
+ *   Suppressed (noise-window) updates do NOT emit. Listeners
+ *   broadcasting this to clients should mirror the bubble: drop any
+ *   prior occurrence of the same track before prepending.
  */
 export declare interface RecentlyPlayedService {
   on(event: "inserted", listener: (entry: RecentlyPlayedEntry) => void): this;
@@ -152,6 +160,17 @@ export class RecentlyPlayedService extends EventEmitter {
       return;
     }
 
+    // Not suppressed → either a brand-new track or a genuine replay
+    // (same track, but the prior entry is outside the noise window).
+    // Drop any prior occurrence so a replay bubbles to the top
+    // instead of duplicating. `filter` (not splice-one) also cleans
+    // up any legacy duplicates left by the pre-bubble behavior. The
+    // list therefore holds at most one entry per dedupe key.
+    const key = recentlyPlayedDedupeKey(entry);
+    this.entries = this.entries.filter(
+      (existing) => recentlyPlayedDedupeKey(existing) !== key
+    );
+
     this.entries.unshift(entry);
     if (this.entries.length > this.cap) {
       this.entries.length = this.cap;
@@ -162,7 +181,13 @@ export class RecentlyPlayedService extends EventEmitter {
   }
 
   /**
-   * Suppress when ANY entry within the effective window has the same
+   * Noise gate: returns true when a now-playing event is the SAME
+   * ongoing play being re-reported, not a genuine (re)play.
+   *
+   * `now-playing-updated` fires on every `zones_changed` — pause,
+   * resume, seek, volume, queue edit — not just track changes, so
+   * the same track's event arrives many times during one play. We
+   * suppress when ANY entry within the effective window has the same
    * dedupe key. Three cases this catches:
    *
    * 1. Same track re-emitted by Roon mid-play (seek, pause, metadata
@@ -183,11 +208,18 @@ export class RecentlyPlayedService extends EventEmitter {
    * The configured value (default 30s) is the floor for short tracks
    * or unknown duration. Entries are newest-first, so we stop the
    * scan as soon as we walk past the window edge.
+   *
+   * Past the window, a same-key event is treated as a genuine replay
+   * — `handleNowPlaying` then bubbles it to the top rather than
+   * suppressing. A quick restart *within* the window is suppressed
+   * along with the noise; that's a deliberate trade-off, since
+   * Roon's event stream gives us no way to tell a within-window
+   * restart apart from a within-window re-emit.
    */
   private shouldSuppress(entry: RecentlyPlayedEntry): boolean {
     const entryTime = Date.parse(entry.played_at);
     if (!Number.isFinite(entryTime)) return false;
-    const key = this.dedupeKey(entry);
+    const key = recentlyPlayedDedupeKey(entry);
     const durationMs = entry.duration ? entry.duration * 1000 : 0;
     const TRACK_END_GRACE_MS = 5_000;
     const window = Math.max(
@@ -201,19 +233,9 @@ export class RecentlyPlayedService extends EventEmitter {
       // Entries are newest-first. Past the window edge → no more
       // candidates can match.
       if (entryTime - existingTime >= window) break;
-      if (this.dedupeKey(existing) === key) return true;
+      if (recentlyPlayedDedupeKey(existing) === key) return true;
     }
     return false;
-  }
-
-  private dedupeKey(entry: RecentlyPlayedEntry): string {
-    return [
-      entry.title ?? "",
-      entry.artist ?? "",
-      entry.album ?? "",
-      entry.duration ?? "",
-      entry.image_key ?? "",
-    ].join("|");
   }
 
   // ── Persistence ───────────────────────────────────────────────────

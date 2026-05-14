@@ -269,10 +269,17 @@
 
 ## Recently Played, locally tracked (done — see DEVLOG)
 - [x] Confirmed via full hierarchy probe + RoonApiBrowse docs that recent-activity is not in the public API
-- [x] `RecentlyPlayedService` subscribes to now-playing-updated, persists to `data/recently-played.json` atomically, dedupes any entry within `max(30s, track_duration + 5s grace)` (catches mid-play re-emits, group-play, multi-zone interleaving), caps at 50
-- [x] `GET /api/recently-played` + `recently-played-inserted` socket broadcast (only on real inserts)
+- [x] `RecentlyPlayedService` subscribes to now-playing-updated, persists to `data/recently-played.json` atomically, caps at 50
+- [x] `shouldSuppress` noise window (`max(30s, track_duration + 5s grace)`) drops mid-play re-emits, group-play, multi-zone interleaving
+- [x] `GET /api/recently-played` + `recently-played-inserted` socket broadcast
 - [x] UI store + welcome view section, honest "on this controller" labelling
-- [x] 21 new tests (15 service + 1 REST + 5 UI store)
+
+## Recently Played: bubble-to-front (done — see DEVLOG)
+- [x] Fixed duplicate-on-replay: deployed version logged a second entry when a track was replayed past its noise window
+- [x] Move-to-front model — `handleNowPlaying` filters any prior same-key entry before unshift; list holds at most one entry per track
+- [x] Shared `recentlyPlayedDedupeKey` in `src/shared/recentlyPlayed.ts` so backend service + frontend store agree on duplicate identity
+- [x] `appendRecentlyPlayedFromSocket` mirrors the bubble client-side (drops prior same-key entry on each socket insert)
+- [x] Tests: 2 backend tests rewritten (duplicate → bubble) + 1 new backend + 1 new frontend (80→81 backend, 131→132 UI)
 
 ## Recently Added (deferred)
 - [ ] Not in the public API. Could approximate by drilling `albums` hierarchy with `set_display_offset` to the end (last albums alphabetically aren't necessarily most-recently-added; not useful). True "Recently Added" requires private API access we don't have.

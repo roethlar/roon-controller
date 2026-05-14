@@ -103,7 +103,7 @@ describe("RecentlyPlayedService", () => {
       expect(inserts).toHaveLength(1);
     });
 
-    it("inserts a fresh entry once the suppression window has passed", async () => {
+    it("bubbles a replay to the top once the suppression window has passed", async () => {
       // Use duration: 0 so the effective window is just the
       // configured 30s floor; otherwise duration would dominate.
       const transport = new FakeTransport();
@@ -114,14 +114,21 @@ describe("RecentlyPlayedService", () => {
         mockLogger,
         { filePath, suppressionWindowMs: 30_000, now: () => clock }
       );
+      const inserts: unknown[] = [];
+      svc.on("inserted", (e) => inserts.push(e));
       await svc.start();
 
       const np = nowPlaying({ title: "Hey Jude", duration: 0 });
       transport.fireNowPlaying("zone-a", np);
+      const firstPlayedAt = svc.getEntries()[0].played_at;
       clock += 31_000; // past the 30s window (duration is 0)
       transport.fireNowPlaying("zone-a", np);
 
-      expect(svc.getEntries()).toHaveLength(2);
+      // Replay bubbles in place: one entry, fresh played_at, and the
+      // bubble re-emits `inserted` so the socket broadcast fires.
+      expect(svc.getEntries()).toHaveLength(1);
+      expect(svc.getEntries()[0].played_at).not.toBe(firstPlayedAt);
+      expect(inserts).toHaveLength(2);
     });
 
     it("collapses cross-zone duplicates within the window (group play)", async () => {
@@ -206,7 +213,7 @@ describe("RecentlyPlayedService", () => {
       expect(titles).toEqual(["Track Y", "Track X"]);
     });
 
-    it("inserts a new entry once the track-duration window has passed (legitimate replay)", async () => {
+    it("bubbles a replay to the top once the track-duration window has passed", async () => {
       const transport = new FakeTransport();
       const filePath = await makeTmpPath();
       let clock = 1_000_000;
@@ -222,7 +229,38 @@ describe("RecentlyPlayedService", () => {
       clock += 70_000; // past duration + grace (5s) — legitimate replay
       transport.fireNowPlaying("zone-a", np);
 
-      expect(svc.getEntries()).toHaveLength(2);
+      // Legitimate replay → bubble, not duplicate.
+      expect(svc.getEntries()).toHaveLength(1);
+    });
+
+    it("bubbles a replayed track over later plays instead of duplicating", async () => {
+      // The user-reported bug: play A, play another track, play A
+      // again — A duplicated instead of moving to the top. With
+      // move-to-front dedup the prior A is removed and a fresh A
+      // unshifted, so the list holds at most one entry per track.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      let clock = 1_000_000;
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath, suppressionWindowMs: 30_000, now: () => clock }
+      );
+      await svc.start();
+
+      const trackA = nowPlaying({ title: "Track A", duration: 60 });
+      const trackB = nowPlaying({ title: "Track B", duration: 60 });
+
+      transport.fireNowPlaying("zone-a", trackA);
+      clock += 1_000;
+      transport.fireNowPlaying("zone-a", trackB);
+      clock += 70_000; // past Track A's 65s window
+      transport.fireNowPlaying("zone-a", trackA); // genuine replay
+
+      expect(svc.getEntries().map((e) => e.title)).toEqual([
+        "Track A",
+        "Track B",
+      ]);
     });
 
     it("ignores null now_playing payloads (zone went idle)", async () => {
