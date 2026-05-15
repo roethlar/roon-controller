@@ -141,15 +141,26 @@ export class RecentlyPlayedService extends EventEmitter {
   }
 
   /**
-   * Empty the list (user-initiated wipe). Persists the empty list so
-   * the clear survives a restart, and emits `cleared` so the socket
-   * layer can broadcast it. No-op-safe if the list is already empty —
-   * still persists + emits, which keeps a clear idempotent across
-   * clients without special-casing.
+   * Empty the list (user-initiated wipe). Awaits persistence before
+   * emitting `cleared` so the socket broadcast only fires once the
+   * change is durable — otherwise a process crash between broadcast
+   * and write would leave every client cleared but the file restored
+   * on restart. On persist failure, rolls back the in-memory list to
+   * keep it consistent with disk; the caller (the DELETE route) sees
+   * the rejection and surfaces a 500 so the user can retry.
+   *
+   * No-op-safe if the list is already empty: still persists + emits,
+   * which keeps the operation idempotent across clients.
    */
-  public clear(): void {
+  public async clear(): Promise<void> {
+    const previous = this.entries;
     this.entries = [];
-    this.schedulePersist();
+    try {
+      await this.schedulePersistAsync();
+    } catch (err) {
+      this.entries = previous;
+      throw err;
+    }
     this.emit("cleared");
   }
 
@@ -300,9 +311,21 @@ export class RecentlyPlayedService extends EventEmitter {
    * source of truth.
    */
   private schedulePersist(): void {
-    this.writeChain = this.writeChain
+    void this.schedulePersistAsync();
+  }
+
+  /**
+   * Like `schedulePersist` but returns a promise reflecting this
+   * specific write's outcome — caller awaits to know when the write
+   * is durable. The chain still swallows errors so a failed write
+   * here doesn't poison the next queued one.
+   */
+  private schedulePersistAsync(): Promise<void> {
+    const persistPromise = this.writeChain
       .catch(() => undefined)
       .then(() => this.persist());
+    this.writeChain = persistPromise.catch(() => undefined);
+    return persistPromise;
   }
 
   private async persist(): Promise<void> {

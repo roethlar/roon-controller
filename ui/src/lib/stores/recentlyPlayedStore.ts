@@ -34,10 +34,29 @@ export const recentlyPlayedStore = {
 
 const CAP = 50;
 
+/**
+ * Bumped on every clear (user-initiated or socket-broadcast). A load
+ * started before a clear must NOT overwrite the post-clear empty
+ * state when its response finally arrives — that would resurrect
+ * pre-clear entries. Each load captures the generation at start and
+ * discards its response if the generation has advanced since.
+ *
+ * Reset bumps it too (so a reset-then-stale-load doesn't repopulate).
+ */
+let clearGen = 0;
+
 export async function loadRecentlyPlayed(fetchFn: typeof fetch): Promise<void> {
+	const startGen = clearGen;
 	internalStore.update((s) => ({ ...s, loading: true }));
 	try {
 		const entries = await fetchRecentlyPlayed(fetchFn);
+		if (clearGen !== startGen) {
+			// A clear (or reset) happened while this load was in flight.
+			// The post-clear state is the source of truth; drop the
+			// stale response so it can't resurrect deleted entries.
+			internalStore.update((s) => ({ ...s, loading: false }));
+			return;
+		}
 		internalStore.set({
 			entries: entries.slice(0, CAP),
 			loading: false,
@@ -96,9 +115,11 @@ export function appendRecentlyPlayedFromSocket(
  * already-empty list is a harmless no-op, so the two paths converge.
  */
 export function clearRecentlyPlayedEntries(): void {
+	clearGen++;
 	internalStore.update((s) => ({ ...s, entries: [], loaded: true }));
 }
 
 export function resetRecentlyPlayed(): void {
+	clearGen++;
 	internalStore.set({ ...initialState });
 }

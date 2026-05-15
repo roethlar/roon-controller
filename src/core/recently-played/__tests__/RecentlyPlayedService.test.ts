@@ -301,7 +301,7 @@ describe("RecentlyPlayedService", () => {
   });
 
   describe("clear()", () => {
-    it("empties the list, emits `cleared`, and persists the empty list", async () => {
+    it("awaits persist before resolving and emits `cleared` once durable", async () => {
       const transport = new FakeTransport();
       const filePath = await makeTmpPath();
       const svc = new RecentlyPlayedService(
@@ -317,14 +317,14 @@ describe("RecentlyPlayedService", () => {
       transport.fireNowPlaying("zone-b", nowPlaying({ title: "B", zone_id: "zone-b" }));
       expect(svc.getEntries()).toHaveLength(2);
 
-      svc.clear();
+      await svc.clear();
 
+      // By the time the await resolves: in-memory empty, file empty,
+      // and `cleared` already emitted (which drives the socket
+      // broadcast).
       expect(svc.getEntries()).toEqual([]);
-      expect(clearedCount).toBe(1);
-
-      // The empty list is persisted, so a reload stays empty.
-      await flushWrites(svc);
       expect(await readPersisted(filePath)).toEqual([]);
+      expect(clearedCount).toBe(1);
     });
 
     it("clear() on an already-empty list still emits (idempotent across clients)", async () => {
@@ -339,10 +339,44 @@ describe("RecentlyPlayedService", () => {
       svc.on("cleared", () => clearedCount++);
       await svc.start();
 
-      svc.clear();
+      await svc.clear();
 
       expect(svc.getEntries()).toEqual([]);
       expect(clearedCount).toBe(1);
+    });
+
+    it("rejects and rolls back the in-memory list when persist fails", async () => {
+      // Construct an unwritable file path: a directory component
+      // points at a regular file, so mkdir(recursive) fails with
+      // ENOTDIR. Reproduces a real failure (disk full, permission
+      // error) without platform-specific mocking.
+      const tmpdir = await fs.mkdtemp(path.join(os.tmpdir(), "rp-fail-"));
+      const blocker = path.join(tmpdir, "blocker");
+      await fs.writeFile(blocker, "");
+      const badPath = path.join(blocker, "recently-played.json");
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath: badPath }
+      );
+      let clearedCount = 0;
+      svc.on("cleared", () => clearedCount++);
+      await svc.start();
+
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Stays" }));
+      expect(svc.getEntries()).toHaveLength(1);
+
+      await expect(svc.clear()).rejects.toThrow();
+
+      // Rolled back: the in-memory list matches what's still on disk
+      // (or would be, if disk were writable). `cleared` was NOT
+      // emitted — clients don't see a broadcast they'd then disagree
+      // with after restart.
+      expect(svc.getEntries()).toHaveLength(1);
+      expect(svc.getEntries()[0].title).toBe("Stays");
+      expect(clearedCount).toBe(0);
     });
   });
 

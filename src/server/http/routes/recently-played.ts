@@ -22,9 +22,13 @@ export const createRecentlyPlayedRouter = (
     }
   });
 
-  router.delete("/", (_req: Request, res: Response, next: NextFunction) => {
+  router.delete("/", async (_req: Request, res: Response, next: NextFunction) => {
     try {
-      service.clear();
+      // Await durability: the service only emits `cleared` (which
+      // triggers the socket broadcast) after the file write commits.
+      // A 200 here means every other client will agree the list is
+      // empty AND the change survives a restart.
+      await service.clear();
       res.json({ entries: [] });
     } catch (error) {
       next(error);

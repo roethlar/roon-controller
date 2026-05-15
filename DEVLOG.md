@@ -1,5 +1,22 @@
 # Dev Log
 
+## 2026-05-15 — Clear RP: durable persist + load/clear race guard
+
+Two review findings on the clear-all commit:
+
+### 1. DELETE returned before the clear was durable
+`clear()` called the fire-and-forget `schedulePersist()` and the route responded `200` immediately. A crash between response and write — or a write failure — would leave every client cleared (via the broadcast) but the file restored on restart. Now `clear()` is async, awaits persistence, and **only emits `cleared` once the write commits**. The DELETE route awaits the service call; the socket broadcast and the `200` only go out on durable success. On persist failure, the in-memory list is rolled back so it stays consistent with disk; the route surfaces a `500` so the user can retry.
+
+The persist chain (`writeChain`) stays serialized, with errors swallowed so a failure doesn't poison the next queued write. A new internal `schedulePersistAsync()` returns the specific write's outcome for callers that need to await durability; `schedulePersist()` (used by `handleNowPlaying`'s fire-and-forget inserts) delegates and discards the promise.
+
+### 2. Stale load could resurrect cleared entries
+A reconnect-triggered `loadRecentlyPlayed()` GET in flight when a clear lands would `internalStore.set(...)` from its (pre-clear) response and overwrite the empty state. Added a `clearGen` counter, bumped by `clearRecentlyPlayedEntries` and `resetRecentlyPlayed`. Each load captures the generation at start; if it has advanced by the time the response arrives, the response is discarded (the post-clear state is the source of truth).
+
+### Tests
+- Backend: existing clear-emits-and-persists test now asserts that **by the time `await svc.clear()` resolves**, the file is already `[]` and `cleared` has fired. New rejection test uses an unwritable filepath (a regular file as a parent directory → `mkdir` ENOTDIR) — confirms `clear()` rejects, in-memory rolls back, no `cleared` broadcast.
+- Frontend: stalled `loadRecentlyPlayed` resolves with stale data *after* a `clearRecentlyPlayedEntries` — store stays empty.
+- Backend 92 → 93, UI 137 → 138. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-14 (later) — Recently Played: clear-all
 
 A "Clear" action for the Recently Played list — it's local controller history, and users want to prune it.

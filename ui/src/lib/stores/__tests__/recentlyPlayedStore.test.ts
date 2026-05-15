@@ -154,6 +154,32 @@ describe('recentlyPlayedStore', () => {
 		expect(state.loaded).toBe(true);
 	});
 
+	it('discards a load response that arrives after a clear (race guard)', async () => {
+		// A reconnect-triggered load can be in flight when the user
+		// (or another client via socket) clears. The stale GET
+		// response must NOT resurrect the pre-clear entries.
+		let resolveLoad!: (entries: RecentlyPlayedEntry[]) => void;
+		fetchRecentlyPlayed.mockImplementationOnce(
+			() => new Promise((r) => (resolveLoad = r))
+		);
+
+		const loadPromise = loadRecentlyPlayed(fetch);
+
+		// Mid-flight, a clear arrives (e.g., from the socket).
+		clearRecentlyPlayedEntries();
+		expect(get(recentlyPlayedStore).entries).toEqual([]);
+
+		// Now let the stale load resolve with pre-clear data.
+		resolveLoad([
+			makeEntry({ title: 'Stale A' }),
+			makeEntry({ title: 'Stale B' })
+		]);
+		await loadPromise;
+
+		// Stale response discarded — store stays empty.
+		expect(get(recentlyPlayedStore).entries).toEqual([]);
+	});
+
 	it('appendFromSocket caps the list at 50 entries', () => {
 		// Pre-fill 50 entries via socket appends.
 		for (let i = 0; i < 50; i++) {
