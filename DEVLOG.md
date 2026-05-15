@@ -1,5 +1,22 @@
 # Dev Log
 
+## 2026-05-15 (final pass) — Clear RP: optimistic-clear race + listener-throw isolation
+
+### 1. Initiator divergence from optimistic clear
+With the server now correctly emitting `cleared` then any deferred `inserted` during a clear, the UI's unconditional optimistic clear after the DELETE response was racing against those broadcasts. If the socket events arrived before the HTTP response, the initiator's `clearRecentlyPlayedEntries()` would re-empty the store and wipe the just-arrived `inserted:X`, leaving the initiator empty while server, disk, and other clients held `[X]`.
+
+**Fix.** Optimistic clear now runs only when `socketStatusStore !== 'connected'`. Connected case trusts the broadcast (which is the source of truth and includes the post-drain inserts). Disconnected case still optimistically clears so the user sees their action — and reconnect-triggered `initializeStores()` re-fetches the post-clear state on socket recovery, so even the disconnected fallback converges.
+
+### 2. Throwing `cleared` listener wedged service state
+`emit("cleared")` is synchronous; a listener exception propagates back through `runClear()`, skipping `clearInFlight = false` and `pendingClear = null`. After that, every now-playing event would buffer forever and every subsequent `clear()` would coalesce into the dead rejected promise.
+
+**Fix.** The post-`emit` reset moved into a `try/finally`; the `emit("cleared")` itself wrapped in its own `try/catch` (logged on listener throw). The drain still runs (via the `finally`), so even a misbehaving listener can't strand state.
+
+### Tests
+- Backend: throwing-listener resilience — `svc.on("cleared", () => { throw … })`, then `clear()` resolves, a follow-up insert *applies* (not buffered), and a follow-up `clear()` runs (not coalesced into the dead op).
+- Frontend: connected-socket Clear button issues DELETE but does NOT optimistically empty (tile + entries intact post-fetch). Existing default-status (connecting) test renamed to clarify it exercises the disconnected-fallback path.
+- Backend 97 → 98, UI 138 → 139. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-15 (still later) — Clear RP: coalesce overlapping clears
 
 Single-flag linearization wasn't enough: two concurrent `clear()` calls (e.g. simultaneous DELETEs from two clients) each queued their own persist, and the first to finish would reset `clearInFlight`, drain the buffer, and broadcast `inserted` — only for the *second* `clear`'s delayed `cleared` to land afterwards. Clients ended up empty while server/disk still held the drained entry. Worse: `persist()` reads `this.entries` lazily, so the second clear's write could capture the post-drain state and persist the inserted entry as part of a "clear" write.

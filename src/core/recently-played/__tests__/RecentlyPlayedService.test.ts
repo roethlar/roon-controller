@@ -493,6 +493,46 @@ describe("RecentlyPlayedService", () => {
       expect(persisted.map((e) => e.title)).toEqual(["MidClear"]);
     });
 
+    it("does not wedge service state when a 'cleared' listener throws", async () => {
+      // EventEmitter listener exceptions propagate synchronously
+      // back to emit()'s caller. Without isolation, a throwing
+      // listener would skip the post-emit state reset
+      // (clearInFlight stays true, pendingClear stays pinned to a
+      // rejected promise) — future inserts buffer forever, future
+      // clear() calls coalesce to the dead promise.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      svc.on("cleared", () => {
+        throw new Error("listener boom");
+      });
+      await svc.start();
+
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
+      expect(svc.getEntries()).toHaveLength(1);
+
+      // First clear: listener throws; the service swallows it,
+      // resets state, and resolves cleanly.
+      await expect(svc.clear()).resolves.toBeUndefined();
+      expect(svc.getEntries()).toEqual([]);
+
+      // Subsequent insert lands normally — proves clearInFlight
+      // was reset (otherwise the event would be buffered, not
+      // applied to entries).
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "B" }));
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["B"]);
+
+      // Subsequent clear works — proves pendingClear was reset
+      // (otherwise this would await the prior op's settled promise
+      // and never run a fresh clear).
+      await expect(svc.clear()).resolves.toBeUndefined();
+      expect(svc.getEntries()).toEqual([]);
+    });
+
     it("rejects and rolls back the in-memory list when persist fails", async () => {
       // Construct an unwritable file path: a directory component
       // points at a regular file, so mkdir(recursive) fails with

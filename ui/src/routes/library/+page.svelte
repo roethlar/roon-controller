@@ -32,6 +32,7 @@
 		loadWelcomeStats,
 		recentlyPlayedStore,
 		clearRecentlyPlayedEntries,
+		socketStatusStore,
 		nowPlayingList,
 		type BrowseBreadcrumb,
 		type BrowseHistoryStep
@@ -213,17 +214,26 @@
 	let clearRecentInFlight = $state(false);
 
 	/**
-	 * Wipe the Recently Played list. The DELETE also broadcasts
-	 * `recently-played-cleared`, so other clients update via socket;
-	 * we clear our own store on success too, so a disconnected socket
-	 * doesn't leave this client showing a stale list.
+	 * Wipe the Recently Played list. The server's `recently-played-cleared`
+	 * socket broadcast is the source of truth for the store update —
+	 * an unconditional optimistic clear here would race with a deferred
+	 * `inserted` event from a now-playing update the server drained
+	 * during its clear window (server emits cleared THEN inserted; if
+	 * those land before the HTTP response, an optimistic clear after
+	 * the response wipes the legitimate post-drain entry).
+	 *
+	 * Only clear locally when the socket can't deliver the broadcast.
+	 * Reconnect-triggered initializeStores() will re-fetch on socket
+	 * recovery, so even the disconnected fallback converges.
 	 */
 	async function clearRecentEntries(): Promise<void> {
 		if (clearRecentInFlight) return;
 		clearRecentInFlight = true;
 		try {
 			await clearRecentlyPlayed(fetch);
-			clearRecentlyPlayedEntries();
+			if (get(socketStatusStore) !== 'connected') {
+				clearRecentlyPlayedEntries();
+			}
 		} catch (err) {
 			pushCommandFeedback({
 				source: 'browse',

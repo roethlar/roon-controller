@@ -2275,11 +2275,14 @@ describe('Library page — Recently Played tile click', () => {
 		});
 	});
 
-	it('Clear button calls the DELETE endpoint and empties the list', async () => {
+	it('Clear button issues DELETE and (with disconnected socket) optimistically empties', async () => {
+		// Default socketStatusStore is 'connecting', so the UI handler's
+		// optimistic-clear path runs and the store empties locally
+		// without waiting for a broadcast — the right behavior when
+		// the socket can't deliver one.
 		render(LibraryPage);
 		await tick();
 
-		// The tile is present before clearing.
 		expect(screen.queryByRole('button', { name: /Play 'Hey Jude'/i })).not.toBeNull();
 
 		const clearBtn = await screen.findByRole('button', { name: 'Clear' });
@@ -2289,13 +2292,43 @@ describe('Library page — Recently Played tile click', () => {
 			expect(apiClearRecentlyPlayed).toHaveBeenCalledTimes(1);
 		});
 
-		// Store emptied on REST success — the section disappears (it's
-		// gated on entries.length > 0), so the tile is gone.
 		const { recentlyPlayedStore } = await import('$lib/stores/recentlyPlayedStore');
 		await waitFor(() => {
 			expect(get(recentlyPlayedStore).entries).toEqual([]);
 		});
 		expect(screen.queryByRole('button', { name: /Play 'Hey Jude'/i })).toBeNull();
+	});
+
+	it('Clear button does NOT optimistically empty when socket is connected (broadcast is the source of truth)', async () => {
+		// With the socket connected, the server's broadcast
+		// `recently-played-cleared` will sync the store. An
+		// unconditional optimistic clear here would race with a
+		// deferred `inserted` event from a now-playing update the
+		// server drained during its clear window, causing
+		// initiator/server divergence. Verify the optimistic clear
+		// is suppressed.
+		const { setSocketStatus } = await import('$lib/stores/socketStatusStore');
+		setSocketStatus('connected');
+
+		render(LibraryPage);
+		await tick();
+
+		const clearBtn = await screen.findByRole('button', { name: 'Clear' });
+		clearBtn.click();
+
+		await waitFor(() => {
+			expect(apiClearRecentlyPlayed).toHaveBeenCalledTimes(1);
+		});
+
+		// Tile still rendered — the broadcast handler hasn't fired
+		// (this test doesn't simulate the socket round-trip), and
+		// the UI didn't optimistically remove it.
+		const { recentlyPlayedStore } = await import('$lib/stores/recentlyPlayedStore');
+		expect(get(recentlyPlayedStore).entries).toHaveLength(1);
+		expect(screen.queryByRole('button', { name: /Play 'Hey Jude'/i })).not.toBeNull();
+
+		// Restore default for sibling tests.
+		setSocketStatus('connecting');
 	});
 
 	it('Clear button surfaces a feedback toast when the DELETE fails', async () => {

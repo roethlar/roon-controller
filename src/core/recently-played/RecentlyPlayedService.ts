@@ -190,27 +190,47 @@ export class RecentlyPlayedService extends EventEmitter {
     // `this.entries`, get its own `inserted` broadcast before
     // `cleared`, and leave clients/server divergent.
     this.clearInFlight = true;
+    let persistError: Error | undefined;
     try {
       await this.schedulePersistAsync();
     } catch (err) {
+      persistError = err instanceof Error ? err : new Error(String(err));
       this.entries = previous;
-      this.clearInFlight = false;
-      this.pendingClear = null;
-      // Drain into the rolled-back list — events that arrived during
-      // the failed clear weren't broadcast and shouldn't be lost.
-      this.drainPendingInserts();
-      throw err;
     }
-    this.emit("cleared");
-    this.clearInFlight = false;
-    // Reset pendingClear BEFORE drain, so a clear triggered from an
-    // `inserted` listener during drain starts a fresh operation
-    // rather than coalescing into the about-to-finish one.
-    this.pendingClear = null;
-    // Drain into the post-clear empty list. Each buffered insert
-    // runs through the normal handler, so dedup / suppression /
-    // persist apply, and `inserted` broadcasts come AFTER `cleared`.
-    this.drainPendingInserts();
+
+    // State reset MUST run regardless of what listeners do — a
+    // throwing `cleared` or `inserted` listener (or our own emit)
+    // shouldn't leave clearInFlight stuck true and pendingClear
+    // pinned to a rejected promise. Without this, future inserts
+    // buffer forever and future clears coalesce into the dead op.
+    try {
+      if (!persistError) {
+        try {
+          this.emit("cleared");
+        } catch (err) {
+          this.logger.warn(
+            { err },
+            "RecentlyPlayedService: 'cleared' listener threw; broadcast may be incomplete"
+          );
+        }
+      }
+    } finally {
+      this.clearInFlight = false;
+      // Reset pendingClear BEFORE drain, so a clear triggered from an
+      // `inserted` listener during drain starts a fresh operation
+      // rather than coalescing into the about-to-finish one.
+      this.pendingClear = null;
+      // Drain through the normal handler. On success the buffer
+      // drains into the post-clear empty list (so `inserted` lands
+      // after `cleared`); on failure it drains into the rolled-back
+      // list (events that arrived weren't broadcast and shouldn't
+      // be lost). drainPendingInserts already wraps each call.
+      this.drainPendingInserts();
+    }
+
+    if (persistError) {
+      throw persistError;
+    }
   }
 
   // ── Internal ──────────────────────────────────────────────────────
