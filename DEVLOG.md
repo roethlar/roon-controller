@@ -1,5 +1,24 @@
 # Dev Log
 
+## 2026-05-15 (later) — Clear RP: linearize concurrent inserts
+
+Review caught the residual concurrency hole the durability fix didn't address: a `now-playing-updated` event arriving between `clear()`'s synchronous in-memory wipe and its awaited persist would mutate `this.entries` back to `[entry]`, fire `inserted` *before* `cleared`, and leave the world inconsistent — `persist()` reads `this.entries` lazily at write time, so the file ended up with the new entry while clients (having processed `inserted` then `cleared` in order) were empty. Rollback was worse: it overwrote the concurrently-inserted entry from memory after that entry had already been broadcast.
+
+### Fix
+`handleNowPlaying` is now a thin dispatcher: while `clearInFlight` is set, incoming events go into a `pendingDuringClear` buffer instead of mutating `this.entries`. `clear()` sets the flag before awaiting persist and clears it after emitting `cleared` (success) or restoring `previous` (failure); both paths then drain the buffer through the normal handler. The renamed `handleNowPlayingImpl` holds the unchanged insert logic.
+
+This guarantees:
+- The persist captures the truly-empty list, not a list a concurrent insert mutated mid-await.
+- `cleared` is broadcast before any `inserted` for events that arrived during the clear window.
+- On rollback, the deferred event applies to the *restored* list (not lost) and no `cleared` goes out.
+- Server, disk, and clients converge on the same final state in every case.
+
+### Tests (+2, 93 → 95 backend)
+- "buffers a concurrent insert and broadcasts cleared before inserted": fires now-playing between `clear()` and `await clearPromise`; asserts buffer doesn't mutate entries pre-resolve, broadcast order is `["cleared", "inserted:MidClear"]`, final entries `["MidClear"]`, file converges to `[MidClear]`.
+- "drains buffered inserts onto the rolled-back list when persist fails": same race against an unwritable path; asserts no `cleared` broadcast, both `inserted`s fire (the original `Before` and the deferred `MidClear`), final entries `["MidClear", "Before"]`.
+
+UI tests still 138. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-15 — Clear RP: durable persist + load/clear race guard
 
 Two review findings on the clear-all commit:

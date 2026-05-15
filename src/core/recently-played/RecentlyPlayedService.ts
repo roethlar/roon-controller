@@ -78,6 +78,18 @@ export class RecentlyPlayedService extends EventEmitter {
   }) => void;
   private zoneNameLookup: (zoneId: string) => string | undefined = () =>
     undefined;
+  // Linearization for clear(): while a clear is awaiting persist,
+  // incoming now-playing events are buffered (not mutated into
+  // `this.entries` and not broadcast). After clear resolves we drain
+  // the buffer through the normal handler. This guarantees the
+  // observed broadcast order is `cleared` then any post-clear
+  // `inserted`s, and that clear's persist writes the truly-empty
+  // list rather than a list a concurrent insert mutated mid-await.
+  private clearInFlight = false;
+  private pendingDuringClear: Array<{
+    zoneId: string;
+    nowPlaying: NowPlaying;
+  }> = [];
 
   constructor(
     private readonly transportService: TransportService,
@@ -155,18 +167,64 @@ export class RecentlyPlayedService extends EventEmitter {
   public async clear(): Promise<void> {
     const previous = this.entries;
     this.entries = [];
+    // Defer concurrent inserts until we resolve. Without this, a
+    // now-playing event arriving during the persist await would mutate
+    // `this.entries`, get its own `inserted` broadcast before
+    // `cleared`, and leave clients/server divergent (clients drop the
+    // entry on cleared; server still has it; disk reflects whichever
+    // persist won).
+    this.clearInFlight = true;
     try {
       await this.schedulePersistAsync();
     } catch (err) {
       this.entries = previous;
+      this.clearInFlight = false;
+      // Drain into the rolled-back list — events that arrived during
+      // the failed clear weren't broadcast and shouldn't be lost.
+      this.drainPendingInserts();
       throw err;
     }
     this.emit("cleared");
+    this.clearInFlight = false;
+    // Drain into the post-clear empty list. Each buffered insert
+    // runs through the normal handler, so dedup / suppression /
+    // persist apply, and `inserted` broadcasts come AFTER `cleared`.
+    this.drainPendingInserts();
   }
 
   // ── Internal ──────────────────────────────────────────────────────
 
+  /**
+   * Entry point from the transport-service listener. If a clear is
+   * mid-flight, buffer the event so it can be applied AFTER `cleared`
+   * has been broadcast and the persist has committed; otherwise run
+   * the normal insert path.
+   */
   private handleNowPlaying(zoneId: string, nowPlaying: NowPlaying | null): void {
+    if (this.clearInFlight && nowPlaying) {
+      this.pendingDuringClear.push({ zoneId, nowPlaying });
+      return;
+    }
+    this.handleNowPlayingImpl(zoneId, nowPlaying);
+  }
+
+  /** Drain buffered events through the normal handler. */
+  private drainPendingInserts(): void {
+    const drained = this.pendingDuringClear;
+    this.pendingDuringClear = [];
+    for (const { zoneId, nowPlaying } of drained) {
+      try {
+        this.handleNowPlayingImpl(zoneId, nowPlaying);
+      } catch (err) {
+        this.logger.warn(
+          { err },
+          "RecentlyPlayedService: drained handler crashed; entry skipped"
+        );
+      }
+    }
+  }
+
+  private handleNowPlayingImpl(zoneId: string, nowPlaying: NowPlaying | null): void {
     if (!nowPlaying) return;
     // Defensive: zone_id might be on the now_playing payload too.
     const resolvedZoneId = zoneId || nowPlaying.zone_id;

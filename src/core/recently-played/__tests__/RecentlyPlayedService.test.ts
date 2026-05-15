@@ -345,6 +345,88 @@ describe("RecentlyPlayedService", () => {
       expect(clearedCount).toBe(1);
     });
 
+    it("buffers a concurrent insert and broadcasts cleared before inserted", async () => {
+      // The race the reviewer flagged: a now-playing event arrives
+      // between clear()'s synchronous in-memory wipe and its awaited
+      // persist. Without buffering, the insert mutates the array
+      // back to [entry], the persist serializes that array (so disk
+      // ends up non-empty), and clients receive `inserted` then
+      // `cleared` — leaving them empty while server/disk still hold
+      // the entry.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      const events: string[] = [];
+      svc.on("cleared", () => events.push("cleared"));
+      svc.on("inserted", (e) => events.push(`inserted:${e.title}`));
+      await svc.start();
+
+      // Don't await yet — clear's synchronous prelude runs (entries
+      // emptied, clearInFlight=true), then the persist await yields.
+      const clearPromise = svc.clear();
+      // Now-playing arrives mid-await. Should be buffered, NOT
+      // mutate entries and NOT emit `inserted` yet.
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "MidClear" }));
+      expect(svc.getEntries()).toEqual([]);
+      expect(events).toEqual([]);
+
+      await clearPromise;
+
+      // After clear: cleared emitted first, then the buffered insert
+      // drained through the normal handler → inserted emitted with
+      // the entry.
+      expect(events).toEqual(["cleared", "inserted:MidClear"]);
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["MidClear"]);
+
+      // Disk converges with in-memory: clear's persist wrote [], then
+      // the drained insert's persist wrote [MidClear].
+      await flushWrites(svc);
+      const persisted = (await readPersisted(filePath)) as Array<{ title: string }>;
+      expect(persisted.map((e) => e.title)).toEqual(["MidClear"]);
+    });
+
+    it("drains buffered inserts onto the rolled-back list when persist fails", async () => {
+      // Failure path of the same race: a now-playing event arrives
+      // during a clear that ultimately fails to persist. Rollback
+      // restores the prior list, the drained insert applies on top,
+      // and `cleared` is NOT broadcast (clients shouldn't see a
+      // wipe that didn't survive).
+      const tmpdir = await fs.mkdtemp(path.join(os.tmpdir(), "rp-race-fail-"));
+      const blocker = path.join(tmpdir, "blocker");
+      await fs.writeFile(blocker, "");
+      const badPath = path.join(blocker, "recently-played.json");
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath: badPath }
+      );
+      const events: string[] = [];
+      svc.on("cleared", () => events.push("cleared"));
+      svc.on("inserted", (e) => events.push(`inserted:${e.title}`));
+      await svc.start();
+
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Before" }));
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["Before"]);
+
+      const clearPromise = svc.clear();
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "MidClear" }));
+      await expect(clearPromise).rejects.toThrow();
+
+      // No cleared broadcast on failure.
+      expect(events).toEqual(["inserted:Before", "inserted:MidClear"]);
+      // Rolled back + buffered insert applied on top.
+      expect(svc.getEntries().map((e) => e.title)).toEqual([
+        "MidClear",
+        "Before",
+      ]);
+    });
+
     it("rejects and rolls back the in-memory list when persist fails", async () => {
       // Construct an unwritable file path: a directory component
       // points at a regular file, so mkdir(recursive) fails with
