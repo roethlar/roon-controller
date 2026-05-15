@@ -427,6 +427,72 @@ describe("RecentlyPlayedService", () => {
       ]);
     });
 
+    it("coalesces overlapping clear() calls into one persist + one cleared broadcast", async () => {
+      // Two clients hitting DELETE simultaneously must not produce
+      // two interleaved clear operations. Without coalescing, the
+      // second clear's late `cleared` broadcast can land after the
+      // first clear's drained `inserted`, leaving clients empty
+      // while server/disk hold the entry.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      const events: string[] = [];
+      svc.on("cleared", () => events.push("cleared"));
+      svc.on("inserted", (e) => events.push(`inserted:${e.title}`));
+      await svc.start();
+
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Before" }));
+      events.length = 0; // ignore the seed insert
+
+      const a = svc.clear();
+      const b = svc.clear();
+
+      // Same in-flight operation, returned to both callers.
+      expect(a).toBe(b);
+
+      await Promise.all([a, b]);
+
+      // Single cleared broadcast — no late broadcast from a second
+      // operation finishing later.
+      expect(events).toEqual(["cleared"]);
+      expect(svc.getEntries()).toEqual([]);
+    });
+
+    it("overlapping clears + concurrent insert: one cleared broadcast, deferred insert after", async () => {
+      // The exact divergence the reviewer flagged: while two clears
+      // overlap, a now-playing event arrives. Coalescing means the
+      // single drain runs once; the insert lands AFTER the single
+      // `cleared` broadcast. Server, disk, and clients converge.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      const events: string[] = [];
+      svc.on("cleared", () => events.push("cleared"));
+      svc.on("inserted", (e) => events.push(`inserted:${e.title}`));
+      await svc.start();
+
+      const a = svc.clear();
+      const b = svc.clear();
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "MidClear" }));
+      await Promise.all([a, b]);
+
+      expect(events).toEqual(["cleared", "inserted:MidClear"]);
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["MidClear"]);
+
+      // Disk converges with in-memory.
+      await flushWrites(svc);
+      const persisted = (await readPersisted(filePath)) as Array<{ title: string }>;
+      expect(persisted.map((e) => e.title)).toEqual(["MidClear"]);
+    });
+
     it("rejects and rolls back the in-memory list when persist fails", async () => {
       // Construct an unwritable file path: a directory component
       // points at a regular file, so mkdir(recursive) fails with

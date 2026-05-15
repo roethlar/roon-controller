@@ -1,5 +1,21 @@
 # Dev Log
 
+## 2026-05-15 (still later) — Clear RP: coalesce overlapping clears
+
+Single-flag linearization wasn't enough: two concurrent `clear()` calls (e.g. simultaneous DELETEs from two clients) each queued their own persist, and the first to finish would reset `clearInFlight`, drain the buffer, and broadcast `inserted` — only for the *second* `clear`'s delayed `cleared` to land afterwards. Clients ended up empty while server/disk still held the drained entry. Worse: `persist()` reads `this.entries` lazily, so the second clear's write could capture the post-drain state and persist the inserted entry as part of a "clear" write.
+
+### Fix
+A `pendingClear: Promise<void> | null` coalesces overlapping callers. The first `clear()` starts an internal `runClear()` and stores the resulting promise; subsequent callers return the *same* promise until it settles. So:
+- One persist round-trip, one `cleared` broadcast, one drain.
+- All overlapping callers (e.g. both DELETE responses) resolve from the same outcome — both 200 on success, both 500 on failure with one rollback.
+- `pendingClear` is reset *before* drain so an `inserted`-listener-triggered clear during drain starts a fresh op rather than coalescing into the about-to-finish one.
+
+### Tests (+2, 95 → 97 backend)
+- "coalesces overlapping clear() calls into one persist + one cleared broadcast": two `svc.clear()` calls, asserts `a === b` (same promise) and exactly one `cleared` event.
+- "overlapping clears + concurrent insert: one cleared broadcast, deferred insert after": exact reviewer scenario — two clears overlap while a now-playing event arrives; broadcast order is `["cleared", "inserted:MidClear"]`, final entries `["MidClear"]`, disk converges.
+
+UI still 138. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-15 (later) — Clear RP: linearize concurrent inserts
 
 Review caught the residual concurrency hole the durability fix didn't address: a `now-playing-updated` event arriving between `clear()`'s synchronous in-memory wipe and its awaited persist would mutate `this.entries` back to `[entry]`, fire `inserted` *before* `cleared`, and leave the world inconsistent — `persist()` reads `this.entries` lazily at write time, so the file ended up with the new entry while clients (having processed `inserted` then `cleared` in order) were empty. Rollback was worse: it overwrote the concurrently-inserted entry from memory after that entry had already been broadcast.

@@ -90,6 +90,12 @@ export class RecentlyPlayedService extends EventEmitter {
     zoneId: string;
     nowPlaying: NowPlaying;
   }> = [];
+  // Coalescing handle for overlapping clear() callers (e.g. two
+  // simultaneous DELETEs from different clients). All callers share
+  // one in-flight operation, so there's a single persist, a single
+  // `cleared` broadcast, and a single drain — never a second clear
+  // resetting state mid-drain of the first.
+  private pendingClear: Promise<void> | null = null;
 
   constructor(
     private readonly transportService: TransportService,
@@ -164,21 +170,32 @@ export class RecentlyPlayedService extends EventEmitter {
    * No-op-safe if the list is already empty: still persists + emits,
    * which keeps the operation idempotent across clients.
    */
-  public async clear(): Promise<void> {
+  public clear(): Promise<void> {
+    // Overlapping callers share one in-flight operation. Without
+    // this, a second clear's persist could complete after the
+    // first's drain ran, broadcasting `cleared` after a post-drain
+    // `inserted` and leaving clients out of sync with server/disk.
+    if (this.pendingClear) {
+      return this.pendingClear;
+    }
+    this.pendingClear = this.runClear();
+    return this.pendingClear;
+  }
+
+  private async runClear(): Promise<void> {
     const previous = this.entries;
     this.entries = [];
     // Defer concurrent inserts until we resolve. Without this, a
     // now-playing event arriving during the persist await would mutate
     // `this.entries`, get its own `inserted` broadcast before
-    // `cleared`, and leave clients/server divergent (clients drop the
-    // entry on cleared; server still has it; disk reflects whichever
-    // persist won).
+    // `cleared`, and leave clients/server divergent.
     this.clearInFlight = true;
     try {
       await this.schedulePersistAsync();
     } catch (err) {
       this.entries = previous;
       this.clearInFlight = false;
+      this.pendingClear = null;
       // Drain into the rolled-back list — events that arrived during
       // the failed clear weren't broadcast and shouldn't be lost.
       this.drainPendingInserts();
@@ -186,6 +203,10 @@ export class RecentlyPlayedService extends EventEmitter {
     }
     this.emit("cleared");
     this.clearInFlight = false;
+    // Reset pendingClear BEFORE drain, so a clear triggered from an
+    // `inserted` listener during drain starts a fresh operation
+    // rather than coalescing into the about-to-finish one.
+    this.pendingClear = null;
     // Drain into the post-clear empty list. Each buffered insert
     // runs through the normal handler, so dedup / suppression /
     // persist apply, and `inserted` broadcasts come AFTER `cleared`.
