@@ -31,8 +31,7 @@
 		welcomeStatsStore,
 		loadWelcomeStats,
 		recentlyPlayedStore,
-		clearRecentlyPlayedEntries,
-		socketStatusStore,
+		setRecentlyPlayedEntries,
 		nowPlayingList,
 		type BrowseBreadcrumb,
 		type BrowseHistoryStep
@@ -214,26 +213,27 @@
 	let clearRecentInFlight = $state(false);
 
 	/**
-	 * Wipe the Recently Played list. The server's `recently-played-cleared`
-	 * socket broadcast is the source of truth for the store update —
-	 * an unconditional optimistic clear here would race with a deferred
-	 * `inserted` event from a now-playing update the server drained
-	 * during its clear window (server emits cleared THEN inserted; if
-	 * those land before the HTTP response, an optimistic clear after
-	 * the response wipes the legitimate post-drain entry).
+	 * Wipe the Recently Played list. The DELETE response carries the
+	 * server's authoritative post-drain entries (typically `[]`, but
+	 * if a now-playing event landed during the server's clear window
+	 * those drained inserts come back here). We apply the response
+	 * unconditionally so the initiating client converges to the same
+	 * state as everyone else regardless of socket delivery — broadcast
+	 * dropped, listener threw, status still says connected after a
+	 * silent disconnect, etc.
 	 *
-	 * Only clear locally when the socket can't deliver the broadcast.
-	 * Reconnect-triggered initializeStores() will re-fetch on socket
-	 * recovery, so even the disconnected fallback converges.
+	 * The `cleared` and `inserted` socket events still fire for all
+	 * clients (including this one). They converge to the same final
+	 * state because they ARE this clear's outcome via a different
+	 * transport — the only cost is a brief flicker on the rare
+	 * ordering where the HTTP response wins the race.
 	 */
 	async function clearRecentEntries(): Promise<void> {
 		if (clearRecentInFlight) return;
 		clearRecentInFlight = true;
 		try {
-			await clearRecentlyPlayed(fetch);
-			if (get(socketStatusStore) !== 'connected') {
-				clearRecentlyPlayedEntries();
-			}
+			const entries = await clearRecentlyPlayed(fetch);
+			setRecentlyPlayedEntries(entries);
 		} catch (err) {
 			pushCommandFeedback({
 				source: 'browse',

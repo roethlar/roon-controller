@@ -1,5 +1,27 @@
 # Dev Log
 
+## 2026-05-15 (truly final pass) — Clear RP: authoritative DELETE response
+
+The socket-status gate from the previous pass narrowed the initiator-divergence race but didn't close it: socket status isn't a delivery guarantee. A connected socket whose broadcast got dropped (or whose listener threw silently — see the throwing-`cleared`-listener case) leaves the initiator stale. The opposite race exists too: socket connected at decision time but dropped between socket events landing and the HTTP response resolving.
+
+GPT has been pointing at the right fix the whole time: have the DELETE response carry the post-drain authoritative entries, and have the UI apply that response.
+
+### Fix
+- **Backend**: `DELETE /api/recently-played` returns `{ entries: service.getEntries() }` (live post-drain state) instead of a hardcoded `[]`. If a now-playing event was buffered + drained during clear, it's included.
+- **Frontend client**: `clearRecentlyPlayed(fetch)` returns `Promise<RecentlyPlayedEntry[]>`.
+- **Store**: new `setRecentlyPlayedEntries(entries)` replaces the entries with an authoritative snapshot, bumps `clearGen` (so a stale in-flight load can't repopulate after), keeps `loaded: true`.
+- **UI**: handler applies the response unconditionally; socket-status check removed.
+
+The socket `cleared` and `inserted` broadcasts still fire for all clients (including the initiator). They converge to the same final state because they ARE this clear's outcome via a different transport. The only cost is a brief sub-frame flicker on the rare ordering where the HTTP response wins the race against socket events; eventual state is correct in every ordering, including dropped-broadcast and throwing-listener cases.
+
+### Tests
+- Frontend: "Clear button issues DELETE and applies the empty response" (the common case). "Clear button applies post-drain entries from the DELETE response" (regression for the drain-during-clear race — mock returns `[{title: 'Drained Mid-Clear'}]`, asserts the initiator's store reflects it).
+- Existing backend route test still passes — `getEntries()` returns `[]` in the no-concurrent-insert case.
+- Backend 98, UI 139 (same — rewrote 2 in place).
+
+### Cleanup
+The `socketStatusStore` import in `+page.svelte` is gone; `clearRecentlyPlayedEntries` import too (the UI handler uses `setRecentlyPlayedEntries` now). The `clearRecentlyPlayedEntries` export is still used by the socket-broadcast handler in `register.ts` for non-initiator clients.
+
 ## 2026-05-15 (final pass) — Clear RP: optimistic-clear race + listener-throw isolation
 
 ### 1. Initiator divergence from optimistic clear

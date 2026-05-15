@@ -83,10 +83,15 @@ export async function fetchRecentlyPlayed(
 	return entries;
 }
 
-export async function clearRecentlyPlayed(fetchFn: FetchLike): Promise<void> {
-	await request<{ entries: RecentlyPlayedEntry[] }>(fetchFn, '/api/recently-played', {
-		method: 'DELETE'
-	});
+export async function clearRecentlyPlayed(
+	fetchFn: FetchLike
+): Promise<RecentlyPlayedEntry[]> {
+	const { entries } = await request<{ entries: RecentlyPlayedEntry[] }>(
+		fetchFn,
+		'/api/recently-played',
+		{ method: 'DELETE' }
+	);
+	return entries;
 }
 
 export function browse(fetchFn: FetchLike, options: BrowseOptions): Promise<BrowseResult> {

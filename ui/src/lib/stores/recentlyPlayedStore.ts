@@ -119,6 +119,27 @@ export function clearRecentlyPlayedEntries(): void {
 	internalStore.update((s) => ({ ...s, entries: [], loaded: true }));
 }
 
+/**
+ * Replace the entries with an authoritative snapshot — used by the
+ * Clear button's UI handler when the DELETE response carries the
+ * post-drain entries (which may be `[]` or, if a now-playing event
+ * landed during the server's clear window, the drained insert).
+ *
+ * Bumps clearGen so a stale in-flight load can't repopulate after.
+ * Subsequent `cleared` / `inserted` socket broadcasts (the server
+ * fires both during its clear) still apply normally; they converge
+ * to the same final state because they ARE this clear's outcome
+ * delivered via a different transport.
+ */
+export function setRecentlyPlayedEntries(entries: RecentlyPlayedEntry[]): void {
+	clearGen++;
+	internalStore.update((s) => ({
+		...s,
+		entries: entries.slice(0, CAP),
+		loaded: true
+	}));
+}
+
 export function resetRecentlyPlayed(): void {
 	clearGen++;
 	internalStore.set({ ...initialState });

@@ -13,7 +13,7 @@ import type { BrowseResult, BrowseItem, SearchResult } from '@shared/types';
 
 const apiBrowse = vi.fn<(_fetch: unknown, opts: any) => Promise<BrowseResult>>();
 const apiBrowseLoad = vi.fn<(_fetch: unknown, opts: any) => Promise<BrowseResult>>();
-const apiClearRecentlyPlayed = vi.fn<(_fetch: unknown) => Promise<void>>();
+const apiClearRecentlyPlayed = vi.fn<(_fetch: unknown) => Promise<import('@shared/types').RecentlyPlayedEntry[]>>();
 
 vi.mock('$lib/api/client', () => ({
 	browse: (...args: any[]) => apiBrowse(...(args as [unknown, any])),
@@ -102,7 +102,7 @@ beforeEach(() => {
 	setSelectedZone('');
 	// Default: any apiBrowse call returns an empty browse root.
 	apiBrowse.mockResolvedValue(listResult({ level: 0 }));
-	apiClearRecentlyPlayed.mockResolvedValue(undefined);
+	apiClearRecentlyPlayed.mockResolvedValue([]);
 });
 
 // ---------------- Tests ----------------
@@ -2275,11 +2275,9 @@ describe('Library page — Recently Played tile click', () => {
 		});
 	});
 
-	it('Clear button issues DELETE and (with disconnected socket) optimistically empties', async () => {
-		// Default socketStatusStore is 'connecting', so the UI handler's
-		// optimistic-clear path runs and the store empties locally
-		// without waiting for a broadcast — the right behavior when
-		// the socket can't deliver one.
+	it('Clear button issues DELETE and applies the empty response', async () => {
+		// The server returns its post-drain entries. In the common
+		// case (no concurrent now-playing during clear), that's [].
 		render(LibraryPage);
 		await tick();
 
@@ -2299,16 +2297,24 @@ describe('Library page — Recently Played tile click', () => {
 		expect(screen.queryByRole('button', { name: /Play 'Hey Jude'/i })).toBeNull();
 	});
 
-	it('Clear button does NOT optimistically empty when socket is connected (broadcast is the source of truth)', async () => {
-		// With the socket connected, the server's broadcast
-		// `recently-played-cleared` will sync the store. An
-		// unconditional optimistic clear here would race with a
-		// deferred `inserted` event from a now-playing update the
-		// server drained during its clear window, causing
-		// initiator/server divergence. Verify the optimistic clear
-		// is suppressed.
-		const { setSocketStatus } = await import('$lib/stores/socketStatusStore');
-		setSocketStatus('connected');
+	it('Clear button applies post-drain entries from the DELETE response', async () => {
+		// If a now-playing event landed during the server's clear
+		// window, clear() drains it onto the empty list before
+		// resolving — getEntries() then returns the drained insert.
+		// The UI applies the response unconditionally, so the
+		// initiator's view matches server/disk regardless of whether
+		// the socket events arrived first, last, or were dropped.
+		const drainedEntry: import('@shared/types').RecentlyPlayedEntry = {
+			title: 'Drained Mid-Clear',
+			artist: 'Some Artist',
+			album: 'Some Album',
+			duration: 200,
+			image_key: 'img-d',
+			zone_id: 'zone-a',
+			zone_name: 'Living Room',
+			played_at: '2026-05-15T12:00:00.000Z'
+		};
+		apiClearRecentlyPlayed.mockResolvedValueOnce([drainedEntry]);
 
 		render(LibraryPage);
 		await tick();
@@ -2320,15 +2326,12 @@ describe('Library page — Recently Played tile click', () => {
 			expect(apiClearRecentlyPlayed).toHaveBeenCalledTimes(1);
 		});
 
-		// Tile still rendered — the broadcast handler hasn't fired
-		// (this test doesn't simulate the socket round-trip), and
-		// the UI didn't optimistically remove it.
 		const { recentlyPlayedStore } = await import('$lib/stores/recentlyPlayedStore');
-		expect(get(recentlyPlayedStore).entries).toHaveLength(1);
-		expect(screen.queryByRole('button', { name: /Play 'Hey Jude'/i })).not.toBeNull();
-
-		// Restore default for sibling tests.
-		setSocketStatus('connecting');
+		await waitFor(() => {
+			expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
+				'Drained Mid-Clear'
+			]);
+		});
 	});
 
 	it('Clear button surfaces a feedback toast when the DELETE fails', async () => {

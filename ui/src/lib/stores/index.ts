@@ -53,6 +53,7 @@ export {
 	loadRecentlyPlayed,
 	appendRecentlyPlayedFromSocket,
 	clearRecentlyPlayedEntries,
+	setRecentlyPlayedEntries,
 	resetRecentlyPlayed,
 	type RecentlyPlayedState
 } from './recentlyPlayedStore';

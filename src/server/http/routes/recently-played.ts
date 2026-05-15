@@ -29,7 +29,13 @@ export const createRecentlyPlayedRouter = (
       // A 200 here means every other client will agree the list is
       // empty AND the change survives a restart.
       await service.clear();
-      res.json({ entries: [] });
+      // Return the LIVE post-drain state, not a hardcoded []. clear()
+      // also drains any now-playing events that buffered during its
+      // persist window — those land on top of the empty list before
+      // we get here. Returning getEntries() lets the caller apply the
+      // authoritative truth instead of guessing whether a deferred
+      // `inserted` socket event will (or already did) arrive.
+      res.json({ entries: service.getEntries() });
     } catch (error) {
       next(error);
     }
