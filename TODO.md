@@ -302,7 +302,8 @@
 - [ ] Live verification carryover from earlier PRs: search drill + remount (Phase A); `<album> by <artist>` resolver hits/misses (Phase B); composer/work flow doesn't auto-play; queue positional updates.
 - [ ] **Redeploy required**: `sudo ./scripts/install.sh --reinstall` to pick up PR1.
 - [x] PR2 from the UX overhaul plan: now-playing overlay (feat-2), album page polish — artist/year chips (feat-3) — both verified 2026-05-16
-- [x] PR3: zone grouping (feat-5) + standby/wake — backend transport methods (feat-4), modal grouping UI (feat-5), per-output standby/wake button (feat-6) — all verified or queued 2026-05-16
+- [ ] PR3: zone grouping + standby/wake — backend transport methods (feat-4 verified 2026-05-16), modal grouping UI (feat-5 verified 2026-05-16) shipped; standby/wake button (feat-6) is in-flight — currently queued with the reopen-P1 fix that honors the types.ts ZoneOutput contract (single supports_standby control → button, multiple → deferred nested menu)
+  - [ ] Follow-up: multi-control per-output standby menu (deferred from feat-6 reopen)
 - [x] Cached-key fast path on rail clicks — `cachedKey` + `cachedAncestorKeys` populated by resolver, layout walks chain to keep Roon session stack aligned with UI history (perf-1 verified 2026-05-16)
 - [x] Layout-integration tests (R7 residual risk): header search submit + mobile hamburger + rail click from /queue all in `routes/__tests__/layout.test.ts`
 
