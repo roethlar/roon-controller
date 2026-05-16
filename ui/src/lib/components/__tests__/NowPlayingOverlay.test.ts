@@ -201,21 +201,147 @@ describe('NowPlayingOverlay', () => {
 		expect(onOpenAlbum).toHaveBeenCalledTimes(1);
 	});
 
-	it('Volume slider emits transport:volume for absolute zones', async () => {
+	it('Volume slider coalesces multiple input events into one emit per animation frame', async () => {
+		// feat-2 reopen P2: the prior implementation emitted on every
+		// range `input`, flooding Roon with per-pixel volume calls
+		// during a drag. The play bar's rAF throttling pattern is
+		// duplicated here.
 		seedActiveZone();
-		render(NowPlayingOverlay);
-		openNowPlayingOverlay();
-		await tick();
 
-		const slider = screen.getByLabelText('Volume') as HTMLInputElement;
-		slider.value = '70';
-		await fireEvent.input(slider);
+		const rafCallbacks: FrameRequestCallback[] = [];
+		const rafSpy = vi
+			.spyOn(window, 'requestAnimationFrame')
+			.mockImplementation((cb) => {
+				rafCallbacks.push(cb);
+				return rafCallbacks.length;
+			});
+		try {
+			render(NowPlayingOverlay);
+			openNowPlayingOverlay();
+			await tick();
 
-		expect(emitWithAck).toHaveBeenCalledWith(
-			fakeSocket,
-			'transport:volume',
-			expect.objectContaining({ output_id: 'out-a', value: 70 }),
-			expect.any(Object)
-		);
+			const slider = screen.getByLabelText('Volume') as HTMLInputElement;
+			slider.value = '60';
+			await fireEvent.input(slider);
+			slider.value = '65';
+			await fireEvent.input(slider);
+			slider.value = '70';
+			await fireEvent.input(slider);
+
+			// No emit before the rAF fires; ONE rAF queued.
+			expect(emitWithAck).not.toHaveBeenCalled();
+			expect(rafCallbacks).toHaveLength(1);
+
+			// Fire the rAF — should emit ONCE with the LATEST value.
+			rafCallbacks[0](performance.now());
+			await tick();
+			expect(emitWithAck).toHaveBeenCalledTimes(1);
+			expect(emitWithAck).toHaveBeenCalledWith(
+				fakeSocket,
+				'transport:volume',
+				expect.objectContaining({ output_id: 'out-a', value: 70 }),
+				expect.any(Object)
+			);
+		} finally {
+			rafSpy.mockRestore();
+		}
+	});
+
+	describe('focus management (feat-2 reopen P1)', () => {
+		it('moves focus into the dialog on open', async () => {
+			seedActiveZone();
+
+			// Create an opener button outside the overlay and focus
+			// it before opening. Simulates the play-bar artwork being
+			// the trigger.
+			const opener = document.createElement('button');
+			opener.textContent = 'Open';
+			document.body.appendChild(opener);
+			opener.focus();
+			expect(document.activeElement).toBe(opener);
+
+			render(NowPlayingOverlay);
+			openNowPlayingOverlay();
+			await tick();
+			// One extra tick for the effect → tick().then() chain that
+			// moves focus.
+			await tick();
+			await new Promise((r) => setTimeout(r, 0));
+
+			// Close button takes initial focus.
+			const closeBtn = screen.getByRole('button', { name: 'Close now playing' });
+			expect(document.activeElement).toBe(closeBtn);
+
+			document.body.removeChild(opener);
+		});
+
+		it('restores focus to the opener on close', async () => {
+			seedActiveZone();
+			const opener = document.createElement('button');
+			opener.textContent = 'Open';
+			document.body.appendChild(opener);
+			opener.focus();
+
+			render(NowPlayingOverlay);
+			openNowPlayingOverlay();
+			await tick();
+			await tick();
+			await new Promise((r) => setTimeout(r, 0));
+
+			closeNowPlayingOverlay();
+			await tick();
+
+			expect(document.activeElement).toBe(opener);
+			document.body.removeChild(opener);
+		});
+
+		it('Tab from the last focusable wraps to the first (forward cycle)', async () => {
+			seedActiveZone();
+			render(NowPlayingOverlay);
+			openNowPlayingOverlay();
+			await tick();
+			await tick();
+			await new Promise((r) => setTimeout(r, 0));
+
+			// Walk the focusable list manually so the test doesn't
+			// depend on DOM order which can shift with markup changes.
+			const dialog = screen.getByRole('dialog', { name: 'Now playing' });
+			const focusables = Array.from(
+				dialog.querySelectorAll<HTMLElement>(
+					'button:not([disabled]), input:not([disabled])'
+				)
+			);
+			expect(focusables.length).toBeGreaterThan(1);
+			const first = focusables[0];
+			const last = focusables[focusables.length - 1];
+
+			last.focus();
+			expect(document.activeElement).toBe(last);
+
+			await fireEvent.keyDown(window, { key: 'Tab' });
+			expect(document.activeElement).toBe(first);
+		});
+
+		it('Shift+Tab from the first focusable wraps to the last (backward cycle)', async () => {
+			seedActiveZone();
+			render(NowPlayingOverlay);
+			openNowPlayingOverlay();
+			await tick();
+			await tick();
+			await new Promise((r) => setTimeout(r, 0));
+
+			const dialog = screen.getByRole('dialog', { name: 'Now playing' });
+			const focusables = Array.from(
+				dialog.querySelectorAll<HTMLElement>(
+					'button:not([disabled]), input:not([disabled])'
+				)
+			);
+			const first = focusables[0];
+			const last = focusables[focusables.length - 1];
+
+			first.focus();
+			await fireEvent.keyDown(window, { key: 'Tab', shiftKey: true });
+			expect(document.activeElement).toBe(last);
+		});
 	});
 });

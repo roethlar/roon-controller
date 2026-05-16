@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { get } from 'svelte/store';
 	import { nowPlayingOverlayStore, closeNowPlayingOverlay } from '$lib/stores/nowPlayingOverlayStore';
 	import { nowPlayingList } from '$lib/stores/nowPlayingStore';
@@ -121,16 +121,80 @@
 		onOpenAlbum?.();
 	}
 
+	// Refs for focus management. `dialogEl` is the modal container we
+	// move focus into on open; `previouslyFocused` is the element that
+	// owned focus before the overlay opened, restored on close.
+	let dialogEl: HTMLDivElement | null = $state(null);
+	let previouslyFocused: HTMLElement | null = null;
+
 	// Esc key closes the overlay. The listener is attached only while
 	// open to avoid mass-firing on every keydown in the app.
 	onMount(() => {
 		const handler = (e: KeyboardEvent) => {
-			if (e.key === 'Escape' && get(nowPlayingOverlayStore)) {
+			if (!get(nowPlayingOverlayStore)) return;
+			if (e.key === 'Escape') {
 				closeNowPlayingOverlay();
+			} else if (e.key === 'Tab' && dialogEl) {
+				// Focus trap: keep Tab cycling inside the dialog so a
+				// keyboard user can't reach controls underneath the
+				// backdrop. Build a fresh focusable list per keydown
+				// because button enable/disable state can change as
+				// the underlying zone updates.
+				const focusables = getFocusable(dialogEl);
+				if (focusables.length === 0) {
+					e.preventDefault();
+					dialogEl.focus();
+					return;
+				}
+				const first = focusables[0];
+				const last = focusables[focusables.length - 1];
+				const active = document.activeElement as HTMLElement | null;
+				if (e.shiftKey && active === first) {
+					e.preventDefault();
+					last.focus();
+				} else if (!e.shiftKey && active === last) {
+					e.preventDefault();
+					first.focus();
+				} else if (active && !dialogEl.contains(active)) {
+					// Focus escaped the dialog somehow (e.g. external
+					// script). Pull it back to the first focusable.
+					e.preventDefault();
+					first.focus();
+				}
 			}
 		};
 		window.addEventListener('keydown', handler);
 		return () => window.removeEventListener('keydown', handler);
+	});
+
+	function getFocusable(root: HTMLElement): HTMLElement[] {
+		const selector =
+			'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+		return Array.from(root.querySelectorAll<HTMLElement>(selector));
+	}
+
+	// Reactively handle open/close transitions for focus.
+	// On open: snapshot the prior focus owner, move focus into the
+	// dialog. On close: restore focus to the opener (if still in the
+	// document). Use the store value as the trigger — derived on
+	// every change of `nowPlayingOverlayStore`.
+	$effect(() => {
+		const open = $nowPlayingOverlayStore;
+		if (open) {
+			previouslyFocused = document.activeElement as HTMLElement | null;
+			void tick().then(() => {
+				if (!dialogEl) return;
+				// Prefer the close button for first focus — predictable
+				// landing spot, common modal pattern.
+				const closeBtn = dialogEl.querySelector<HTMLElement>(
+					'.np-close'
+				);
+				(closeBtn ?? dialogEl).focus();
+			});
+		} else if (previouslyFocused && document.body.contains(previouslyFocused)) {
+			previouslyFocused.focus();
+			previouslyFocused = null;
+		}
 	});
 
 	// Volume control mirrors the play-bar's. Same derivation logic:
@@ -158,13 +222,33 @@
 		sendVolume(delta);
 	}
 
-	// Slider is unthrottled inside the overlay (one user, one drag at
-	// a time) — the play-bar's rAF coalescing is duplicative for the
-	// brief overlay session. If we observe spam in practice, revisit.
+	// rAF-throttled volume slider — mirrors the play-bar's pattern.
+	// Without this, native range drag fires `input` per pixel,
+	// flooding Roon with transport:volume emits and triggering the
+	// stale-ack toast storm. We coalesce to one emit per animation
+	// frame (max 60Hz) and always send the LATEST pending value,
+	// including the final drag position. The +/- buttons stay as
+	// direct sendVolume() calls because they're discrete clicks, not
+	// drag.
+	let pendingVolume: number | null = null;
+	let volumeRafId: number | null = null;
+
+	function flushVolume() {
+		volumeRafId = null;
+		if (pendingVolume === null) return;
+		const value = pendingVolume;
+		pendingVolume = null;
+		sendVolume(value);
+	}
+
 	function onVolumeSlide(e: Event) {
 		const target = e.currentTarget as HTMLInputElement;
 		const value = Number(target.value);
-		if (Number.isFinite(value)) sendVolume(value);
+		if (!Number.isFinite(value)) return;
+		pendingVolume = value;
+		if (volumeRafId === null) {
+			volumeRafId = requestAnimationFrame(flushVolume);
+		}
 	}
 </script>
 
@@ -177,6 +261,7 @@
 		aria-modal="true"
 		aria-label="Now playing"
 		tabindex="-1"
+		bind:this={dialogEl}
 		onclick={onBackdropClick}
 	>
 		<div class="np-dialog">
