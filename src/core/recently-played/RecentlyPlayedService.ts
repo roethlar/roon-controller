@@ -159,21 +159,57 @@ export class RecentlyPlayedService extends EventEmitter {
 
   private async doStart(): Promise<void> {
     const myToken = ++this.startToken;
-    await this.loadFromDisk();
+    // Optimistically clear degraded so a stop()+start() cycle can
+    // recover after an admin fixes the file. If the new read still
+    // fails, we'll set it back below. (Within a single in-flight
+    // start, this assignment is fine — readFromDisk is pure and
+    // can't observe it.)
+    this.degraded = false;
 
-    // Cancellation check: stop() (or stop+start) during loadFromDisk
-    // bumped the token. Don't attach a listener — the caller wanted
-    // the service stopped or restarted, and a stale handler here
-    // would leak state into whatever the new run produces.
+    // PURE read — no mutation, no persist. Side effects deferred
+    // until after the cancellation check so a stop+start during the
+    // file read doesn't burn a generation or write entries that the
+    // caller has already given up on.
+    const loaded = await this.readFromDisk();
+
+    // Cancellation check: stop() (or stop+start) during the read
+    // bumped the token. Discard the result entirely — don't apply
+    // entries, don't bump epoch, don't persist, don't attach. The
+    // follow-up start (already chained behind this one or running
+    // concurrently in a later tick) is the effective restart.
     if (myToken !== this.startToken) return;
 
-    // Degraded: persisted state is untrusted (corrupt file, missing
-    // generation, or eager persist failed). Attaching the listener
-    // would let inserts mutate this.entries and trigger
-    // schedulePersist — which would overwrite the corrupt file with
-    // { entries, generation: 0 }, destroying the only evidence of
-    // the prior state and resetting the epoch.
-    if (this.degraded) return;
+    this.entries = loaded.entries;
+
+    if (loaded.degradedReason) {
+      // Persisted state is untrusted (corrupt file, bad shape,
+      // missing/invalid generation, read error). Don't bump epoch,
+      // don't persist (would overwrite the unreadable file with our
+      // empty view), don't attach the listener (would let inserts
+      // mutate + persist the same way).
+      this.degraded = true;
+      return;
+    }
+
+    // Monotonic-and-persisted epoch: bump from the read generation
+    // and commit before exposing the new epoch via the listener.
+    // Eager-persist failure = degraded (uncommitted epoch would let
+    // a future restart reuse it).
+    this.epoch = loaded.generation + 1;
+    try {
+      await this.schedulePersistAsync();
+    } catch (err) {
+      this.degraded = true;
+      this.logger.warn(
+        { err, filePath: this.filePath },
+        "RecentlyPlayedService: eager generation persist failed — entering degraded mode (routes will 503, broadcasts suppressed)"
+      );
+      return;
+    }
+
+    // Recheck after the eager persist's await. A stop() during that
+    // await must also cancel the listener attach.
+    if (myToken !== this.startToken) return;
 
     this.nowPlayingHandler = (data) => {
       try {
@@ -233,11 +269,20 @@ export class RecentlyPlayedService extends EventEmitter {
   }
 
   /**
-   * True if the eager generation persist at startup failed. The
-   * service still functions in memory but its epoch is uncommitted
-   * — serving in this state risks an epoch-repeat after restart,
-   * which would let clients reject the new server as stale. Callers
-   * (HTTP routes, socket broadcasters) should refuse to serve.
+   * True when the service can't safely sync state with clients.
+   * Triggers: corrupt JSON, missing/invalid `entries`, missing or
+   * malformed `generation`, non-ENOENT read failure, or eager-persist
+   * failure at startup. In any of these cases the persisted epoch is
+   * either unknown or uncommitted, so serving would risk an epoch
+   * repeat / reset and clients carrying a higher lastApplied epoch
+   * from a prior boot would reject our events as stale.
+   *
+   * In degraded mode the service does NOT ingest now-playing events
+   * (listener not attached) and `clear()` rejects, so the corrupt
+   * file is left untouched for inspection / restore. Routes return
+   * 503; socket broadcasts are suppressed in server.ts. Recovery:
+   * fix the file, then `stop()` + `start()` re-attempts a clean
+   * load (in-process recovery), or restart the process.
    */
   public isDegraded(): boolean {
     return this.degraded;
@@ -471,7 +516,17 @@ export class RecentlyPlayedService extends EventEmitter {
 
   // ── Persistence ───────────────────────────────────────────────────
 
-  private async loadFromDisk(): Promise<void> {
+  /**
+   * Read + parse the persisted file. PURE — no instance state is
+   * mutated, no persist is scheduled. doStart calls this, then
+   * applies the result (or discards it on cancellation) so a
+   * cancelled startup can't leak side effects into a follow-up run.
+   */
+  private async readFromDisk(): Promise<{
+    entries: RecentlyPlayedEntry[];
+    generation: number;
+    degradedReason: string | undefined;
+  }> {
     let rawEntries: unknown[] = [];
     let persistedGeneration = 0;
     let degradedReason: string | undefined;
@@ -482,50 +537,34 @@ export class RecentlyPlayedService extends EventEmitter {
       try {
         parsed = JSON.parse(raw);
       } catch (err) {
-        // Corrupt JSON: we can't recover the previous generation. If
-        // we silently reset to 0, clients with higher lastApplied
-        // epochs from before the corruption would reject our events
-        // as stale (or worse, the same epoch would be reused). Degrade
-        // so routes 503 instead — the file stays untouched so it can
-        // be inspected/restored.
+        // Corrupt JSON: we can't recover the previous generation.
+        // Reset would let clients with higher lastApplied reject our
+        // events as stale (or reuse an epoch). Degrade — the file
+        // stays untouched for inspection / restore.
         degradedReason = `JSON parse failure (${(err as Error).message})`;
       }
       if (parsed !== undefined) {
-        // Format detection: bare array is the legacy shape; object
-        // with `entries` is the current shape that also carries
-        // `generation`. Generation is extracted independently of the
-        // entries shape — a file like `{ "generation": 12 }` with no
-        // valid entries still preserves the generation (we'd degrade
-        // on entries but the monotonic guarantee survives).
         if (Array.isArray(parsed)) {
           // Legacy bare-array format (pre-generation tracking).
-          // generation == 0 here is correct — nothing was ever
-          // committed, so the next start can safely bump to 1.
+          // generation == 0 is correct — nothing was ever committed.
           rawEntries = parsed;
         } else if (parsed && typeof parsed === "object") {
           const obj = parsed as { entries?: unknown; generation?: unknown };
-          // Strict generation validation: must be a non-negative
-          // safe integer. Coercing floats with Math.floor or
-          // clamping negatives to 0 would silently move epoch
-          // backward, which is the exact bug we're guarding against.
+          // Strict generation validation: non-negative safe integer
+          // only. Coercing floats with Math.floor or clamping
+          // negatives to 0 would silently move epoch backward.
           const generationValid =
             typeof obj.generation === "number" &&
             Number.isSafeInteger(obj.generation) &&
             obj.generation >= 0;
           // Preserve generation if valid, even when entries are
-          // missing — lets a follow-up clean run pick up the file
-          // without losing the monotonic guarantee.
+          // missing — lets a follow-up clean run keep the chain.
           if (generationValid) {
             persistedGeneration = obj.generation as number;
           }
           if (!Array.isArray(obj.entries)) {
             degradedReason = "missing or invalid `entries` array";
           } else if (!generationValid) {
-            // Object-shape files MUST carry a valid generation —
-            // anything we'd write looks like this, so a missing or
-            // malformed field (negative, non-integer, NaN, string)
-            // means manual edit, partial truncation, or a future-
-            // version schema we don't understand. Don't accept it.
             degradedReason = "missing or invalid `generation` field";
             rawEntries = obj.entries;
           } else {
@@ -546,7 +585,6 @@ export class RecentlyPlayedService extends EventEmitter {
     }
 
     if (degradedReason) {
-      this.degraded = true;
       this.logger.warn(
         { reason: degradedReason, filePath: this.filePath },
         "RecentlyPlayedService: persisted state unreadable — entering degraded mode (routes will 503, broadcasts suppressed)"
@@ -556,37 +594,15 @@ export class RecentlyPlayedService extends EventEmitter {
     // Dedupe on load: a file written before move-to-front dedup
     // existed can hold duplicates. Without this they'd surface via
     // /api/recently-played until each track happened to replay.
-    this.entries = dedupeRecentlyPlayed(
+    const entries = dedupeRecentlyPlayed(
       rawEntries.filter((it): it is RecentlyPlayedEntry => isPlausibleEntry(it))
     ).slice(0, this.cap);
 
-    // Skip the eager persist when degraded — overwriting a corrupt
-    // file with our (potentially-empty) view would lose any
-    // recoverable state. Routes are 503 anyway; the next clean
-    // startup will pick up wherever the user/admin restored to.
-    if (this.degraded) {
-      return;
-    }
-
-    // Monotonic-and-persisted epoch: increment the persisted
-    // generation and write it back BEFORE start() returns. If we
-    // crash before any state change, the next start increments again,
-    // so clients always see a fresh epoch — never a repeated one.
-    //
-    // If the eager persist fails, we enter degraded mode: the
-    // in-memory epoch is set but uncommitted, so a subsequent restart
-    // could reuse it and break the monotonic guarantee that clients
-    // rely on.
-    this.epoch = persistedGeneration + 1;
-    try {
-      await this.schedulePersistAsync();
-    } catch (err) {
-      this.degraded = true;
-      this.logger.warn(
-        { err, filePath: this.filePath },
-        "RecentlyPlayedService: eager generation persist failed — entering degraded mode (routes will 503, broadcasts suppressed)"
-      );
-    }
+    return {
+      entries,
+      generation: persistedGeneration,
+      degradedReason,
+    };
   }
 
   /**

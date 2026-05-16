@@ -1,5 +1,29 @@
 # Dev Log
 
+## 2026-05-16 (genuinely the last) — RP: side-effect-free read + recoverable degraded + stale doc
+
+Three more findings, all real:
+
+### P1 — Concurrent doStart runs could skip generations
+`loadFromDisk` mutated state (set entries, bumped epoch, eagerly persisted) inside the function, so a cancelled `doStart` still left side effects on disk. `start(); stop(); start()` during the read could end up with two `doStart`s racing the file: doStart1 reads gen=N, persists gen=N+1, doStart2 then reads gen=N+1 and bumps to N+2 — generations skipped, two writes.
+
+Fix: split into `readFromDisk` (pure — parse + validate, no mutation) and `doStart` (apply state + bump + persist only after the cancellation check). doStart1's cancelled run discards its parsed result entirely; doStart2 is the sole bumper. Exactly one generation advances per stop/start cycle.
+
+### P2 — Degraded state was sticky for the process lifetime
+Once `degraded` was set, nothing cleared it. Even `stop()` + `start()` couldn't recover (doStart still returned early on the stale flag). Admins fixing a corrupt file had to restart the whole process.
+
+Fix: `doStart` optimistically clears `degraded` at the top. If the new read fails, it gets set back. Otherwise the service recovers cleanly. Process restart is no longer the only recovery path.
+
+### P3 — Stale isDegraded doc
+The doc still described `degraded` as "eager generation persist failed at startup" and "service still functions in memory." Updated to enumerate all triggers (corrupt JSON, missing/invalid entries, missing/malformed generation, non-ENOENT read failure, eager-persist failure) and the actual semantics (listener not attached, `clear()` rejects, routes 503, file untouched; recovery via stop+start with a fixed file, or process restart).
+
+### Tests (+2, 108 → 110)
+- "start(); stop(); start() during in-flight startup: one listener + one generation bump for the effective restart" — verified deterministically by counting `fs.writeFile` calls scoped to this service's file. Expects exactly 1 write (doStart2's persist) and `epoch === 1` (no skip from 0 → 1 → 2).
+- "stop() + start() recovers from degraded mode if the file gets fixed in between" — corrupt file → degraded; fix file with `{ entries: [], generation: 5 }`; stop+start → `degraded` false, `epoch === 6`, listener works.
+- Verified both behavior changes are load-bearing by temporarily reverting the cancellation check and the degraded reset separately; both tests failed exactly as expected.
+
+UI 147 unchanged. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-16 (one final round) — RP: strict generation int + clear gated on degraded + test fix
 
 Three findings on the previous round, all real:

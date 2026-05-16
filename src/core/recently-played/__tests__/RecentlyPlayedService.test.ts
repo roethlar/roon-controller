@@ -910,6 +910,92 @@ describe("RecentlyPlayedService", () => {
       expect(svc.getEntries().map((e) => e.title)).toEqual(["A"]);
     });
 
+    it("start(); stop(); start() during in-flight startup: one listener + one generation bump for the effective restart", async () => {
+      // Race: doStart1 captures token, awaits readFromDisk; stop()
+      // bumps the token + clears the memo; start() launches doStart2
+      // before doStart1 resumes. doStart1 must NOT bump epoch or
+      // persist — only doStart2 (the effective restart) should.
+      // Verified deterministically by spying on fs.writeFile and
+      // counting persist calls: should be exactly 1 (doStart2's
+      // eager generation persist), not 2.
+      const filePath = await makeTmpPath();
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+
+      const writeSpy = jest.spyOn(fs, "writeFile");
+      try {
+        const p1 = svc.start();
+        svc.stop();
+        const p2 = svc.start();
+        await Promise.all([p1, p2]);
+
+        // Filter to writes targeting THIS service's tmp file. Other
+        // fs.writeFile calls in the process (e.g., test scaffolding,
+        // other tests' parallel work even in --runInBand if shared
+        // module state caused leaks) shouldn't pollute the count.
+        const ourWrites = writeSpy.mock.calls.filter(
+          ([path]) => typeof path === "string" && path.startsWith(filePath)
+        );
+        // Exactly one eager persist for the effective restart.
+        // doStart1 cancelled before its bump, so it queued nothing.
+        expect(ourWrites).toHaveLength(1);
+
+        // Exactly one bump (no skipped generations).
+        expect(svc.getEpoch()).toBe(1);
+
+        // Exactly one listener. A doubled listener would emit
+        // `inserted` twice for the same event.
+        const inserts: unknown[] = [];
+        svc.on("inserted", (e) => inserts.push(e));
+        transport.fireNowPlaying(
+          "zone-a",
+          nowPlaying({ title: "After Restart" })
+        );
+        expect(inserts).toHaveLength(1);
+      } finally {
+        writeSpy.mockRestore();
+      }
+    });
+
+    it("stop() + start() recovers from degraded mode if the file gets fixed in between", async () => {
+      // Degraded should not be a process-lifetime sticky state — an
+      // in-process restart (e.g., during admin recovery) must be able
+      // to clear it once the underlying problem is resolved.
+      const filePath = await makeTmpPath();
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, "{ not json", "utf-8");
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      await svc.start();
+      expect(svc.isDegraded()).toBe(true);
+
+      // Admin fixes the file (or restores from backup).
+      svc.stop();
+      await fs.writeFile(
+        filePath,
+        JSON.stringify({ entries: [], generation: 5 }),
+        "utf-8"
+      );
+      await svc.start();
+
+      expect(svc.isDegraded()).toBe(false);
+      // Generation bumped from the fixed file's 5 → 6.
+      expect(svc.getEpoch()).toBe(6);
+
+      // Listener attached again — ingestion works.
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Recovered" }));
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["Recovered"]);
+    });
+
     it("stop() during in-flight start() cancels listener attach", async () => {
       // Without a cancellation token, an in-flight doStart resuming
       // after stop() would still attach its listener, leaving a
