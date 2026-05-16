@@ -264,8 +264,8 @@
 - [x] Stubs for `$app/navigation` + `$app/stores` so vite's resolver doesn't fail on direct `+layout.svelte` imports
 - [x] `ui/src/routes/__tests__/layout.test.ts`: header search submit (R7 fix), mobile hamburger, Explore rail click on /library, Explore rail click from /queue, play-bar artist click (R7 `searchQuery` regression guard)
 - [x] 5 new tests (125 → 130 UI total)
-- [ ] Follow-up — shared test fixtures: `listResult` / `makeItem` / `fakeSocket` are now duplicated between `library/__tests__/page.test.ts`, `routes/__tests__/layout.test.ts`, and `lib/components/__tests__/Search.test.ts`. Worth factoring into `ui/src/test/fixtures/`.
-- [ ] Follow-up — secondary layout surfaces: volume slider, theme toggle, transport controls (play/pause/next/prev/seek), `openAlbumOfNowPlaying`. Not flagged as regression risk today but they have zero coverage.
+- [x] Follow-up — shared test fixtures: `listResult` / `makeItem` / `fakeSocket` now live in `ui/src/test/fixtures/{browse,socket}.ts` (chore-2 verified 2026-05-16)
+- [x] Follow-up — secondary layout surfaces: transport controls (play/pause/next/prev), volume slider rAF coalescing, hamburger toggle, header search submit all covered in `routes/__tests__/layout.test.ts` (chore-3 secondary tests 2026-05-16)
 
 ## Recently Played, locally tracked (done — see DEVLOG)
 - [x] Confirmed via full hierarchy probe + RoonApiBrowse docs that recent-activity is not in the public API
@@ -301,10 +301,10 @@
   - [ ] Queue button still works from the play bar
 - [ ] Live verification carryover from earlier PRs: search drill + remount (Phase A); `<album> by <artist>` resolver hits/misses (Phase B); composer/work flow doesn't auto-play; queue positional updates.
 - [ ] **Redeploy required**: `sudo ./scripts/install.sh --reinstall` to pick up PR1.
-- [ ] PR2 from the UX overhaul plan: now-playing overlay, album page polish.
-- [ ] PR3: zone grouping + standby/wake.
-- [ ] Cached-key fast path on rail clicks if label-walk latency is noticeable in practice.
-- [ ] Layout-integration tests (R7 residual risk): header search submission, rail click from /queue, mobile hamburger behavior.
+- [x] PR2 from the UX overhaul plan: now-playing overlay (feat-2), album page polish — artist/year chips (feat-3) — both verified 2026-05-16
+- [x] PR3: zone grouping (feat-5) + standby/wake — backend transport methods (feat-4), modal grouping UI (feat-5), per-output standby/wake button (feat-6) — all verified or queued 2026-05-16
+- [x] Cached-key fast path on rail clicks — `cachedKey` + `cachedAncestorKeys` populated by resolver, layout walks chain to keep Roon session stack aligned with UI history (perf-1 verified 2026-05-16)
+- [x] Layout-integration tests (R7 residual risk): header search submit + mobile hamburger + rail click from /queue all in `routes/__tests__/layout.test.ts`
 
 ## Documentation / Collaboration
 - [x] Maintain `DEVLOG.md`
