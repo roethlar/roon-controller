@@ -256,6 +256,18 @@ export class RecentlyPlayedService extends EventEmitter {
    * which keeps the operation idempotent across clients.
    */
   public clear(): Promise<void> {
+    // Refuse when degraded. The HTTP route already guards DELETE
+    // and 503s, but the invariant belongs in the service too — a
+    // future internal caller (or a misuse from elsewhere in the
+    // process) would otherwise mutate entries + runClear's persist
+    // would overwrite the corrupt-but-preserved file with
+    // { entries: [], generation: <uncommitted> }, undoing the
+    // "leave it alone" guarantee that degraded mode provides.
+    if (this.degraded) {
+      return Promise.reject(
+        new Error("RecentlyPlayedService is degraded; clear() refused")
+      );
+    }
     // Overlapping callers share one in-flight operation. Without
     // this, a second clear's persist could complete after the
     // first's drain ran, broadcasting `cleared` after a post-drain
@@ -492,23 +504,28 @@ export class RecentlyPlayedService extends EventEmitter {
           rawEntries = parsed;
         } else if (parsed && typeof parsed === "object") {
           const obj = parsed as { entries?: unknown; generation?: unknown };
-          // Always extract generation if present, even when we'll end
-          // up degrading on entries — preserves the monotonic
-          // guarantee if a follow-up clean run picks up the file.
-          if (typeof obj.generation === "number" && Number.isFinite(obj.generation)) {
-            persistedGeneration = Math.max(0, Math.floor(obj.generation));
+          // Strict generation validation: must be a non-negative
+          // safe integer. Coercing floats with Math.floor or
+          // clamping negatives to 0 would silently move epoch
+          // backward, which is the exact bug we're guarding against.
+          const generationValid =
+            typeof obj.generation === "number" &&
+            Number.isSafeInteger(obj.generation) &&
+            obj.generation >= 0;
+          // Preserve generation if valid, even when entries are
+          // missing — lets a follow-up clean run pick up the file
+          // without losing the monotonic guarantee.
+          if (generationValid) {
+            persistedGeneration = obj.generation as number;
           }
           if (!Array.isArray(obj.entries)) {
             degradedReason = "missing or invalid `entries` array";
-          } else if (
-            typeof obj.generation !== "number" ||
-            !Number.isFinite(obj.generation)
-          ) {
+          } else if (!generationValid) {
             // Object-shape files MUST carry a valid generation —
-            // anything we'd write looks like this, so a missing
-            // field means manual edit, partial truncation, or a
-            // future-version schema we don't understand. Resetting
-            // to 0 would let epoch move backward.
+            // anything we'd write looks like this, so a missing or
+            // malformed field (negative, non-integer, NaN, string)
+            // means manual edit, partial truncation, or a future-
+            // version schema we don't understand. Don't accept it.
             degradedReason = "missing or invalid `generation` field";
             rawEntries = obj.entries;
           } else {

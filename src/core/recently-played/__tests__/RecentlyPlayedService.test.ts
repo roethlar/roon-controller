@@ -698,10 +698,15 @@ describe("RecentlyPlayedService", () => {
       expect(await fs.readFile(filePath, "utf-8")).toBe(garbage);
     });
 
-    it("degrades when JSON is an object but missing the entries array", async () => {
+    it("degrades when JSON is an object missing the entries array", async () => {
+      // Generation present but no entries — the file isn't usable as
+      // a snapshot. Degrade. The generation IS extracted internally
+      // (so a follow-up clean run picks up the monotonic chain), but
+      // we don't expose that here — just that the service refuses
+      // to serve.
       const filePath = await makeTmpPath();
       await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, JSON.stringify({ entries: [] }), "utf-8");
+      await fs.writeFile(filePath, JSON.stringify({ generation: 12 }), "utf-8");
 
       const transport = new FakeTransport();
       const svc = new RecentlyPlayedService(
@@ -711,14 +716,10 @@ describe("RecentlyPlayedService", () => {
       );
       await svc.start();
 
-      // `{ entries: [] }` is an object shape WITHOUT a valid
-      // `generation` field — degrades (a missing generation would
-      // otherwise reset epoch to 1, moving it backward for clients
-      // carrying higher lastApplied values from a prior boot).
       expect(svc.isDegraded()).toBe(true);
     });
 
-    it("degrades on an object file without a valid generation field even when entries are present", async () => {
+    it("degrades on an object file with entries but no generation field", async () => {
       // Same shape the service writes, MINUS generation. Could
       // happen via manual edit, partial truncation, or a schema we
       // don't recognize. Don't silently reset.
@@ -743,6 +744,60 @@ describe("RecentlyPlayedService", () => {
       await svc.start();
 
       expect(svc.isDegraded()).toBe(true);
+    });
+
+    it("degrades when `generation` is malformed (negative, float, or NaN-shaped)", async () => {
+      // Math.floor + Math.max(0, ...) coercion would silently turn
+      // -1 into 0 and 12.5 into 12, both of which lose the monotonic
+      // guarantee. Strict validation: non-negative safe integer or
+      // degrade.
+      const cases = [
+        { generation: -1, entries: [] },
+        { generation: 12.5, entries: [] },
+        { generation: Number.NaN, entries: [] },
+        { generation: "12", entries: [] },
+        { generation: Number.MAX_SAFE_INTEGER + 1, entries: [] }, // unsafe
+      ];
+
+      for (const payload of cases) {
+        const filePath = await makeTmpPath();
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.writeFile(filePath, JSON.stringify(payload), "utf-8");
+
+        const transport = new FakeTransport();
+        const svc = new RecentlyPlayedService(
+          transport as unknown as TransportService,
+          mockLogger,
+          { filePath }
+        );
+        await svc.start();
+        expect(svc.isDegraded()).toBe(true);
+      }
+    });
+
+    it("clear() rejects when degraded so the persisted file isn't overwritten", async () => {
+      // The route already 503s, but the invariant belongs in the
+      // service too — protects against any future caller (or
+      // misuse) that bypasses the route layer.
+      const filePath = await makeTmpPath();
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      const garbage = "{ not json";
+      await fs.writeFile(filePath, garbage, "utf-8");
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      await svc.start();
+      expect(svc.isDegraded()).toBe(true);
+
+      await expect(svc.clear()).rejects.toThrow(/degraded/);
+
+      // File untouched.
+      await flushWrites(svc);
+      expect(await fs.readFile(filePath, "utf-8")).toBe(garbage);
     });
 
     it("dedupes legacy duplicates from the persisted file on load", async () => {

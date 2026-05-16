@@ -1,5 +1,32 @@
 # Dev Log
 
+## 2026-05-16 (one final round) — RP: strict generation int + clear gated on degraded + test fix
+
+Three findings on the previous round, all real:
+
+### P1 — generation validation still allowed epoch rollback
+The prior commit accepted any finite number via `typeof obj.generation === "number" && Number.isFinite(...)`, then ran `Math.max(0, Math.floor(...))`. A file with `generation: -1` or `12.5` was silently coerced to `0` or `12` — same epoch-reset hole, just one layer deeper.
+
+Fix: validate as a non-negative safe integer (`Number.isSafeInteger(g) && g >= 0`). No coercion. Negative, float, NaN, string, or unsafe-integer values now degrade.
+
+### P2 — `clear()` could bypass degraded mode
+Degraded blocked the listener attach and routes returned 503, but the service's own `clear()` had no guard. A direct or future internal caller would mutate entries + persist would write `{ entries: [], generation: <uncommitted> }` over the corrupt-but-preserved file.
+
+Fix: `clear()` rejects with `"RecentlyPlayedService is degraded; clear() refused"` when degraded. The invariant lives in the service now; the route guard is defense-in-depth.
+
+### P3 — mislabeled "missing entries array" test
+The test was named for the missing-entries case but wrote `{ entries: [] }` — which actually exercises the missing-generation path. Both bugs (lying name, no coverage of the real case) were live in the file.
+
+Fix: renamed and rewrote the existing test to actually cover missing entries (`{ generation: 12 }` without an `entries` field). Added a separate malformed-generation test covering five cases (negative, float, NaN, string, unsafe-integer) and a `clear()-rejects-when-degraded` test that reads the file back to assert it's untouched.
+
+### Tests (+2, 106 → 108)
+- "degrades when JSON is an object missing the entries array" — actually covers what the label claims.
+- "degrades when `generation` is malformed (negative, float, or NaN-shaped)" — table-driven, 5 cases.
+- "clear() rejects when degraded so the persisted file isn't overwritten" — reads bytes back to verify.
+- Verified both behavior changes are load-bearing by temporarily reverting the strict generation validation and the clear guard separately; corresponding tests failed exactly as expected.
+
+UI 147 unchanged. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-16 (truly one more) — RP: degraded suppresses ingest + generation required + stop cancels in-flight start
 
 Three real gaps in the prior commit:
