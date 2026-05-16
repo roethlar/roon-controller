@@ -26,9 +26,10 @@
 	import {
 		browseStore,
 		setBrowseLoading,
-		clearBrowseLoading,
 		setBrowseResult,
-		setSearchLoading
+		setSearchLoading,
+		snapshotBrowseView,
+		restoreBrowseView
 	} from '$lib/stores/browseStore';
 	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
 	import { goto } from '$app/navigation';
@@ -424,17 +425,17 @@
 		// back stack wiped. Now state mutations are deferred until the
 		// whole label-walk succeeds — on any failure (catch OR stale-
 		// label early return), we revert to the snapshot.
-		const priorState = onLibrary ? get(browseStore) : null;
-		const priorCurrent = priorState?.current ?? null;
-		const priorHierarchy = priorState?.hierarchy;
+		//
+		// The snapshot covers current + hierarchy + loading + error
+		// (see snapshotBrowseView). The optimistic setBrowseLoading
+		// below clears `error`, so a user looking at a prior error
+		// pane must get that error back on failure — not a blank
+		// welcome view. (M-1 reopen: review caught error-pane loss.)
+		const priorSnapshot = onLibrary ? snapshotBrowseView(get(browseStore)) : null;
 
 		const restorePriorView = () => {
-			if (!onLibrary) return;
-			if (priorCurrent) {
-				setBrowseResult(priorCurrent, priorHierarchy);
-			} else {
-				clearBrowseLoading();
-			}
+			if (!onLibrary || !priorSnapshot) return;
+			restoreBrowseView(priorSnapshot);
 		};
 
 		try {

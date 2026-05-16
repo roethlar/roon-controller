@@ -129,6 +129,49 @@ export function setBrowseError(message: string): void {
 	}));
 }
 
+/**
+ * Snapshot of the visible-pane slice — what a viewer sees in the
+ * browse pane: current result, hierarchy, loading flag, and error
+ * banner. Used by failure-rollback paths that need to restore the
+ * pane to exactly what it showed before an optimistic mutation.
+ *
+ * Deliberately does NOT include the search-pane state
+ * (lastSearch/searchLoading/searchError) — those are owned by a
+ * different surface and have their own setters.
+ */
+export interface BrowseViewSnapshot {
+	current: BrowseResult | null;
+	hierarchy: string;
+	loading: boolean;
+	error: string | null;
+}
+
+export function snapshotBrowseView(state: BrowseState): BrowseViewSnapshot {
+	return {
+		current: state.current,
+		hierarchy: state.hierarchy,
+		loading: state.loading,
+		error: state.error
+	};
+}
+
+/**
+ * Restore the four visible-pane fields from a prior snapshot. Used
+ * by rail/play-bar navigation failure paths to undo an optimistic
+ * `setBrowseLoading` so the user returns to whatever was visible
+ * before they clicked. Other browse fields (search state) are
+ * preserved.
+ */
+export function restoreBrowseView(prev: BrowseViewSnapshot): void {
+	internalStore.update((state) => ({
+		...state,
+		current: prev.current,
+		hierarchy: prev.hierarchy,
+		loading: prev.loading,
+		error: prev.error
+	}));
+}
+
 export function resetBrowse(): void {
 	internalStore.set(initialState);
 }

@@ -84,7 +84,8 @@ import {
 	resetBrowse,
 	browseStore,
 	setBrowseResult,
-	setSearchLoading
+	setSearchLoading,
+	setBrowseError
 } from '$lib/stores/browseStore';
 
 function listResult(over: Partial<BrowseResult> = {}): BrowseResult {
@@ -470,6 +471,57 @@ describe('Layout — Explore rail click', () => {
 		const store3 = get(browseStore);
 		expect(store3.loading).toBe(false);
 		expect(store3.current).toBe(priorResult);
+	});
+
+	it('M-1 reopen: prior error pane is restored on rail-click failure (not blanked)', async () => {
+		// Reopen finding: the initial M-1 fix snapshotted only
+		// current + hierarchy. setBrowseLoading clears error, so a
+		// user looking at an error pane saw the error disappear on a
+		// failed rail click — replaced by a blank welcome view. The
+		// snapshot must capture loading + error too.
+		railWritable.set({
+			entries: [
+				{ id: 'rail-albums', label: 'Albums', labelPath: ['Albums'], isEmpty: false }
+			],
+			loading: false,
+			error: null
+		});
+
+		// Seed prior history. The pane is in the error state — no
+		// current result, error banner visible.
+		pushHistory({ hierarchy: 'browse', itemKey: 'prior-key' }, undefined, {
+			title: 'Prior Page'
+		});
+		setBrowseError('Roon Core unreachable');
+
+		const before = get(browseStore);
+		expect(before.error).toBe('Roon Core unreachable');
+		expect(before.current).toBeNull();
+
+		// First apiBrowse fails.
+		apiBrowse.mockRejectedValueOnce(new Error('REST blew up'));
+
+		renderLayout();
+		const railBtn = await screen.findByRole('button', { name: 'Albums' });
+		await fireEvent.click(railBtn);
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import(
+				'$lib/stores/commandFeedbackStore'
+			);
+			expect(get(commandFeedbackStore)?.message).toMatch(
+				/Rail navigation failed/i
+			);
+		});
+
+		// Prior history preserved AND prior error banner preserved.
+		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual([
+			'prior-key'
+		]);
+		const store = get(browseStore);
+		expect(store.error).toBe('Roon Core unreachable');
+		expect(store.current).toBeNull();
+		expect(store.loading).toBe(false);
 	});
 });
 
