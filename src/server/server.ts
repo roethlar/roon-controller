@@ -141,7 +141,12 @@ export const startServer = (
   // Clients track the highest revision they've applied and discard
   // anything not strictly newer — closes races where socket events
   // and REST responses arrive out of server-emit order.
+  //
+  // Suppressed in degraded mode (eager generation persist failed):
+  // emitting with an uncommitted epoch would let clients adopt state
+  // that can't survive a restart without epoch reuse.
   recentlyPlayedService.on("inserted", (entry) => {
+    if (recentlyPlayedService.isDegraded()) return;
     socketContext.io.emit("recently-played-inserted", {
       entry,
       revision: recentlyPlayedService.getRevision(),
@@ -152,6 +157,7 @@ export const startServer = (
   // A user-initiated wipe — broadcast so every client's list empties,
   // not just the one that issued the DELETE.
   recentlyPlayedService.on("cleared", () => {
+    if (recentlyPlayedService.isDegraded()) return;
     socketContext.io.emit("recently-played-cleared", {
       revision: recentlyPlayedService.getRevision(),
       epoch: recentlyPlayedService.getEpoch(),
@@ -170,23 +176,37 @@ export const startServer = (
   // not broadcast globally, so REST-initiated browse calls don't
   // interfere with clients' navigation state.
 
-  // Start all services
+  // Start the sync services immediately; defer httpServer.listen until
+  // RP has finished its async startup (loadFromDisk + eager generation
+  // persist). Without this, GET /api/recently-played served during the
+  // startup window would return the sentinel { entries: [], revision:
+  // 0, epoch: 0 } and a DELETE in the same window would race the
+  // load + clobber persisted history with empty epoch-0 state.
   roonClient.start();
   transportService.start();
   imageService.start();
-  void recentlyPlayedService.start().catch((err) => {
-    logger.warn(
-      { err },
-      "RecentlyPlayedService failed to start; recently-played list disabled"
-    );
-  });
-
-  httpServer.listen(config.port, config.host, () => {
-    logger.info(
-      { host: config.host, port: config.port },
-      "HTTP server listening"
-    );
-  });
+  void recentlyPlayedService.start().then(
+    () => {
+      httpServer.listen(config.port, config.host, () => {
+        logger.info(
+          { host: config.host, port: config.port },
+          "HTTP server listening"
+        );
+      });
+    },
+    (err) => {
+      // Shouldn't happen — RecentlyPlayedService.start swallows all
+      // failure modes internally (load errors recover as empty;
+      // eager-persist failures set degraded mode). Defensive: log,
+      // exit. Without this, an unexpected throw would silently leave
+      // the HTTP server never starting.
+      logger.error(
+        { err },
+        "RecentlyPlayedService.start unexpectedly rejected; HTTP server not started"
+      );
+      process.exit(1);
+    }
+  );
 
   return {
     httpServer,

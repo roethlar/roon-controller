@@ -104,6 +104,27 @@ describe('HTTP app routing', () => {
     expect(body.entries[0].title).toBe('Test Track');
   });
 
+  it('GET /api/recently-played returns 503 when the service is degraded', async () => {
+    // Force the degraded flag (in production this happens when the
+    // eager generation persist fails at startup). Routes must refuse
+    // to serve from a service whose epoch isn't durable — serving
+    // would let clients adopt state that can't survive a restart.
+    const svc = app.recentlyPlayed as unknown as { degraded: boolean };
+    const saved = svc.degraded;
+    svc.degraded = true;
+    try {
+      const res = await fetch(`${app.url}/api/recently-played`);
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/degraded/i);
+
+      const delRes = await fetch(`${app.url}/api/recently-played`, { method: 'DELETE' });
+      expect(delRes.status).toBe(503);
+    } finally {
+      svc.degraded = saved;
+    }
+  });
+
   it('DELETE /api/recently-played wipes the list', async () => {
     // Seed one entry, confirm it lands, then DELETE and confirm empty.
     const transport = (app.recentlyPlayed as any).transportService;

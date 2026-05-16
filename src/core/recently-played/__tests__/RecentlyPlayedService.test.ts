@@ -773,6 +773,57 @@ describe("RecentlyPlayedService", () => {
       expect(raw2.generation).toBe(2);
     });
 
+    it("start() is idempotent — second call returns the same promise and does NOT re-bump generation", async () => {
+      // Now that loadFromDisk persists an incremented generation,
+      // repeated start() calls would otherwise advance the epoch
+      // every time AND reload disk over current in-memory state.
+      const filePath = await makeTmpPath();
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+
+      const p1 = svc.start();
+      const p2 = svc.start();
+      expect(p1).toBe(p2);
+      await p1;
+      expect(svc.getEpoch()).toBe(1);
+
+      // Mutate via an insert (revision should advance).
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
+      expect(svc.getRevision()).toBe(1);
+
+      // Repeated start() must NOT reload disk over the in-memory
+      // entry or bump epoch.
+      await svc.start();
+      expect(svc.getEpoch()).toBe(1);
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["A"]);
+    });
+
+    it("enters degraded mode when the eager generation persist fails", async () => {
+      // Unwritable path: file-as-parent-dir trick → mkdir ENOTDIR
+      // during the eager persist.
+      const tmpdir = await fs.mkdtemp(path.join(os.tmpdir(), "rp-degraded-"));
+      const blocker = path.join(tmpdir, "blocker");
+      await fs.writeFile(blocker, "");
+      const badPath = path.join(blocker, "recently-played.json");
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath: badPath }
+      );
+
+      expect(svc.isDegraded()).toBe(false);
+      await svc.start();
+      // Eager persist failed → degraded so callers (routes / socket
+      // emit handlers) can refuse to serve from the uncommitted epoch.
+      expect(svc.isDegraded()).toBe(true);
+    });
+
     it("migrates a legacy bare-array file to the new {entries, generation} shape", async () => {
       const filePath = await makeTmpPath();
       await fs.mkdir(path.dirname(filePath), { recursive: true });

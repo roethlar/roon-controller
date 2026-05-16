@@ -221,11 +221,20 @@ export interface RecentlyPlayedEntry {
  * deltas, including the case where the snapshot is at the same
  * revision as the latest applied delta).
  *
- * `epoch` is a per-server-process ID (millisecond timestamp at boot)
- * that lets clients detect server restart: when the server's counter
- * resets to 0 a fresh client with `lastApplied: 100` would otherwise
- * reject everything until the new process caught up. Different epoch =
- * new authority — clients adopt it and reset their revision tracking.
+ * `epoch` is a STRICTLY MONOTONIC per-server-process generation
+ * persisted to disk alongside entries and incremented on every
+ * service start. Clients order events by epoch first, revision
+ * second: strictly-newer epoch = new server instance (adopt, and
+ * deltas wipe local state first since they don't carry a baseline);
+ * strictly-older epoch = stale in-flight payload (reject); equal
+ * epoch = same instance, fall through to revision.
+ *
+ * The persisted-monotonic property is correctness-critical — a
+ * repeated or backward-moving epoch would let a fresh server's
+ * rev-0 events be rejected as stale by clients carrying higher
+ * lastApplied revisions from a prior boot. `Date.now()` is too weak
+ * (clock jumps, same-ms restart); the persisted generation is what
+ * guarantees the property.
  */
 export interface RecentlyPlayedSync {
   revision: number;

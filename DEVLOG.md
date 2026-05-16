@@ -1,5 +1,34 @@
 # Dev Log
 
+## 2026-05-16 (the last one, really) — RP: await-before-serve + degraded mode + idempotent start
+
+Four follow-up findings on the persisted-epoch commit:
+
+### P1 — routes served before `start()` completed
+`server.ts` did `void rps.start()` then `httpServer.listen()`. A request hitting `/api/recently-played` during the startup window got the sentinel `{ entries: [], revision: 0, epoch: 0 }` and a DELETE could race the load to persist empty epoch-0 state over real history. Fix: defer `httpServer.listen()` until `recentlyPlayedService.start()` resolves.
+
+### P1 — eager-persist failure silently broke epoch monotonicity
+Previously the eager `schedulePersistAsync` failure was logged and swallowed; the in-memory epoch was bumped but disk still held the old generation. On restart, the same epoch could be reused — and clients carrying a higher `lastApplied` revision from a prior boot would reject the new server's events as stale.
+
+Fix: a new `degraded` flag is set when the eager persist fails. Routes return **503** when degraded; socket emit subscribers in `server.ts` suppress broadcasts. The failure surfaces visibly (the frontend's fetch error path leaves the existing store alone) instead of silently serving from a poisoned epoch. Recovery: fix the disk, restart.
+
+### P2 — `start()` not idempotent after the persist change
+`loadFromDisk` now bumps + persists generation, but `start()` would run it again on every call. Fix: `start()` memoizes a `startPromise` so repeated calls return the same promise. doc updated to match.
+
+### P3 — stale shared-types comment
+The `RecentlyPlayedSync` comment still described `epoch` as a millisecond timestamp with "different epoch = adopt." Rewrote to document the actual contract: strictly monotonic persisted generation, strictly-newer adopted, strictly-older rejected.
+
+### Missing feature (deferred)
+GPT suggested a `/api/health` surface exposing `ready`, `epoch`, `revision`, `last persist error`. Not addressed in this commit — it's a new product surface, not a bug fix. Easy to add later.
+
+### Tests (+3 backend, 100 → 103)
+- "start() is idempotent — second call returns the same promise and does NOT re-bump generation."
+- "enters degraded mode when the eager generation persist fails" — unwritable path, asserts `isDegraded()` true after start.
+- "GET /api/recently-played returns 503 when the service is degraded" — both GET and DELETE checked.
+- Verified the idempotency test is load-bearing by temporarily removing the memo guard; test failed as expected.
+
+UI 147 (unchanged). svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-16 (really truly final) — RP: persisted monotonic epoch + strict ordering
 
 Three flaws in the previous epoch design that the reviewer caught:

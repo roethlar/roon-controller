@@ -112,6 +112,17 @@ export class RecentlyPlayedService extends EventEmitter {
   // depends on epoch ordering being trustworthy.
   private revision = 0;
   private epoch = 0;
+  // Memoized so start() is idempotent — repeated calls return the
+  // same promise instead of re-running loadFromDisk (which would
+  // bump generation and reload disk over the live in-memory state).
+  private startPromise: Promise<void> | null = null;
+  // Set when the eager generation persist at startup fails. The
+  // service is "running" but its epoch hasn't been committed to
+  // disk; if we kept serving, a restart could reuse the same epoch
+  // and clients with prior state would reject new events as stale.
+  // Routes/socket emits gate on this so the failure is visible
+  // (503 / no broadcast) instead of silent corruption.
+  private degraded = false;
 
   constructor(
     private readonly transportService: TransportService,
@@ -130,25 +141,31 @@ export class RecentlyPlayedService extends EventEmitter {
 
   /**
    * Load the persisted list (if any) and start listening for
-   * now-playing-updated events. Safe to call multiple times — the
-   * second call is a no-op for the listener registration.
+   * now-playing-updated events. Idempotent: repeated calls return the
+   * same promise — important now that `loadFromDisk` bumps + persists
+   * the generation, which would otherwise advance the epoch every
+   * call AND reload disk over current in-memory state.
    */
-  public async start(): Promise<void> {
+  public start(): Promise<void> {
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.doStart();
+    return this.startPromise;
+  }
+
+  private async doStart(): Promise<void> {
     await this.loadFromDisk();
 
-    if (!this.nowPlayingHandler) {
-      this.nowPlayingHandler = (data) => {
-        try {
-          this.handleNowPlaying(data.zone_id, data.now_playing);
-        } catch (err) {
-          this.logger.warn(
-            { err },
-            "RecentlyPlayedService: handler crashed; entry skipped"
-          );
-        }
-      };
-      this.transportService.on("now-playing-updated", this.nowPlayingHandler);
-    }
+    this.nowPlayingHandler = (data) => {
+      try {
+        this.handleNowPlaying(data.zone_id, data.now_playing);
+      } catch (err) {
+        this.logger.warn(
+          { err },
+          "RecentlyPlayedService: handler crashed; entry skipped"
+        );
+      }
+    };
+    this.transportService.on("now-playing-updated", this.nowPlayingHandler);
   }
 
   /** Detach the now-playing listener. Idempotent. */
@@ -182,6 +199,17 @@ export class RecentlyPlayedService extends EventEmitter {
   /** Per-process identifier; lets clients detect a server restart. */
   public getEpoch(): number {
     return this.epoch;
+  }
+
+  /**
+   * True if the eager generation persist at startup failed. The
+   * service still functions in memory but its epoch is uncommitted
+   * — serving in this state risks an epoch-repeat after restart,
+   * which would let clients reject the new server as stale. Callers
+   * (HTTP routes, socket broadcasters) should refuse to serve.
+   */
+  public isDegraded(): boolean {
+    return this.degraded;
   }
 
   /**
@@ -456,18 +484,20 @@ export class RecentlyPlayedService extends EventEmitter {
     // crash before any state change, the next start increments again,
     // so clients always see a fresh epoch — never a repeated one.
     //
-    // The eager persist is best-effort: a permission/disk failure
-    // here is logged but doesn't block startup (matching the rest of
-    // the service's "in-memory still authoritative on persist
-    // failure" stance). Tests pin this behavior with an unwritable
-    // filepath.
+    // If the eager persist fails, we enter `degraded` mode: the
+    // in-memory epoch is set but uncommitted, so a subsequent restart
+    // could reuse it and break the monotonic guarantee that clients
+    // rely on. Rather than silently serve from a poisoned epoch we
+    // mark degraded; routes return 503 and socket emits are
+    // suppressed by the wiring in server.ts.
     this.epoch = persistedGeneration + 1;
     try {
       await this.schedulePersistAsync();
     } catch (err) {
+      this.degraded = true;
       this.logger.warn(
         { err, filePath: this.filePath },
-        "RecentlyPlayedService: eager generation persist failed; in-memory epoch still set"
+        "RecentlyPlayedService: eager generation persist failed — entering degraded mode (routes will 503, broadcasts suppressed)"
       );
     }
   }

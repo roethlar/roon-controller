@@ -14,8 +14,23 @@ export const createRecentlyPlayedRouter = (
 ): Router => {
   const router = Router();
 
+  // Degraded mode: the eager generation persist at startup failed,
+  // so the in-memory epoch isn't durable. Serving in this state
+  // risks an epoch reuse on the next restart, which would let
+  // clients reject the new server's events as stale. 503 is the
+  // clear signal — the frontend's fetch error path leaves the
+  // existing store contents alone.
+  const guardDegraded = (res: Response): boolean => {
+    if (!service.isDegraded()) return false;
+    res
+      .status(503)
+      .json({ error: "Recently played unavailable (persistence degraded)" });
+    return true;
+  };
+
   router.get("/", (_req: Request, res: Response, next: NextFunction) => {
     try {
+      if (guardDegraded(res)) return;
       res.json({
         entries: service.getEntries(),
         revision: service.getRevision(),
@@ -28,6 +43,7 @@ export const createRecentlyPlayedRouter = (
 
   router.delete("/", async (_req: Request, res: Response, next: NextFunction) => {
     try {
+      if (guardDegraded(res)) return;
       // Await durability: the service only emits `cleared` (which
       // triggers the socket broadcast) after the file write commits.
       // A 200 here means the clear committed and the file survived,
