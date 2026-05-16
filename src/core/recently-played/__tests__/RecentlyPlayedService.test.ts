@@ -740,6 +740,78 @@ describe("RecentlyPlayedService", () => {
       expect(svc.getRevision()).toBe(revAfterA + 1);
       expect(svc.getEntries().map((e) => e.title)).toEqual(["B", "A"]);
     });
+
+    it("M-3 reopen: clear() and insert() FIFO-serialize on insertChain (no shared-revision broadcast)", async () => {
+      // Reviewer race: clear was not on insertChain, so it could
+      // start during the await between an insert's mutation and its
+      // emit. Two ops would land at the same revision when the
+      // server listener read getRevision() at emit time.
+      // Now clear runs inside insertChain, so the order is:
+      // insert.run -> clear.run, with distinct revisions.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath, suppressionWindowMs: 0 }
+      );
+      const events: Array<{ kind: string; rev: number }> = [];
+      svc.on("inserted", () => events.push({ kind: "inserted", rev: svc.getRevision() }));
+      svc.on("cleared", () => events.push({ kind: "cleared", rev: svc.getRevision() }));
+      await svc.start();
+
+      // Fire insert + clear back-to-back. With serialization the
+      // insert's run (including its emit) completes before clear's
+      // run starts.
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Track-A" }));
+      const clearPromise = svc.clear();
+      await clearPromise;
+      await flushWrites(svc);
+
+      expect(events.map((e) => e.kind)).toEqual(["inserted", "cleared"]);
+      // Distinct revisions: insert bumped to 1, clear bumped to 2.
+      expect(events[0].rev).toBe(1);
+      expect(events[1].rev).toBe(2);
+      expect(events[0].rev).not.toBe(events[1].rev);
+      expect(svc.getEntries()).toEqual([]);
+    });
+
+    it("M-3 reopen: insert rollback cannot clobber a queued clear's revision", async () => {
+      // Reviewer race #2: if insert's persist failed AFTER clear()
+      // had already started and bumped revision, the rollback would
+      // overwrite the clear's revision. Now the rollback runs to
+      // completion before clear's chain entry even starts, so the
+      // sequence is insert.rollback (rev=0) -> clear.mutate (rev=1).
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath, suppressionWindowMs: 0 }
+      );
+      const events: Array<{ kind: string; rev: number }> = [];
+      svc.on("inserted", () => events.push({ kind: "inserted", rev: svc.getRevision() }));
+      svc.on("cleared", () => events.push({ kind: "cleared", rev: svc.getRevision() }));
+      await svc.start();
+
+      const writeSpy = jest
+        .spyOn(fs, "writeFile")
+        .mockRejectedValueOnce(new Error("insert persist failure"));
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Doomed" }));
+      // Don't await between the fire and the clear — that's the
+      // whole point of the race.
+      const clearPromise = svc.clear();
+      await clearPromise;
+      writeSpy.mockRestore();
+      await flushWrites(svc);
+
+      // Insert's persist failed -> rollback, no emit, no rev bump.
+      // Clear ran next on the chain, started from rev=0, bumped to
+      // rev=1, persist succeeded, emitted.
+      expect(events).toEqual([{ kind: "cleared", rev: 1 }]);
+      expect(svc.getRevision()).toBe(1);
+      expect(svc.getEntries()).toEqual([]);
+    });
   });
 
   describe("persistence + recovery", () => {

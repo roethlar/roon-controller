@@ -28,8 +28,19 @@ export const createRecentlyPlayedRouter = (
     return true;
   };
 
-  router.get("/", (_req: Request, res: Response, next: NextFunction) => {
+  router.get("/", async (_req: Request, res: Response, next: NextFunction) => {
     try {
+      if (guardDegraded(res)) return;
+      // M-3 reopen P2: getEntries() / getRevision() expose
+      // mid-operation state — an insert mutates entries + bumps
+      // revision before its persist resolves, and a persist failure
+      // rolls both back. Serving that uncommitted snapshot would
+      // hand the client a revision that later vanishes with no
+      // socket event to undo it. Await the insert+write chains so
+      // every entry in the response is durable on disk.
+      await service.flush();
+      // Re-check degraded after flush — an in-flight start could
+      // have flipped the flag while we were waiting.
       if (guardDegraded(res)) return;
       res.json({
         entries: service.getEntries(),

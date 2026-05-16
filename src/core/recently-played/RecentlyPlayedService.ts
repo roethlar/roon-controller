@@ -85,23 +85,14 @@ export class RecentlyPlayedService extends EventEmitter {
   }) => void;
   private zoneNameLookup: (zoneId: string) => string | undefined = () =>
     undefined;
-  // Linearization for clear(): while a clear is awaiting persist,
-  // incoming now-playing events are buffered (not mutated into
-  // `this.entries` and not broadcast). After clear resolves we drain
-  // the buffer through the normal handler. This guarantees the
-  // observed broadcast order is `cleared` then any post-clear
-  // `inserted`s, and that clear's persist writes the truly-empty
-  // list rather than a list a concurrent insert mutated mid-await.
-  private clearInFlight = false;
-  private pendingDuringClear: Array<{
-    zoneId: string;
-    nowPlaying: NowPlaying;
-  }> = [];
   // Coalescing handle for overlapping clear() callers (e.g. two
   // simultaneous DELETEs from different clients). All callers share
-  // one in-flight operation, so there's a single persist, a single
-  // `cleared` broadcast, and a single drain — never a second clear
-  // resetting state mid-drain of the first.
+  // one chain entry, so there's a single persist + single `cleared`
+  // broadcast. After M-3 reopen, clear() runs inside `insertChain`
+  // (see clear() / runClear()), so the prior `clearInFlight` +
+  // `pendingDuringClear` buffer machinery is no longer needed —
+  // concurrent inserts naturally serialize behind the clear's chain
+  // entry and run after `cleared` is emitted.
   private pendingClear: Promise<void> | null = null;
   // Monotonic revision counter. Bumped on every state change (insert
   // / clear). Clients track the highest revision they've applied and
@@ -299,6 +290,7 @@ export class RecentlyPlayedService extends EventEmitter {
     return this.degraded;
   }
 
+  /**
    * Most recent persist failure, if any — for /api/health
    * diagnostics. Undefined when the last persist succeeded (or no
    * persist has been attempted yet). Doesn't gate route behavior;
@@ -338,102 +330,79 @@ export class RecentlyPlayedService extends EventEmitter {
    *
    * No-op-safe if the list is already empty: still persists + emits,
    * which keeps the operation idempotent across clients.
+   *
+   * M-3 reopen: clear() is enqueued onto the SAME `insertChain` as
+   * inserts so the two operations FIFO-serialize. Without this, an
+   * insert's mutation could land in the gap between clear's mutation
+   * and clear's emit (or vice versa), letting the server broadcast
+   * different operations stamped with the same revision. Coalescing
+   * (`pendingClear`) is preserved so concurrent DELETE callers share
+   * one chain entry rather than queueing N independent clears.
    */
   public clear(): Promise<void> {
-    // Refuse when degraded. The HTTP route already guards DELETE
-    // and 503s, but the invariant belongs in the service too — a
-    // future internal caller (or a misuse from elsewhere in the
-    // process) would otherwise mutate entries + runClear's persist
-    // would overwrite the corrupt-but-preserved file with
-    // { entries: [], generation: <uncommitted> }, undoing the
-    // "leave it alone" guarantee that degraded mode provides.
     if (this.degraded) {
       return Promise.reject(
         new Error("RecentlyPlayedService is degraded; clear() refused")
       );
     }
-    // Overlapping callers share one in-flight operation. Without
-    // this, a second clear's persist could complete after the
-    // first's drain ran, broadcasting `cleared` after a post-drain
-    // `inserted` and leaving clients out of sync with server/disk.
     if (this.pendingClear) {
       return this.pendingClear;
     }
-    this.pendingClear = this.runClear();
-    return this.pendingClear;
+    const op = this.insertChain
+      .catch(() => undefined)
+      .then(() => this.runClear());
+    // Track on insertChain so any subsequent insert (or another
+    // clear() after this one resolves) sequences behind us.
+    this.insertChain = op.catch(() => undefined);
+    this.pendingClear = op;
+    op.finally(() => {
+      if (this.pendingClear === op) this.pendingClear = null;
+    }).catch(() => undefined);
+    return op;
   }
 
   private async runClear(): Promise<void> {
-    const previous = this.entries;
+    const previousEntries = this.entries;
     const previousRevision = this.revision;
     this.entries = [];
     this.revision++;
-    // Defer concurrent inserts until we resolve. Without this, a
-    // now-playing event arriving during the persist await would mutate
-    // `this.entries`, get its own `inserted` broadcast before
-    // `cleared`, and leave clients/server divergent.
-    this.clearInFlight = true;
-    let persistError: Error | undefined;
+
     try {
       await this.schedulePersistAsync();
     } catch (err) {
-      persistError = err instanceof Error ? err : new Error(String(err));
-      this.entries = previous;
+      // Roll back so in-memory matches disk and clients never see a
+      // phantom clear. Re-throw so the DELETE route surfaces the
+      // failure as a 500.
+      this.entries = previousEntries;
       this.revision = previousRevision;
+      throw err;
     }
 
-    // State reset MUST run regardless of what listeners do — a
-    // throwing `cleared` or `inserted` listener (or our own emit)
-    // shouldn't leave clearInFlight stuck true and pendingClear
-    // pinned to a rejected promise. Without this, future inserts
-    // buffer forever and future clears coalesce into the dead op.
     try {
-      if (!persistError) {
-        try {
-          this.emit("cleared");
-        } catch (err) {
-          this.logger.warn(
-            { err },
-            "RecentlyPlayedService: 'cleared' listener threw; broadcast may be incomplete"
-          );
-        }
-      }
-    } finally {
-      this.clearInFlight = false;
-      // Reset pendingClear BEFORE drain, so a clear triggered from an
-      // `inserted` listener during drain starts a fresh operation
-      // rather than coalescing into the about-to-finish one.
-      this.pendingClear = null;
-      // Drain through the normal handler. On success the buffer
-      // drains into the post-clear empty list (so `inserted` lands
-      // after `cleared`); on failure it drains into the rolled-back
-      // list (events that arrived weren't broadcast and shouldn't
-      // be lost). drainPendingInserts already wraps each call.
-      this.drainPendingInserts();
-    }
-
-    if (persistError) {
-      throw persistError;
+      this.emit("cleared");
+    } catch (err) {
+      this.logger.warn(
+        { err },
+        "RecentlyPlayedService: 'cleared' listener threw; broadcast may be incomplete"
+      );
     }
   }
 
   // ── Internal ──────────────────────────────────────────────────────
 
   /**
-   * Entry point from the transport-service listener. If a clear is
-   * mid-flight, buffer the event so it can be applied AFTER `cleared`
-   * has been broadcast and the persist has committed; otherwise
-   * enqueue onto the insert chain so it runs serially with prior
-   * inserts (each one's persist completes before the next starts).
+   * Entry point from the transport-service listener. Enqueues onto
+   * `insertChain` so the snapshot/mutate/persist/rollback sequence
+   * runs serially with respect to other inserts AND with respect to
+   * any pending clear(). Without serialization a clear that lands
+   * between an insert's mutation and its emit could observe (or
+   * clobber) half-committed insert state, letting both ops broadcast
+   * stamped with the same revision (M-3 reopen).
    *
-   * Listener callbacks are sync, so we don't await the chain here —
-   * but the chain itself owns the ordering guarantee.
+   * Listener callbacks are sync, so we don't await here — the chain
+   * itself owns the ordering guarantee.
    */
   private handleNowPlaying(zoneId: string, nowPlaying: NowPlaying | null): void {
-    if (this.clearInFlight && nowPlaying) {
-      this.pendingDuringClear.push({ zoneId, nowPlaying });
-      return;
-    }
     this.enqueueInsert(zoneId, nowPlaying);
   }
 
@@ -447,15 +416,6 @@ export class RecentlyPlayedService extends EventEmitter {
           "RecentlyPlayedService: insert handler crashed; entry skipped"
         );
       });
-  }
-
-  /** Drain buffered events through the normal insert chain. */
-  private drainPendingInserts(): void {
-    const drained = this.pendingDuringClear;
-    this.pendingDuringClear = [];
-    for (const { zoneId, nowPlaying } of drained) {
-      this.enqueueInsert(zoneId, nowPlaying);
-    }
   }
 
   /**
