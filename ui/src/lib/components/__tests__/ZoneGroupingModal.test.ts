@@ -237,6 +237,134 @@ describe('ZoneGroupingModal', () => {
 		expect(refreshed[1].checked).toBe(true);
 	});
 
+	it('feat-6: no power button rendered when output has no standby-capable source_controls', async () => {
+		// Output with no source_controls → canStandby is false → no button.
+		setZonesSnapshot([
+			makeZone({
+				zone_id: 'zone-a',
+				display_name: 'Living Room',
+				outputs: [
+					{
+						output_id: 'out-a',
+						display_name: 'Speakers'
+						// source_controls undefined
+					}
+				]
+			})
+		]);
+		setSelectedZone('zone-a');
+		render(ZoneGroupingModal);
+		openZoneGrouping();
+		await tick();
+
+		expect(screen.queryByRole('button', { name: /Standby Speakers/i })).toBeNull();
+		expect(screen.queryByRole('button', { name: /Wake Speakers/i })).toBeNull();
+	});
+
+	it('feat-6: no power button when source_controls present but none support standby', async () => {
+		setZonesSnapshot([
+			makeZone({
+				zone_id: 'zone-a',
+				outputs: [
+					{
+						output_id: 'out-a',
+						display_name: 'Speakers',
+						source_controls: [
+							{
+								control_key: '1',
+								display_name: 'AirPlay',
+								status: 'selected',
+								supports_standby: false
+							}
+						]
+					}
+				]
+			})
+		]);
+		setSelectedZone('zone-a');
+		render(ZoneGroupingModal);
+		openZoneGrouping();
+		await tick();
+
+		expect(screen.queryByRole('button', { name: /Standby Speakers/i })).toBeNull();
+	});
+
+	it('feat-6: click emits transport:standby when output is not in standby', async () => {
+		setZonesSnapshot([
+			makeZone({
+				zone_id: 'zone-a',
+				outputs: [
+					{
+						output_id: 'out-a',
+						display_name: 'Naim',
+						source_controls: [
+							{
+								control_key: '1',
+								display_name: 'Naim NAC',
+								status: 'selected',
+								supports_standby: true
+							}
+						]
+					}
+				]
+			})
+		]);
+		setSelectedZone('zone-a');
+		render(ZoneGroupingModal);
+		openZoneGrouping();
+		await tick();
+
+		const btn = screen.getByRole('button', { name: 'Standby Naim' });
+		await fireEvent.click(btn);
+
+		await waitFor(() => {
+			expect(emitWithAck).toHaveBeenCalledWith(
+				fakeSocket,
+				'transport:standby',
+				{ output_id: 'out-a' },
+				expect.any(Object)
+			);
+		});
+	});
+
+	it('feat-6: click emits transport:wake when output is in standby', async () => {
+		setZonesSnapshot([
+			makeZone({
+				zone_id: 'zone-a',
+				outputs: [
+					{
+						output_id: 'out-a',
+						display_name: 'Naim',
+						source_controls: [
+							{
+								control_key: '1',
+								display_name: 'Naim NAC',
+								status: 'standby',
+								supports_standby: true
+							}
+						]
+					}
+				]
+			})
+		]);
+		setSelectedZone('zone-a');
+		render(ZoneGroupingModal);
+		openZoneGrouping();
+		await tick();
+
+		const btn = screen.getByRole('button', { name: 'Wake Naim' });
+		await fireEvent.click(btn);
+
+		await waitFor(() => {
+			expect(emitWithAck).toHaveBeenCalledWith(
+				fakeSocket,
+				'transport:wake',
+				{ output_id: 'out-a' },
+				expect.any(Object)
+			);
+		});
+	});
+
 	it('reopen #1 P2: failed save keeps the modal open with selection intact', async () => {
 		// emitWithAck doesn't throw for server-reported failures; it
 		// resolves with { success: false, error }. Save must inspect

@@ -23,16 +23,32 @@
 			display_name: string;
 			zone_id: string;
 			zone_name: string;
+			/**
+			 * True when at least one source_control on this output
+			 * reports supports_standby. Drives whether the standby/wake
+			 * button renders.
+			 */
+			canStandby: boolean;
+			/**
+			 * True when ANY supports_standby source_control is currently
+			 * in standby state. Clicking the button calls wake;
+			 * otherwise it calls standby.
+			 */
+			isInStandby: boolean;
 		}> = [];
 		for (const zone of $zonesStore) {
 			for (const out of zone.outputs ?? []) {
 				if (!out.output_id || seen.has(out.output_id)) continue;
 				seen.add(out.output_id);
+				const standbyControls =
+					out.source_controls?.filter((c) => c.supports_standby) ?? [];
 				items.push({
 					output_id: out.output_id,
 					display_name: out.display_name,
 					zone_id: zone.zone_id,
-					zone_name: zone.display_name
+					zone_name: zone.display_name,
+					canStandby: standbyControls.length > 0,
+					isInStandby: standbyControls.some((c) => c.status === 'standby')
 				});
 			}
 		}
@@ -74,6 +90,42 @@
 			next.add(output_id);
 		}
 		selectedOutputs = next;
+	}
+
+	/**
+	 * Toggle power for an output. Per Roon API contract:
+	 * - `transport:standby` is idempotent — a duplicate call against
+	 *   an already-standby output is a no-op (won't wake it).
+	 * - `transport:wake` (convenience_switch) wakes the output and
+	 *   selects its sources.
+	 * We pick which event based on the current `isInStandby` derived
+	 * state, omitting `control_key` so Roon applies the action to all
+	 * supports_standby controls on the output (matches the user's
+	 * single-button mental model). If a future need to target a
+	 * specific control emerges, the UI can grow a nested menu — the
+	 * backend already accepts an optional `control_key`.
+	 */
+	async function togglePower(output_id: string, isInStandby: boolean): Promise<void> {
+		const socket = getSocket();
+		if (!socket) {
+			pushCommandFeedback({
+				source: 'transport',
+				command: isInStandby ? 'transport:wake' : 'transport:standby',
+				message: 'Realtime connection unavailable.'
+			});
+			return;
+		}
+		const event = isInStandby ? 'transport:wake' : 'transport:standby';
+		await emitWithAck(
+			socket,
+			event,
+			{ output_id },
+			{ timeoutMs: 5000, feedback: { source: 'transport', command: event } }
+		);
+		// State update is server-driven: the next zones broadcast
+		// reflects the new source_control status. We don't optimistically
+		// flip isInStandby because Roon may reject the request (e.g.
+		// network-level error) — let the server be the source of truth.
 	}
 
 	async function save(): Promise<void> {
@@ -202,7 +254,7 @@
 
 			<ul class="zg-list" aria-label="Available outputs">
 				{#each allOutputs as out}
-					<li>
+					<li class="zg-li">
 						<label class="zg-row">
 							<input
 								type="checkbox"
@@ -212,6 +264,20 @@
 							<span class="zg-name">{out.display_name}</span>
 							<span class="zg-zone">{out.zone_name}</span>
 						</label>
+						{#if out.canStandby}
+							<button
+								type="button"
+								class="zg-power"
+								class:zg-power-standby={out.isInStandby}
+								onclick={() => togglePower(out.output_id, out.isInStandby)}
+								aria-label={out.isInStandby
+									? `Wake ${out.display_name}`
+									: `Standby ${out.display_name}`}
+								title={out.isInStandby
+									? `Wake ${out.display_name}`
+									: `Standby ${out.display_name}`}
+							>⏻</button>
+						{/if}
 					</li>
 				{/each}
 				{#if allOutputs.length === 0}
@@ -302,7 +368,17 @@
 		gap: 0.25rem;
 	}
 
+	/* Each list item is a row; the row's label spans the full
+	   width when no power button is present, otherwise sits alongside
+	   the power button. */
+	.zg-li {
+		display: flex;
+		align-items: stretch;
+		gap: 0.4rem;
+	}
+
 	.zg-row {
+		flex: 1;
 		display: grid;
 		grid-template-columns: auto 1fr auto;
 		gap: 0.6rem;
@@ -314,6 +390,30 @@
 	}
 	.zg-row:hover {
 		background: rgba(255, 255, 255, 0.08);
+	}
+
+	.zg-power {
+		flex-shrink: 0;
+		width: 36px;
+		background: rgba(255, 255, 255, 0.06);
+		color: rgba(255, 255, 255, 0.7);
+		border: 0;
+		border-radius: 8px;
+		cursor: pointer;
+		font-size: 0.95rem;
+	}
+	.zg-power:hover {
+		background: rgba(255, 255, 255, 0.14);
+		color: var(--text, #fff);
+	}
+	/* Visual cue: outputs currently in standby get a muted-accent
+	   highlight so the user knows "click to wake" vs "click to sleep". */
+	.zg-power-standby {
+		color: var(--accent, #6cf);
+		background: rgba(108, 204, 255, 0.12);
+	}
+	.zg-power-standby:hover {
+		background: rgba(108, 204, 255, 0.22);
 	}
 
 	.zg-name {
