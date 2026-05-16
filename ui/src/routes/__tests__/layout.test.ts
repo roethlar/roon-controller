@@ -711,7 +711,15 @@ describe('Layout — Explore rail click', () => {
 			expect(persisted[0].breadcrumb?.title).toBe('Albums');
 		});
 
-		it('nested entry with cachedKey + cachedAncestorKeys does the fast path (still 1 popAll + 1 drill, but history has both steps)', async () => {
+		it('nested entry walks the cached chain (popAll + each ancestor + leaf) to keep Roon session stack aligned with UI history', async () => {
+			// Roon's browse session is stack-based: skipping ancestor
+			// drills and going directly to the leaf would leave Roon
+			// at `root → leaf` while UI history pushed
+			// `root → ancestor → leaf` — a subsequent Back's
+			// popLevel=1 would diverge the two stacks. The fast path
+			// must drill every level. REST count matches the slow
+			// label walk; the win is purely "skip the title-match
+			// scan + use known-good keys".
 			railWritable.set({
 				entries: [
 					{
@@ -729,7 +737,13 @@ describe('Layout — Explore rail click', () => {
 
 			apiBrowse.mockResolvedValueOnce(listResult({ level: 0, items: [] }));
 			apiBrowse.mockResolvedValueOnce(
-				listResult({ level: 2, items: [makeItem({ title: 'Track 1', itemKey: 't1' })] })
+				listResult({
+					level: 1,
+					items: [makeItem({ title: 'Tracks', itemKey: 'tracks-cached-key' })]
+				})
+			);
+			apiBrowse.mockResolvedValueOnce(
+				listResult({ level: 2, items: [makeItem({ title: 'T1', itemKey: 't1' })] })
 			);
 
 			renderLayout();
@@ -737,9 +751,17 @@ describe('Layout — Explore rail click', () => {
 			await fireEvent.click(railBtn);
 
 			await waitFor(() => {
-				expect(apiBrowse).toHaveBeenCalledTimes(2);
+				expect(apiBrowse).toHaveBeenCalledTimes(3);
 			});
+			// popAll, drill ancestor, drill leaf — in order. Roon
+			// session is now root → Library → Tracks.
+			expect(apiBrowse.mock.calls[0][1]).toEqual(
+				expect.objectContaining({ popAll: true })
+			);
 			expect(apiBrowse.mock.calls[1][1]).toEqual(
+				expect.objectContaining({ itemKey: 'library-cached-key' })
+			);
+			expect(apiBrowse.mock.calls[2][1]).toEqual(
 				expect.objectContaining({ itemKey: 'tracks-cached-key' })
 			);
 
@@ -751,6 +773,58 @@ describe('Layout — Explore rail click', () => {
 			expect(persisted[0].breadcrumb?.title).toBe('Library');
 			expect(persisted[1].itemKey).toBe('tracks-cached-key');
 			expect(persisted[1].breadcrumb?.title).toBe('Tracks');
+		});
+
+		it('nested fast path falls back to the label walk when an ancestor drill fails', async () => {
+			// Stale ancestor key — must fall through to title-match
+			// recovery just like the leaf-fail case.
+			railWritable.set({
+				entries: [
+					{
+						id: 'rail-tracks',
+						label: 'Tracks',
+						labelPath: ['Library', 'Tracks'],
+						isEmpty: false,
+						cachedKey: 'tracks-cached-key',
+						cachedAncestorKeys: ['stale-library-key']
+					}
+				],
+				loading: false,
+				error: null
+			});
+
+			// Fast path: popAll OK, ancestor drill REJECTS.
+			apiBrowse.mockResolvedValueOnce(listResult({ level: 0, items: [] }));
+			apiBrowse.mockRejectedValueOnce(new Error('InvalidItemKey'));
+			// Label-walk fallback: popAll → drill Library → drill Tracks.
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 0,
+					items: [makeItem({ title: 'Library', itemKey: 'library-fresh-key' })]
+				})
+			);
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 1,
+					items: [makeItem({ title: 'Tracks', itemKey: 'tracks-fresh-key' })]
+				})
+			);
+			apiBrowse.mockResolvedValueOnce(
+				listResult({ level: 2, items: [makeItem({ title: 'T1', itemKey: 't1' })] })
+			);
+
+			renderLayout();
+			const railBtn = await screen.findByRole('button', { name: 'Tracks' });
+			await fireEvent.click(railBtn);
+
+			await waitFor(() => {
+				expect(apiBrowse).toHaveBeenCalledTimes(5);
+			});
+			// Final history uses the FRESH keys from label-walk.
+			const persisted = get(browseHistoryStore).history;
+			expect(persisted).toHaveLength(2);
+			expect(persisted[0].itemKey).toBe('library-fresh-key');
+			expect(persisted[1].itemKey).toBe('tracks-fresh-key');
 		});
 
 		it('stale cachedKey falls through to label-walk (no error surfaced)', async () => {

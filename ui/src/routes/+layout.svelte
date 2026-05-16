@@ -484,13 +484,25 @@
 			}
 
 			// Fast-path: rail resolver populates `cachedKey` (the leaf
-			// Roon itemKey) and `cachedAncestorKeys` (the keys for each
-			// labelPath step except the leaf). On click we can popAll
-			// then drill directly to the leaf — one REST call instead
-			// of one popAll + N label-walk drills. Roon Core restart
-			// invalidates cached keys; the drill fails, we fall
-			// through to the slow path, and the resolver re-runs on
-			// the next `core-status: paired` event anyway.
+			// Roon itemKey) and `cachedAncestorKeys` (the keys for the
+			// ancestor steps in labelPath). On click we walk the
+			// cached chain — popAll + drill each ancestor + drill the
+			// leaf — skipping the label-scan step the slow path does
+			// between drills.
+			//
+			// Roon's browse session is stack-based: each drill pushes
+			// a level. We MUST drill every ancestor, not just the leaf
+			// directly: skipping ancestors would leave the Roon session
+			// at `root → leaf` while UI history pushed
+			// `root → ancestor → leaf`, and a subsequent Back's
+			// popLevel=1 would diverge the two stacks. REST call count
+			// matches the label walk; the win is purely "no result
+			// parsing / label matching" + "known-good keys".
+			//
+			// On any drill failure (most likely a stale cached key
+			// after a Core restart) we fall through to the label-walk,
+			// which re-discovers via title matching. The resolver
+			// re-runs on the next core-status: paired anyway.
 			const canTryFastPath =
 				entry.cachedKey !== undefined &&
 				entry.cachedAncestorKeys !== undefined &&
@@ -503,17 +515,19 @@
 						zoneId,
 						popAll: true
 					});
-					const result = await apiBrowse(fetch, {
-						hierarchy: 'browse',
-						zoneId,
-						itemKey: entry.cachedKey!
-					});
-
-					// Fast-path succeeded — commit history (one step per
-					// labelPath segment, using cached keys for ancestors
-					// and the leaf cachedKey for the final step).
-					resetHistory();
 					const allKeys = [...entry.cachedAncestorKeys!, entry.cachedKey!];
+					let result: Awaited<ReturnType<typeof apiBrowse>> | undefined;
+					for (const key of allKeys) {
+						result = await apiBrowse(fetch, {
+							hierarchy: 'browse',
+							zoneId,
+							itemKey: key
+						});
+					}
+
+					// Fast-path succeeded — commit history (one step
+					// per labelPath segment, using the cached key chain).
+					resetHistory();
 					for (let i = 0; i < entry.labelPath.length; i++) {
 						pushHistory(
 							{ hierarchy: 'browse', itemKey: allKeys[i], zoneId },
@@ -523,7 +537,7 @@
 					}
 
 					if (onLibrary) {
-						setBrowseResult(result, 'browse');
+						setBrowseResult(result!, 'browse');
 					} else {
 						void goto('/library');
 					}

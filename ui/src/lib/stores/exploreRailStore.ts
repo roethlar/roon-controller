@@ -14,12 +14,16 @@ import { browse as apiBrowse } from '../api/client';
  * by the popAll/drill pattern the resolver does.
  *
  * Entry identity is `labelPath: string[]` — stable across Roon
- * Core restarts. `cachedKey` and `cachedAncestorKeys` are reserved
- * for a later fast-path optimization (clicks bypass the label-walk
- * when keys are known good); PR1 ships label-walk-only and does
- * NOT populate the cache fields. Keeping the fields in the type
- * means a future PR can add the optimization without changing the
- * shape callers depend on.
+ * Core restarts. `cachedKey` and `cachedAncestorKeys` carry the
+ * Roon itemKey chain captured during resolution; the layout's rail
+ * click handler walks the chain (popAll + drill each ancestor +
+ * drill leaf) instead of doing the label-scan slow path. REST call
+ * count is the same — Roon's browse session is stack-based so
+ * every level must be drilled — but the fast path skips the
+ * per-drill title-match scan and uses known-good keys. Stale keys
+ * (Core restart) cause the fast-path drill to fail and the handler
+ * falls through to the label walk; the resolver re-runs on the
+ * next `core-status: paired` and repopulates the cache.
  */
 
 export interface ExploreRailEntry {
@@ -43,9 +47,13 @@ export interface ExploreRailEntry {
 	 */
 	isEmpty?: boolean;
 	/**
-	 * Reserved for a later fast-path optimization. Length =
-	 * labelPath.length - 1. Empty for top-level entries. PR1 leaves
-	 * these undefined; rail clicks always do the full label-walk.
+	 * Roon itemKeys captured during resolution. The rail click
+	 * handler walks `cachedAncestorKeys` then drills `cachedKey`
+	 * (matches labelPath positions; `cachedAncestorKeys.length ===
+	 * labelPath.length - 1`). Empty ancestors for top-level entries.
+	 * Stale keys after a Roon Core restart cause the drill to fail
+	 * and the handler falls back to the title-match label walk;
+	 * the resolver re-runs on the next `core-status: paired`.
 	 */
 	cachedKey?: string;
 	cachedAncestorKeys?: string[];
