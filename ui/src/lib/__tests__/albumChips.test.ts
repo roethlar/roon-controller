@@ -8,13 +8,21 @@ describe('extractAlbumChips', () => {
 		expect(extractAlbumChips('')).toEqual([]);
 	});
 
-	it('extracts a 4-digit year when present', () => {
+	it('extracts a 4-digit year when separated by a real metadata token (·, /, comma, pipe)', () => {
 		expect(extractAlbumChips('Tori Amos / 1994')).toEqual([
 			{ kind: 'year', label: '1994' }
 		]);
-		expect(extractAlbumChips('Released 2024 by Some Label')).toEqual([
+		expect(extractAlbumChips('Album · 2024')).toEqual([
 			{ kind: 'year', label: '2024' }
 		]);
+	});
+
+	it('does NOT extract a year embedded in free-form prose (P2 reopen #2 follow-on)', () => {
+		// "Released 2024 by Some Label" — no real metadata separator
+		// (·, /, comma, pipe) adjacent to 2024. Plain whitespace
+		// doesn't qualify, which is what protects against
+		// "The 1975"-style false positives.
+		expect(extractAlbumChips('Released 2024 by Some Label')).toEqual([]);
 	});
 
 	it('ignores 4-digit numbers outside the 19xx/20xx range', () => {
@@ -144,6 +152,45 @@ describe('extractArtistFromSubtitle (P1 reopen)', () => {
 	it('returns empty when subtitle is ONLY chip tokens', () => {
 		expect(extractArtistFromSubtitle('1994 · FLAC')).toBe('');
 		expect(extractArtistFromSubtitle('FLAC')).toBe('');
+	});
+
+	it('P1 reopen #2: preserves internal artist punctuation (AC/DC, Jay-Z, GZA/Genius)', () => {
+		// The prior version collapsed every separator in the result,
+		// turning "AC/DC" → "AC DC" and "Jay-Z" → "Jay Z". The fix
+		// splices only the matched chip span + ONE adjacent separator
+		// and leaves every other char untouched.
+		expect(extractArtistFromSubtitle('AC/DC · 1980 · FLAC')).toBe('AC/DC');
+		expect(extractArtistFromSubtitle('Jay-Z · 2003 · FLAC')).toBe('Jay-Z');
+		expect(extractArtistFromSubtitle('GZA/Genius · 1995')).toBe('GZA/Genius');
+		// Artist-only subtitle (no chips at all) returns unchanged.
+		expect(extractArtistFromSubtitle('AC/DC')).toBe('AC/DC');
+		expect(extractArtistFromSubtitle('Jay-Z')).toBe('Jay-Z');
+	});
+});
+
+describe('extractAlbumChips: year-as-artist-name guard (P2 reopen #2)', () => {
+	it('does NOT chip a year-shaped artist name in the leading position', () => {
+		// "The 1975" alone (just the artist) → no year chip.
+		expect(extractAlbumChips('The 1975')).toEqual([]);
+		expect(extractAlbumChips('1999 (Prince)')).toEqual([]);
+	});
+
+	it('finds the LATER year when subtitle is "<artist-with-year-name> · <year>"', () => {
+		// "The 1975 · 2022 · FLAC" → chip year = 2022, not 1975.
+		const chips = extractAlbumChips('The 1975 · 2022 · FLAC');
+		expect(chips).toContainEqual({ kind: 'year', label: '2022' });
+		expect(chips).not.toContainEqual({ kind: 'year', label: '1975' });
+		expect(chips).toContainEqual({ kind: 'format', label: 'FLAC' });
+	});
+
+	it('extractArtistFromSubtitle leaves "The 1975" intact when there is a real album year following', () => {
+		expect(extractArtistFromSubtitle('The 1975 · 2022 · FLAC')).toBe('The 1975');
+		expect(extractArtistFromSubtitle('The 1975 · 2022')).toBe('The 1975');
+	});
+
+	it('extractArtistFromSubtitle leaves a year-named artist alone with no metadata', () => {
+		expect(extractArtistFromSubtitle('The 1975')).toBe('The 1975');
+		expect(extractArtistFromSubtitle('1999')).toBe('1999');
 	});
 });
 
