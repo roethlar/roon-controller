@@ -7,7 +7,14 @@ import type { BrowseResult, BrowseOptions } from '@shared/types';
 const { railWritable, gotoMock, apiBrowse } = vi.hoisted(() => {
 	const { writable: w } = require('svelte/store') as typeof import('svelte/store');
 	const rail = w<{
-		entries: Array<{ id: string; label: string; labelPath: string[]; isEmpty: boolean }>;
+		entries: Array<{
+			id: string;
+			label: string;
+			labelPath: string[];
+			isEmpty: boolean;
+			cachedKey?: string;
+			cachedAncestorKeys?: string[];
+		}>;
 		loading: boolean;
 		error: string | null;
 	}>({ entries: [], loading: false, error: null });
@@ -649,6 +656,195 @@ describe('Layout — Explore rail click', () => {
 		// The browse loading flag (which setBrowseLoading set to true
 		// and nothing else touched) IS rolled back to false.
 		expect(store.loading).toBe(false);
+	});
+
+	describe('cached-key fast path (perf)', () => {
+		it('top-level entry with cachedKey skips the label walk (1 popAll + 1 drill)', async () => {
+			railWritable.set({
+				entries: [
+					{
+						id: 'rail-albums',
+						label: 'Albums',
+						labelPath: ['Albums'],
+						isEmpty: false,
+						cachedKey: 'albums-cached-key',
+						cachedAncestorKeys: []
+					}
+				],
+				loading: false,
+				error: null
+			});
+
+			// popAll, then drill DIRECTLY to cachedKey.
+			apiBrowse.mockResolvedValueOnce(listResult({ level: 0, items: [] }));
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 1,
+					items: [makeItem({ title: 'Abbey Road', itemKey: 'album-1' })]
+				})
+			);
+
+			renderLayout();
+			const railBtn = await screen.findByRole('button', { name: 'Albums' });
+			await fireEvent.click(railBtn);
+
+			await waitFor(() => {
+				expect(apiBrowse).toHaveBeenCalledTimes(2);
+			});
+			// The drill uses the cached key directly — no label-walk
+			// scanning the root for "Albums" then drilling its
+			// itemKey.
+			expect(apiBrowse.mock.calls[0][1]).toEqual(
+				expect.objectContaining({ hierarchy: 'browse', popAll: true })
+			);
+			expect(apiBrowse.mock.calls[1][1]).toEqual(
+				expect.objectContaining({
+					hierarchy: 'browse',
+					itemKey: 'albums-cached-key'
+				})
+			);
+
+			// History records the cached key.
+			const persisted = get(browseHistoryStore).history;
+			expect(persisted).toHaveLength(1);
+			expect(persisted[0].itemKey).toBe('albums-cached-key');
+			expect(persisted[0].breadcrumb?.title).toBe('Albums');
+		});
+
+		it('nested entry with cachedKey + cachedAncestorKeys does the fast path (still 1 popAll + 1 drill, but history has both steps)', async () => {
+			railWritable.set({
+				entries: [
+					{
+						id: 'rail-tracks',
+						label: 'Tracks',
+						labelPath: ['Library', 'Tracks'],
+						isEmpty: false,
+						cachedKey: 'tracks-cached-key',
+						cachedAncestorKeys: ['library-cached-key']
+					}
+				],
+				loading: false,
+				error: null
+			});
+
+			apiBrowse.mockResolvedValueOnce(listResult({ level: 0, items: [] }));
+			apiBrowse.mockResolvedValueOnce(
+				listResult({ level: 2, items: [makeItem({ title: 'Track 1', itemKey: 't1' })] })
+			);
+
+			renderLayout();
+			const railBtn = await screen.findByRole('button', { name: 'Tracks' });
+			await fireEvent.click(railBtn);
+
+			await waitFor(() => {
+				expect(apiBrowse).toHaveBeenCalledTimes(2);
+			});
+			expect(apiBrowse.mock.calls[1][1]).toEqual(
+				expect.objectContaining({ itemKey: 'tracks-cached-key' })
+			);
+
+			// History has BOTH steps — ancestor + leaf — synthesized
+			// from cachedAncestorKeys + cachedKey + labelPath labels.
+			const persisted = get(browseHistoryStore).history;
+			expect(persisted).toHaveLength(2);
+			expect(persisted[0].itemKey).toBe('library-cached-key');
+			expect(persisted[0].breadcrumb?.title).toBe('Library');
+			expect(persisted[1].itemKey).toBe('tracks-cached-key');
+			expect(persisted[1].breadcrumb?.title).toBe('Tracks');
+		});
+
+		it('stale cachedKey falls through to label-walk (no error surfaced)', async () => {
+			railWritable.set({
+				entries: [
+					{
+						id: 'rail-albums',
+						label: 'Albums',
+						labelPath: ['Albums'],
+						isEmpty: false,
+						cachedKey: 'stale-key',
+						cachedAncestorKeys: []
+					}
+				],
+				loading: false,
+				error: null
+			});
+
+			// Fast path: popAll OK, drill REJECTS (stale key after Core
+			// restart).
+			apiBrowse.mockResolvedValueOnce(listResult({ level: 0, items: [] }));
+			apiBrowse.mockRejectedValueOnce(new Error('InvalidItemKey'));
+			// Label-walk fallback: popAll, then label-match drill.
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 0,
+					items: [
+						makeItem({ title: 'Albums', itemKey: 'albums-fresh-key' })
+					]
+				})
+			);
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 1,
+					items: [makeItem({ title: 'Some Album', itemKey: 'a1' })]
+				})
+			);
+
+			renderLayout();
+			const railBtn = await screen.findByRole('button', { name: 'Albums' });
+			await fireEvent.click(railBtn);
+
+			await waitFor(() => {
+				expect(apiBrowse).toHaveBeenCalledTimes(4);
+			});
+			// Final history uses the FRESH key from label-walk, not
+			// the stale cached one.
+			const persisted = get(browseHistoryStore).history;
+			expect(persisted).toHaveLength(1);
+			expect(persisted[0].itemKey).toBe('albums-fresh-key');
+		});
+
+		it('entry without cachedKey still uses label-walk (back-compat for un-cached rails)', async () => {
+			// Rail entries from the pre-fast-path build don't have
+			// cachedKey. The fast path is skipped; label-walk runs.
+			railWritable.set({
+				entries: [
+					{
+						id: 'rail-albums',
+						label: 'Albums',
+						labelPath: ['Albums'],
+						isEmpty: false
+						// no cachedKey
+					}
+				],
+				loading: false,
+				error: null
+			});
+
+			apiBrowse.mockResolvedValueOnce(
+				listResult({
+					level: 0,
+					items: [
+						makeItem({ title: 'Albums', itemKey: 'albums-key' })
+					]
+				})
+			);
+			apiBrowse.mockResolvedValueOnce(
+				listResult({ level: 1, items: [makeItem({ title: 'X', itemKey: 'x' })] })
+			);
+
+			renderLayout();
+			const railBtn = await screen.findByRole('button', { name: 'Albums' });
+			await fireEvent.click(railBtn);
+
+			await waitFor(() => {
+				expect(apiBrowse).toHaveBeenCalledTimes(2);
+			});
+			// Label-walk path: drill uses the itemKey scanned from
+			// the root result.
+			expect(apiBrowse.mock.calls[1][1]).toEqual(
+				expect.objectContaining({ itemKey: 'albums-key' })
+			);
+		});
 	});
 });
 

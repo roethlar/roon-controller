@@ -184,7 +184,16 @@ export async function resolveExploreRail(fetchFn: typeof fetch): Promise<void> {
 						label: grand.title,
 						labelPath: [item.title, grand.title],
 						hint: grand.hint,
-						itemType: grand.itemType
+						itemType: grand.itemType,
+						// Populate cached itemKeys for the fast-path on
+						// click. cachedAncestorKeys carries the path
+						// from level-0 down to (but not including) the
+						// leaf; cachedKey is the leaf itself. Stale keys
+						// (Core restart) make the fast-path fail
+						// silently and the label-walk fallback runs.
+						cachedKey: grand.itemKey,
+						cachedAncestorKeys:
+							item.itemKey !== undefined ? [item.itemKey] : []
 						// isEmpty for nested entries left undefined —
 						// detecting it would require N more drills.
 						// Resolved at first click instead.
@@ -206,7 +215,9 @@ export async function resolveExploreRail(fetchFn: typeof fetch): Promise<void> {
 				labelPath: [item.title],
 				hint: item.hint,
 				itemType: item.itemType,
-				isEmpty: empty
+				isEmpty: empty,
+				cachedKey: item.itemKey,
+				cachedAncestorKeys: []
 			});
 		}
 

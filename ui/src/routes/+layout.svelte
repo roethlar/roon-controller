@@ -483,6 +483,59 @@
 				afterLoadingSnapshot = snapshotBrowseState(get(browseStore));
 			}
 
+			// Fast-path: rail resolver populates `cachedKey` (the leaf
+			// Roon itemKey) and `cachedAncestorKeys` (the keys for each
+			// labelPath step except the leaf). On click we can popAll
+			// then drill directly to the leaf — one REST call instead
+			// of one popAll + N label-walk drills. Roon Core restart
+			// invalidates cached keys; the drill fails, we fall
+			// through to the slow path, and the resolver re-runs on
+			// the next `core-status: paired` event anyway.
+			const canTryFastPath =
+				entry.cachedKey !== undefined &&
+				entry.cachedAncestorKeys !== undefined &&
+				entry.cachedAncestorKeys.length === entry.labelPath.length - 1;
+
+			if (canTryFastPath) {
+				try {
+					await apiBrowse(fetch, {
+						hierarchy: 'browse',
+						zoneId,
+						popAll: true
+					});
+					const result = await apiBrowse(fetch, {
+						hierarchy: 'browse',
+						zoneId,
+						itemKey: entry.cachedKey!
+					});
+
+					// Fast-path succeeded — commit history (one step per
+					// labelPath segment, using cached keys for ancestors
+					// and the leaf cachedKey for the final step).
+					resetHistory();
+					const allKeys = [...entry.cachedAncestorKeys!, entry.cachedKey!];
+					for (let i = 0; i < entry.labelPath.length; i++) {
+						pushHistory(
+							{ hierarchy: 'browse', itemKey: allKeys[i], zoneId },
+							undefined,
+							{ title: entry.labelPath[i] }
+						);
+					}
+
+					if (onLibrary) {
+						setBrowseResult(result, 'browse');
+					} else {
+						void goto('/library');
+					}
+					return;
+				} catch {
+					// Fast path failed — most likely stale cached key
+					// after a Core restart. Silently fall through to
+					// the label-walk; the rail will be re-resolved on
+					// the next core-status: paired.
+				}
+			}
+
 			let cur = await apiBrowse(fetch, {
 				hierarchy: 'browse',
 				zoneId,
