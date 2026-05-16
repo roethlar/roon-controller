@@ -1,5 +1,31 @@
 # Dev Log
 
+## 2026-05-16 (truly final) — RP: epoch + snapshot-authoritative apply
+
+Two real gaps the prior revision-based fix had:
+
+1. **Server restart broke connected clients.** Server revision counter resets to 0 on restart; a client at `lastApplied=100` would reject every GET / socket event from the new process until it caught up to 101. A persisted recently-played list could stay invisible to the client for a long time.
+2. **Equal-revision snapshots were discarded.** Apply was `revision > lastApplied` for *both* snapshots and deltas. For deltas that's right (equal = duplicate). For snapshots that's wrong — a snapshot at the current revision is authoritative and can repair drift from missed deltas. Also: a fresh client loading persisted entries at revision 0 (server hasn't mutated anything yet) would ignore them, because `lastApplied=0` already.
+
+### Fix
+Added an `epoch: number` field to every RP payload (per-server-process ID, `Date.now()` at construction). Apply rules split:
+
+- **Snapshots** (`RecentlyPlayedSnapshot`, returned by GET / DELETE): apply if `epoch !== lastApplied.epoch` OR `revision >= lastApplied.revision`. Different epoch = new authority (adopt); equal revision still applies (authoritative repair).
+- **Deltas** (`inserted` / `cleared` socket events): apply if `epoch !== lastApplied.epoch` OR `revision > lastApplied.revision`. Strict-newer keeps duplicates from double-applying within an epoch.
+
+When a payload applies, both `lastAppliedEpoch` and `lastAppliedRevision` adopt the payload's values — so an epoch change resets the revision baseline naturally.
+
+### Server
+- `RecentlyPlayedService` has `private readonly epoch = Date.now()` and `getEpoch()`. All payloads (REST responses + socket emits in `server.ts`) include it alongside revision.
+- Shared types refactored: `RecentlyPlayedSync { revision, epoch }` is the common shape; snapshot/inserted/cleared payloads extend it.
+
+### Tests (+2)
+- "snapshot at equal revision still applies (authoritative repair)" — proves the < vs ≤ change for snapshots.
+- "different epoch (server restart) adopts the new authority even with lower revision" — proves the epoch tracking handles restart.
+- Verified both catch the bug by temporarily reverting `applySnapshot` to the old strict rule without epoch tracking — both tests failed exactly as expected.
+
+UI 142 → 144 (backend 98 unchanged). svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-16 (later) — Clear RP: monotonic revisions, end of the race series
 
 The deferral buffer closed the "snapshot wipes post-snapshot insert" race but not its complement: a queued `cleared` event draining after the snapshot would itself wipe the authoritative state. Patching the buffer per case (drop cleared events, count operation IDs, etc.) kept moving the goalposts. The reviewer's pointed recommendation — operation/revision metadata — is the real fix: each state change carries a monotonic revision, and the client filters anything not strictly newer than what it's already applied. With that, arrival order stops mattering at all.

@@ -145,6 +145,7 @@ export const startServer = (
     socketContext.io.emit("recently-played-inserted", {
       entry,
       revision: recentlyPlayedService.getRevision(),
+      epoch: recentlyPlayedService.getEpoch(),
     });
   });
 
@@ -153,6 +154,7 @@ export const startServer = (
   recentlyPlayedService.on("cleared", () => {
     socketContext.io.emit("recently-played-cleared", {
       revision: recentlyPlayedService.getRevision(),
+      epoch: recentlyPlayedService.getEpoch(),
     });
   });
 

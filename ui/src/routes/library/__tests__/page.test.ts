@@ -102,7 +102,7 @@ beforeEach(() => {
 	setSelectedZone('');
 	// Default: any apiBrowse call returns an empty browse root.
 	apiBrowse.mockResolvedValue(listResult({ level: 0 }));
-	apiClearRecentlyPlayed.mockResolvedValue({ entries: [], revision: 1_000_000 });
+	apiClearRecentlyPlayed.mockResolvedValue({ entries: [], revision: 1_000_000, epoch: 1 });
 });
 
 // ---------------- Tests ----------------
@@ -1938,7 +1938,7 @@ describe('Library page — Recently Played tile click', () => {
 			'$lib/stores/recentlyPlayedStore'
 		);
 		resetRecentlyPlayed();
-		applyRecentlyPlayedInserted({ entry: RECENT, revision: 1 });
+		applyRecentlyPlayedInserted({ entry: RECENT, revision: 1, epoch: 1 });
 	});
 
 	it('shows a feedback toast and skips REST when no zone is selected', async () => {
@@ -2332,7 +2332,7 @@ describe('Library page — Recently Played tile click', () => {
 			zone_name: 'Living Room',
 			played_at: '2026-05-16T08:00:00.000Z'
 		};
-		applyRecentlyPlayedInserted({ entry: newTrack, revision: 100 });
+		applyRecentlyPlayedInserted({ entry: newTrack, revision: 100, epoch: 1 });
 		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
 			'NewTrack',
 			'Hey Jude'
@@ -2341,7 +2341,7 @@ describe('Library page — Recently Played tile click', () => {
 		// Now the slower HTTP response resolves with the (now stale)
 		// snapshot — revision 99 < 100, so it's discarded. If it
 		// weren't, the store would get wiped to [].
-		resolveDelete({ entries: [], revision: 99 });
+		resolveDelete({ entries: [], revision: 99, epoch: 1 });
 
 		// Give the await chain a chance to complete; nothing should
 		// change because the response was discarded as stale.
@@ -2371,7 +2371,8 @@ describe('Library page — Recently Played tile click', () => {
 		};
 		apiClearRecentlyPlayed.mockResolvedValueOnce({
 			entries: [drainedEntry],
-			revision: 999_999
+			revision: 999_999,
+			epoch: 1
 		});
 
 		render(LibraryPage);

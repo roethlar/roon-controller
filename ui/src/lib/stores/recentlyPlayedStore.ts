@@ -48,29 +48,50 @@ export const recentlyPlayedStore = {
 const CAP = 50;
 
 /**
- * The highest revision we've successfully applied. A monotonic guard
- * against stale events: anything not strictly newer is discarded.
+ * Sync state we track from the server. `epoch` identifies the server
+ * process; a change means the server restarted and we should adopt
+ * its new revision baseline rather than reject everything as stale.
+ * `revision` is the monotonic counter for ordering within an epoch.
  *
- * Reset paths (resetRecentlyPlayed, load with revision <= current)
- * also touch this — see those functions for the specific semantics.
- * A server restart resets its counter to 0; reconnect-triggered
- * `loadRecentlyPlayed` re-baselines this from the load response.
+ * Sentinel `lastAppliedEpoch = 0` won't match any real `Date.now()`
+ * epoch, so the first payload from any server is always adopted.
  */
+let lastAppliedEpoch = 0;
 let lastAppliedRevision = 0;
 
 /**
- * Apply an authoritative snapshot if it's strictly newer than what
- * we've already applied. Used internally by load and the DELETE
- * response path; both deliver `{ entries, revision }` from the server.
+ * Snapshots are AUTHORITATIVE: apply on equal revision too (they
+ * fully describe state at their revision, so they can repair drift
+ * from missed deltas). Different epoch means a new server instance —
+ * adopt its revision baseline.
  */
 function applySnapshot(snapshot: RecentlyPlayedSnapshot): void {
-	if (snapshot.revision <= lastAppliedRevision) return;
+	const sameEpoch = snapshot.epoch === lastAppliedEpoch;
+	if (sameEpoch && snapshot.revision < lastAppliedRevision) return;
+	lastAppliedEpoch = snapshot.epoch;
 	lastAppliedRevision = snapshot.revision;
 	internalStore.update((s) => ({
 		...s,
 		entries: snapshot.entries.slice(0, CAP),
 		loaded: true
 	}));
+}
+
+/**
+ * Deltas (insert / cleared) require STRICTLY newer revision — equal
+ * means we've already seen the change, so applying again would
+ * double-apply. Different epoch is the server-restart signal: adopt
+ * the new authority. (The next snapshot/load will repair any drift
+ * from missed prior-epoch state.)
+ */
+function shouldApplyDelta(sync: { revision: number; epoch: number }): boolean {
+	if (sync.epoch !== lastAppliedEpoch) return true;
+	return sync.revision > lastAppliedRevision;
+}
+
+function adoptDelta(sync: { revision: number; epoch: number }): void {
+	lastAppliedEpoch = sync.epoch;
+	lastAppliedRevision = sync.revision;
 }
 
 export async function loadRecentlyPlayed(fetchFn: typeof fetch): Promise<void> {
@@ -97,8 +118,8 @@ export async function loadRecentlyPlayed(fetchFn: typeof fetch): Promise<void> {
 export function applyRecentlyPlayedInserted(
 	payload: RecentlyPlayedInsertedPayload
 ): void {
-	if (payload.revision <= lastAppliedRevision) return;
-	lastAppliedRevision = payload.revision;
+	if (!shouldApplyDelta(payload)) return;
+	adoptDelta(payload);
 	const { entry } = payload;
 	internalStore.update((s) => {
 		const key = recentlyPlayedDedupeKey(entry);
@@ -109,14 +130,15 @@ export function applyRecentlyPlayedInserted(
 }
 
 /**
- * Apply a `recently-played-cleared` socket event. Discards stale
- * events the same way `applyRecentlyPlayedInserted` does.
+ * Apply a `recently-played-cleared` socket event. Same ordering
+ * rules as the insert path: strictly newer revision in the same
+ * epoch, or any payload from a new epoch.
  */
 export function applyRecentlyPlayedCleared(
 	payload: RecentlyPlayedClearedPayload
 ): void {
-	if (payload.revision <= lastAppliedRevision) return;
-	lastAppliedRevision = payload.revision;
+	if (!shouldApplyDelta(payload)) return;
+	adoptDelta(payload);
 	internalStore.update((s) => ({ ...s, entries: [], loaded: true }));
 }
 
@@ -135,6 +157,7 @@ export function applyClearResponse(snapshot: RecentlyPlayedSnapshot): void {
  * user-initiated wipe use the DELETE flow.
  */
 export function resetRecentlyPlayed(): void {
+	lastAppliedEpoch = 0;
 	lastAppliedRevision = 0;
 	internalStore.set({ ...initialState });
 }

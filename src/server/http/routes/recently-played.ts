@@ -19,6 +19,7 @@ export const createRecentlyPlayedRouter = (
       res.json({
         entries: service.getEntries(),
         revision: service.getRevision(),
+        epoch: service.getEpoch(),
       });
     } catch (error) {
       next(error);
@@ -33,12 +34,13 @@ export const createRecentlyPlayedRouter = (
       // and the response body reflects the post-drain state — which
       // may be NON-EMPTY if a now-playing event landed during the
       // clear's persist window and was drained onto the empty list
-      // before this line runs. The revision lets the client filter
-      // out any socket events that arrived from before this snapshot.
+      // before this line runs. The revision + epoch let the client
+      // filter or rebase any socket events still in flight.
       await service.clear();
       res.json({
         entries: service.getEntries(),
         revision: service.getRevision(),
+        epoch: service.getEpoch(),
       });
     } catch (error) {
       next(error);

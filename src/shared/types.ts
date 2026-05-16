@@ -212,32 +212,35 @@ export interface RecentlyPlayedEntry {
 }
 
 /**
- * Monotonic revision on the RecentlyPlayedService. Incremented on
- * every state change (insert / cap-drop / clear); included with all
- * recently-played events and REST responses. Clients track the
- * highest revision they've applied and discard anything not strictly
- * newer — closes a family of races where the DELETE response is a
- * snapshot at server time T, but the client receives socket events
- * for state changes that happened after T before the slower HTTP
- * response arrives.
+ * Sync metadata on every RP payload (snapshots + delta events).
  *
- * Note: this is a per-process counter. A server restart resets it
- * to zero. Reconnect-triggered initializeStores() does a full load,
- * which re-baselines the client's lastApplied to the load's revision.
+ * `revision` is a monotonic per-process counter bumped on every state
+ * change (insert, cap-drop, clear). Clients use it for ordering: deltas
+ * apply only if strictly newer than what's been seen; snapshots apply
+ * if newer-or-equal (they're authoritative and can repair missed
+ * deltas, including the case where the snapshot is at the same
+ * revision as the latest applied delta).
+ *
+ * `epoch` is a per-server-process ID (millisecond timestamp at boot)
+ * that lets clients detect server restart: when the server's counter
+ * resets to 0 a fresh client with `lastApplied: 100` would otherwise
+ * reject everything until the new process caught up. Different epoch =
+ * new authority — clients adopt it and reset their revision tracking.
  */
-export interface RecentlyPlayedSnapshot {
+export interface RecentlyPlayedSync {
+  revision: number;
+  epoch: number;
+}
+
+export interface RecentlyPlayedSnapshot extends RecentlyPlayedSync {
   entries: RecentlyPlayedEntry[];
-  revision: number;
 }
 
-export interface RecentlyPlayedInsertedPayload {
+export interface RecentlyPlayedInsertedPayload extends RecentlyPlayedSync {
   entry: RecentlyPlayedEntry;
-  revision: number;
 }
 
-export interface RecentlyPlayedClearedPayload {
-  revision: number;
-}
+export type RecentlyPlayedClearedPayload = RecentlyPlayedSync;
 
 /**
  * Queue entry for a zone

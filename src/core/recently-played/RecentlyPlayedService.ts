@@ -100,9 +100,15 @@ export class RecentlyPlayedService extends EventEmitter {
   // / clear). Clients track the highest revision they've applied and
   // discard anything not strictly newer, which closes a family of
   // races where socket events and REST responses arrive out of
-  // server-emit order. Per-process — a restart resets to 0; clients
-  // re-baseline on reconnect via the load response's revision.
+  // server-emit order. Per-process — a restart resets to 0.
+  //
+  // The accompanying `epoch` (set once at construction) lets clients
+  // detect a restart and adopt the new authority: a different epoch
+  // means "this is a new server instance, your prior revision is
+  // meaningless." Without it, a fresh server at revision 0 would be
+  // ignored forever by a client that had reached revision 100.
   private revision = 0;
+  private readonly epoch: number = Date.now();
 
   constructor(
     private readonly transportService: TransportService,
@@ -168,6 +174,11 @@ export class RecentlyPlayedService extends EventEmitter {
   /** Current monotonic revision — bumped on every state change. */
   public getRevision(): number {
     return this.revision;
+  }
+
+  /** Per-process identifier; lets clients detect a server restart. */
+  public getEpoch(): number {
+    return this.epoch;
   }
 
   /**
