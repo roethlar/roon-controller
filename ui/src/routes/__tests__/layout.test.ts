@@ -568,6 +568,87 @@ describe('Layout — Explore rail click', () => {
 		expect(store.lastSearchQuery).toBe('beatles');
 		expect(store.loading).toBe(false);
 	});
+
+	it('M-1 reopen #3: search results that arrive mid-rail-await survive the rollback', async () => {
+		// Reviewer race (M-1 reopen #3): the full-state snapshot
+		// captured `searchLoading=true`/`lastSearch=null` at click
+		// time. While the rail REST call awaited, a `browse:search`
+		// socket result landed and called setSearchResults() — which
+		// flipped `searchLoading=false` and set `lastSearch`. When
+		// the rail REST then rejected, the full-state restore wrote
+		// the stale `searchLoading=true`/`lastSearch=null` back,
+		// resurrecting the spinner and wiping the just-arrived
+		// results.
+		//
+		// New conditional-restore behavior: only roll back fields
+		// whose current value still equals the post-setBrowseLoading
+		// snapshot. `searchResults`'s update changed both
+		// `searchLoading` and `lastSearch`, so neither is restored.
+		railWritable.set({
+			entries: [
+				{ id: 'rail-albums', label: 'Albums', labelPath: ['Albums'], isEmpty: false }
+			],
+			loading: false,
+			error: null
+		});
+
+		// Step 1: user is mid-search.
+		setSearchLoading('beatles');
+		expect(get(browseStore).searchLoading).toBe(true);
+		expect(get(browseStore).lastSearch).toBeNull();
+
+		// Step 2: rail click — apiBrowse stalls until we manually
+		// reject it so we can interleave the search-result socket
+		// callback in between.
+		let rejectApi: (err: Error) => void = () => undefined;
+		apiBrowse.mockImplementationOnce(
+			() =>
+				new Promise((_resolve, reject) => {
+					rejectApi = reject;
+				})
+		);
+
+		renderLayout();
+		const railBtn = await screen.findByRole('button', { name: 'Albums' });
+		void fireEvent.click(railBtn);
+
+		// Wait for the click handler to take its snapshots + fire
+		// the (still-pending) apiBrowse.
+		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalled();
+		});
+
+		// Step 3: independent search-result socket lands.
+		const { setSearchResults } = await import('$lib/stores/browseStore');
+		const arrivedResults = [
+			{ kind: 'artist', items: [] }
+		] as unknown as Parameters<typeof setSearchResults>[0];
+		setSearchResults(arrivedResults);
+		expect(get(browseStore).searchLoading).toBe(false);
+		expect(get(browseStore).lastSearch).toBe(arrivedResults);
+
+		// Step 4: rail REST rejects.
+		rejectApi(new Error('REST blew up'));
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import(
+				'$lib/stores/commandFeedbackStore'
+			);
+			expect(get(commandFeedbackStore)?.message).toMatch(
+				/Rail navigation failed/i
+			);
+		});
+
+		// The just-arrived search results SURVIVE the rollback.
+		// `searchLoading` must NOT be resurrected to true; `lastSearch`
+		// must NOT be wiped to null.
+		const store = get(browseStore);
+		expect(store.searchLoading).toBe(false);
+		expect(store.lastSearch).toBe(arrivedResults);
+		// The browse loading flag (which setBrowseLoading set to true
+		// and nothing else touched) IS rolled back to false.
+		expect(store.loading).toBe(false);
+	});
 });
 
 describe('Layout — play-bar link (resolveAndNavigate)', () => {

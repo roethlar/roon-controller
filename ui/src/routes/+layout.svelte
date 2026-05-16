@@ -29,7 +29,8 @@
 		setBrowseResult,
 		setSearchLoading,
 		snapshotBrowseState,
-		restoreBrowseState
+		restoreBrowseStateIfUnchanged,
+		type BrowseStateSnapshot
 	} from '$lib/stores/browseStore';
 	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
 	import { goto } from '$app/navigation';
@@ -424,26 +425,30 @@
 		// a failure left the pane stuck in "loading" with the user's
 		// back stack wiped. Now state mutations are deferred until the
 		// whole label-walk succeeds — on any failure (catch OR stale-
-		// label early return), we revert to the snapshot.
+		// label early return), we revert via conditional restore.
 		//
-		// The snapshot is the FULL BrowseState. setBrowseLoading
-		// below clears `error` AND `searchLoading` as side effects,
-		// and other setters have similar cross-slice clears. A narrow
-		// snapshot would silently lose any field that a future
-		// "set*Loading"-style helper happens to clear — e.g. M-1
-		// reopen #1 caught a missing-`error` rollback, reopen #2
-		// caught a missing-`searchLoading` rollback. Full-state
-		// snapshot is the safe default.
+		// Two snapshots are needed for the conditional-restore
+		// strategy. `priorSnapshot` records what we want to roll back
+		// TO. `afterLoadingSnapshot` (captured below, immediately after
+		// setBrowseLoading) records what we mutated TO. On rollback,
+		// only fields whose current value still equals
+		// `afterLoadingSnapshot` are restored — anything an
+		// independent writer touched mid-await (e.g. a search-result
+		// socket landing during the REST walk) is preserved.
+		// Full-state restore (M-1 reopen #2) wiped those independent
+		// updates; this conditional restore is M-1 reopen #3.
 		const priorSnapshot = onLibrary ? snapshotBrowseState(get(browseStore)) : null;
+		let afterLoadingSnapshot: BrowseStateSnapshot | null = null;
 
 		const restorePriorView = () => {
-			if (!onLibrary || !priorSnapshot) return;
-			restoreBrowseState(priorSnapshot);
+			if (!onLibrary || !priorSnapshot || !afterLoadingSnapshot) return;
+			restoreBrowseStateIfUnchanged(priorSnapshot, afterLoadingSnapshot);
 		};
 
 		try {
 			if (onLibrary) {
 				setBrowseLoading('browse');
+				afterLoadingSnapshot = snapshotBrowseState(get(browseStore));
 			}
 
 			let cur = await apiBrowse(fetch, {

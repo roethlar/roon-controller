@@ -130,24 +130,18 @@ export function setBrowseError(message: string): void {
 }
 
 /**
- * Full snapshot of BrowseState. Used by failure-rollback paths
- * (rail / play-bar navigation) that need to restore EVERY field
- * exactly as it was before an optimistic mutation.
+ * Full snapshot of BrowseState — captures every field. Used by the
+ * failure-rollback paths in rail / play-bar navigation together
+ * with `restoreBrowseStateIfUnchanged` to undo only what the
+ * navigation actually mutated, not what an independent writer
+ * (e.g. a `setSearchResults` socket handler firing mid-await)
+ * has changed since.
  *
- * We capture the whole state — not just current+hierarchy+loading+
- * error — because `setBrowseLoading` clears `searchLoading` and
- * `error` as side effects, and other setters in this file have
- * similar cross-slice clears. A narrow snapshot would silently lose
- * any field that a future "set*Loading"-style helper happens to
- * clear. The full snapshot is the safe default; the cost (one
- * object copy per click) is negligible.
- *
- * Concurrency note: any unrelated mutation that lands DURING the
- * await window between snapshot and restore will be reverted.
- * Today's call sites gate concurrency via per-flow `*InFlight`
- * flags (e.g. `railNavInFlight`) so this is not a practical issue.
- * If a future call site needs to coexist with concurrent writes,
- * snapshot+restore is the wrong tool.
+ * Two snapshots are taken at the call site: `prior` (before any
+ * mutation) and `afterMutation` (immediately after the optimistic
+ * setter call). On rollback, each field is restored only if its
+ * current value is still equal to the post-mutation snapshot —
+ * i.e. nothing else has touched it.
  */
 export type BrowseStateSnapshot = BrowseState;
 
@@ -155,8 +149,57 @@ export function snapshotBrowseState(state: BrowseState): BrowseStateSnapshot {
 	return { ...state };
 }
 
-export function restoreBrowseState(prev: BrowseStateSnapshot): void {
-	internalStore.set({ ...prev });
+/**
+ * Slice-aware conditional restore. Used by failure-rollback paths.
+ *
+ * Fields are grouped into two slices that correspond to the two
+ * UI surfaces:
+ *   - **browse** pane: `current`, `hierarchy`, `loading`, `error`.
+ *   - **search** pane: `lastSearch`, `lastSearchQuery`,
+ *     `searchLoading`, `searchError`.
+ *
+ * For each slice, restore the whole slice from `prior` IF every
+ * field in the slice still equals `afterMutation`. If ANY field in
+ * the slice was independently changed (curr !== afterMutation —
+ * detected via Object.is, which catches reference and primitive
+ * inequality), the entire slice is left as-is.
+ *
+ * Why slice-level: an independent writer that updates one search
+ * field (e.g. `setSearchResults` sets `lastSearch` AND
+ * `searchLoading=false`) signals "this whole slice is mine now."
+ * Per-field restore can't disambiguate idempotent writes (setter
+ * wrote the same primitive value the optimistic mutation set —
+ * Object.is says equal, but it WAS a write). Treating the slice
+ * atomically respects writer intent without needing per-field
+ * write tracking.
+ *
+ * History: M-1 reopen #1 → needed `error` rolled back. Reopen #2
+ * → needed `searchLoading` rolled back. Reopen #3 → full-state
+ * restore wiped a live `setSearchResults` update mid-rail-await;
+ * narrower-than-full was needed. This slice-aware shape satisfies
+ * all three.
+ */
+export function restoreBrowseStateIfUnchanged(
+	prior: BrowseStateSnapshot,
+	afterMutation: BrowseStateSnapshot
+): void {
+	const slices: ReadonlyArray<ReadonlyArray<keyof BrowseState>> = [
+		['current', 'hierarchy', 'loading', 'error'],
+		['lastSearch', 'lastSearchQuery', 'searchLoading', 'searchError']
+	];
+	internalStore.update((curr) => {
+		const out: BrowseState = { ...curr };
+		for (const slice of slices) {
+			const anyIndependentlyChanged = slice.some(
+				(k) => !Object.is(curr[k], afterMutation[k])
+			);
+			if (anyIndependentlyChanged) continue;
+			for (const k of slice) {
+				(out as Record<keyof BrowseState, unknown>)[k] = prior[k];
+			}
+		}
+		return out;
+	});
 }
 
 export function resetBrowse(): void {
