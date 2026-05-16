@@ -54,6 +54,8 @@ export {
 	appendRecentlyPlayedFromSocket,
 	clearRecentlyPlayedEntries,
 	setRecentlyPlayedEntries,
+	beginClearDeferral,
+	endClearDeferral,
 	resetRecentlyPlayed,
 	type RecentlyPlayedState
 } from './recentlyPlayedStore';

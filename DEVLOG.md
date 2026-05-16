@@ -1,5 +1,33 @@
 # Dev Log
 
+## 2026-05-16 — Clear RP: defer socket events during in-flight DELETE
+
+The authoritative-response fix didn't close the last race: the DELETE response is a snapshot at *server clear-resolve time*, but the response can arrive at the client AFTER subsequent socket events. Concrete bug shape:
+
+1. DELETE clears with no buffered events → server snapshots `[]`.
+2. Between snapshot and HTTP-response delivery, a normal post-clear `now-playing-updated` fires → server inserts NewTrack → `recently-played-inserted` broadcast.
+3. Client receives the socket insert first → store=`[NewTrack]`.
+4. Slower HTTP response arrives → `setRecentlyPlayedEntries([])` → store=`[]`.
+
+Final: initiator empty, server/other clients have NewTrack. Same divergence pattern as every prior fix, just one transport-ordering layer deeper.
+
+### Fix
+While a clear is in flight, defer socket events. After the DELETE response lands, apply the authoritative snapshot first, then drain the queue in arrival order (which is server-emit order per socket.io's per-connection guarantee). Two new store helpers:
+- `beginClearDeferral()` — flips a flag; subsequent `appendRecentlyPlayedFromSocket` / `clearRecentlyPlayedEntries` calls push to a buffer instead of mutating the store.
+- `endClearDeferral(entries?)` — if entries supplied (success path), applies them via `setRecentlyPlayedEntries` first; then flips the flag and drains the buffer through the normal handlers.
+
+UI `clearRecentEntries` wraps the DELETE: `beginClearDeferral()` before, `endClearDeferral(entries)` on success, `endClearDeferral()` (no apply, just drain) on failure so legitimate server activity isn't lost.
+
+### Tests
+- New regression: stall the DELETE via `mockImplementationOnce(() => new Promise(...))`. Click Clear; fire a `appendRecentlyPlayedFromSocket(newTrack)` during the in-flight; assert the store still shows the pre-clear entry (insert was queued). Then resolve the DELETE with `[]`; assert the store converges to `[NewTrack]` (snapshot applied, then queued insert drained on top).
+- Verified the test catches the bug by temporarily stripping the deferral check — test failed as expected.
+
+### Minor (P3)
+Updated the route's DELETE comment, which still claimed a 200 meant every client agreed the list is empty. After the authoritative-response change, 200 means the clear committed and the body carries the post-drain state — which may be non-empty.
+
+### Validation
+Backend 98, UI 139 → 140. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-15 (truly final pass) — Clear RP: authoritative DELETE response
 
 The socket-status gate from the previous pass narrowed the initiator-divergence race but didn't close it: socket status isn't a delivery guarantee. A connected socket whose broadcast got dropped (or whose listener threw silently — see the throwing-`cleared`-listener case) leaves the initiator stale. The opposite race exists too: socket connected at decision time but dropped between socket events landing and the HTTP response resolving.

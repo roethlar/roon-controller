@@ -45,6 +45,25 @@ const CAP = 50;
  */
 let clearGen = 0;
 
+/**
+ * Defer-during-clear: while a DELETE is in flight, socket events get
+ * queued instead of applied. After the DELETE response lands we apply
+ * the authoritative snapshot, then drain the queue in arrival order
+ * (which is server-emit order, per socket.io's per-connection
+ * ordering guarantee). This closes the race where a post-snapshot
+ * `inserted` event arrives at the client BEFORE the slower HTTP
+ * response — without it, applying the snapshot would wipe the
+ * legitimate post-snapshot insert.
+ *
+ * Single-flight: the UI's `clearRecentInFlight` boolean prevents
+ * overlapping clears, so we don't need to track nested deferrals.
+ */
+let deferSocketEvents = false;
+let socketEventBuffer: Array<
+	| { type: 'inserted'; entry: RecentlyPlayedEntry }
+	| { type: 'cleared' }
+> = [];
+
 export async function loadRecentlyPlayed(fetchFn: typeof fetch): Promise<void> {
 	const startGen = clearGen;
 	internalStore.update((s) => ({ ...s, loading: true }));
@@ -83,6 +102,10 @@ export async function loadRecentlyPlayed(fetchFn: typeof fetch): Promise<void> {
 export function appendRecentlyPlayedFromSocket(
 	entry: RecentlyPlayedEntry
 ): void {
+	if (deferSocketEvents) {
+		socketEventBuffer.push({ type: 'inserted', entry });
+		return;
+	}
 	internalStore.update((s) => {
 		const key = recentlyPlayedDedupeKey(entry);
 		// Idempotence guard: the exact same entry broadcast twice is a
@@ -115,6 +138,10 @@ export function appendRecentlyPlayedFromSocket(
  * already-empty list is a harmless no-op, so the two paths converge.
  */
 export function clearRecentlyPlayedEntries(): void {
+	if (deferSocketEvents) {
+		socketEventBuffer.push({ type: 'cleared' });
+		return;
+	}
 	clearGen++;
 	internalStore.update((s) => ({ ...s, entries: [], loaded: true }));
 }
@@ -143,4 +170,39 @@ export function setRecentlyPlayedEntries(entries: RecentlyPlayedEntry[]): void {
 export function resetRecentlyPlayed(): void {
 	clearGen++;
 	internalStore.set({ ...initialState });
+}
+
+/**
+ * Open the deferral window. The UI's Clear handler calls this BEFORE
+ * sending DELETE so any `recently-played-*` socket events that arrive
+ * during the in-flight period get queued instead of mutating the
+ * store. Drain happens via `endClearDeferral`.
+ */
+export function beginClearDeferral(): void {
+	deferSocketEvents = true;
+}
+
+/**
+ * Close the deferral window. If `applyEntries` is provided (DELETE
+ * succeeded), it's set as the authoritative snapshot first; then
+ * queued socket events drain through the normal handlers in arrival
+ * order. On failure, callers pass nothing — queued events apply on
+ * top of the current store (they're real server events).
+ */
+export function endClearDeferral(
+	applyEntries?: RecentlyPlayedEntry[]
+): void {
+	if (applyEntries !== undefined) {
+		setRecentlyPlayedEntries(applyEntries);
+	}
+	deferSocketEvents = false;
+	const drained = socketEventBuffer;
+	socketEventBuffer = [];
+	for (const evt of drained) {
+		if (evt.type === 'inserted') {
+			appendRecentlyPlayedFromSocket(evt.entry);
+		} else {
+			clearRecentlyPlayedEntries();
+		}
+	}
 }

@@ -26,15 +26,14 @@ export const createRecentlyPlayedRouter = (
     try {
       // Await durability: the service only emits `cleared` (which
       // triggers the socket broadcast) after the file write commits.
-      // A 200 here means every other client will agree the list is
-      // empty AND the change survives a restart.
-      await service.clear();
-      // Return the LIVE post-drain state, not a hardcoded []. clear()
-      // also drains any now-playing events that buffered during its
-      // persist window — those land on top of the empty list before
-      // we get here. Returning getEntries() lets the caller apply the
-      // authoritative truth instead of guessing whether a deferred
+      // A 200 here means the clear committed and the file survived,
+      // and the response body reflects the post-drain state — which
+      // may be NON-EMPTY if a now-playing event landed during the
+      // clear's persist window and was drained onto the empty list
+      // before this line runs. The caller applies that snapshot
+      // authoritatively instead of guessing whether a deferred
       // `inserted` socket event will (or already did) arrive.
+      await service.clear();
       res.json({ entries: service.getEntries() });
     } catch (error) {
       next(error);

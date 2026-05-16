@@ -2297,6 +2297,63 @@ describe('Library page — Recently Played tile click', () => {
 		expect(screen.queryByRole('button', { name: /Play 'Hey Jude'/i })).toBeNull();
 	});
 
+	it('Clear button queues socket events during in-flight DELETE so the snapshot does not overwrite a post-snapshot insert', async () => {
+		// The race: DELETE response is the server's snapshot at clear
+		// time. If a post-clear now-playing event fires after the
+		// snapshot but before the HTTP response reaches the client,
+		// the socket `inserted` lands first; without deferral, the
+		// later HTTP response replaces the store with the older
+		// (empty) snapshot, wiping the legitimate new entry.
+		//
+		// With deferral: socket events during in-flight are queued
+		// and replayed after the snapshot is applied.
+		let resolveDelete!: (entries: import('@shared/types').RecentlyPlayedEntry[]) => void;
+		apiClearRecentlyPlayed.mockImplementationOnce(
+			() => new Promise((r) => (resolveDelete = r))
+		);
+
+		render(LibraryPage);
+		await tick();
+
+		const clearBtn = await screen.findByRole('button', { name: 'Clear' });
+		clearBtn.click();
+		await tick();
+		expect(apiClearRecentlyPlayed).toHaveBeenCalledTimes(1);
+
+		// Simulate a post-clear socket insert arriving mid-flight.
+		const { appendRecentlyPlayedFromSocket, recentlyPlayedStore } =
+			await import('$lib/stores/recentlyPlayedStore');
+		const newTrack: import('@shared/types').RecentlyPlayedEntry = {
+			title: 'NewTrack',
+			artist: 'Live Artist',
+			album: 'Live Album',
+			duration: 200,
+			image_key: 'img-n',
+			zone_id: 'zone-a',
+			zone_name: 'Living Room',
+			played_at: '2026-05-16T08:00:00.000Z'
+		};
+		appendRecentlyPlayedFromSocket(newTrack);
+
+		// Still showing the pre-clear entry — the socket insert was
+		// queued, not applied.
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
+			'Hey Jude'
+		]);
+
+		// Now the slower HTTP response resolves with the (now stale)
+		// empty snapshot. Without deferral, this would wipe NewTrack.
+		resolveDelete([]);
+
+		await waitFor(() => {
+			// Snapshot applied AND queued insert drained on top → store
+			// converges to [NewTrack], matching server.
+			expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
+				'NewTrack'
+			]);
+		});
+	});
+
 	it('Clear button applies post-drain entries from the DELETE response', async () => {
 		// If a now-playing event landed during the server's clear
 		// window, clear() drains it onto the empty list before

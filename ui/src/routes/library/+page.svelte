@@ -31,7 +31,8 @@
 		welcomeStatsStore,
 		loadWelcomeStats,
 		recentlyPlayedStore,
-		setRecentlyPlayedEntries,
+		beginClearDeferral,
+		endClearDeferral,
 		nowPlayingList,
 		type BrowseBreadcrumb,
 		type BrowseHistoryStep
@@ -213,28 +214,28 @@
 	let clearRecentInFlight = $state(false);
 
 	/**
-	 * Wipe the Recently Played list. The DELETE response carries the
-	 * server's authoritative post-drain entries (typically `[]`, but
-	 * if a now-playing event landed during the server's clear window
-	 * those drained inserts come back here). We apply the response
-	 * unconditionally so the initiating client converges to the same
-	 * state as everyone else regardless of socket delivery — broadcast
-	 * dropped, listener threw, status still says connected after a
-	 * silent disconnect, etc.
-	 *
-	 * The `cleared` and `inserted` socket events still fire for all
-	 * clients (including this one). They converge to the same final
-	 * state because they ARE this clear's outcome via a different
-	 * transport — the only cost is a brief flicker on the rare
-	 * ordering where the HTTP response wins the race.
+	 * Wipe the Recently Played list. Open the socket-event deferral
+	 * window BEFORE sending DELETE, so any `recently-played-*` events
+	 * that arrive during the in-flight period get queued. After the
+	 * DELETE response lands, apply the authoritative post-drain
+	 * entries and drain the queue in arrival order. This closes the
+	 * race where a post-snapshot `inserted` arrives first via socket,
+	 * then the slower HTTP response overwrites it with the older
+	 * snapshot — final state would otherwise be initiator-empty while
+	 * server and other clients hold the new entry.
 	 */
 	async function clearRecentEntries(): Promise<void> {
 		if (clearRecentInFlight) return;
 		clearRecentInFlight = true;
+		beginClearDeferral();
 		try {
 			const entries = await clearRecentlyPlayed(fetch);
-			setRecentlyPlayedEntries(entries);
+			endClearDeferral(entries);
 		} catch (err) {
+			// Failure: don't apply a snapshot; just drain any queued
+			// socket events onto the current store so legitimate
+			// server activity isn't lost.
+			endClearDeferral();
 			pushCommandFeedback({
 				source: 'browse',
 				command: 'recently-played',
