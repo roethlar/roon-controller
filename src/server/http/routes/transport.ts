@@ -224,6 +224,17 @@ export const createTransportRouter = (transportService: TransportService): Route
         const response: ErrorResponse = { error: 'zoneId required' };
         return res.status(400).json(response);
       }
+      // M-4: cap at MAX so a query like ?maxItems=999999999 doesn't
+      // turn into a giant Roon subscription + snapshot + broadcast.
+      if (
+        maxItems !== undefined &&
+        maxItems > TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS
+      ) {
+        const response: ErrorResponse = {
+          error: `maxItems must be ≤ ${TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS}`,
+        };
+        return res.status(400).json(response);
+      }
 
       transportService.subscribeQueue(zoneId, maxItems);
       const response: QueueResponse = { queue: transportService.getQueue(zoneId) };
@@ -247,6 +258,16 @@ export const createTransportRouter = (transportService: TransportService): Route
       }
       if (max_item_count !== undefined && (!Number.isInteger(max_item_count) || max_item_count <= 0)) {
         const response: ErrorResponse = { error: 'max_item_count must be a positive integer' };
+        return res.status(400).json(response);
+      }
+      // M-4: cap at MAX (see TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS).
+      if (
+        max_item_count !== undefined &&
+        max_item_count > TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS
+      ) {
+        const response: ErrorResponse = {
+          error: `max_item_count must be ≤ ${TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS}`,
+        };
         return res.status(400).json(response);
       }
 

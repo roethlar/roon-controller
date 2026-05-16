@@ -198,6 +198,27 @@ describe('HTTP app routing', () => {
     }
   });
 
+  it('M-4: GET /api/transport/queue/:zoneId rejects maxItems > MAX with 400', async () => {
+    // Per TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS = 50_000.
+    // A query that exceeds the cap must be rejected up-front so we
+    // don't even attempt a multi-million-item Roon subscription.
+    const res = await fetch(`${app.url}/api/transport/queue/zone-q?maxItems=999999`);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/maxItems must be ≤ 50000/);
+  });
+
+  it('M-4: POST /api/transport/queue/subscribe rejects max_item_count > MAX with 400', async () => {
+    const res = await fetch(`${app.url}/api/transport/queue/subscribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ zone_id: 'zone-q', max_item_count: 999_999 }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/max_item_count must be ≤ 50000/);
+  });
+
   it('DELETE /api/recently-played wipes the list', async () => {
     // Seed one entry, confirm it lands, then DELETE and confirm empty.
     const transport = (app.recentlyPlayed as any).transportService;

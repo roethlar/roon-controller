@@ -307,6 +307,20 @@ export const attachSocketServer = (
           );
           return;
         }
+        // M-4: cap at MAX (see TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS).
+        if (
+          payload.max_item_count !== undefined &&
+          payload.max_item_count > TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS
+        ) {
+          sendError(
+            socket,
+            "queue:error",
+            "queue:subscribe",
+            `max_item_count must be ≤ ${TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS}`,
+            ack
+          );
+          return;
+        }
         try {
           transportService.subscribeQueue(payload.zone_id, payload.max_item_count);
           const response: QueueResponse = {

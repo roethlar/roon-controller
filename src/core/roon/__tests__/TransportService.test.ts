@@ -224,6 +224,61 @@ describe('TransportService', () => {
         expect.any(Function)
       );
     });
+
+    it('M-4: caps requested max_item_count at MAX_QUEUE_SUBSCRIPTION_ITEMS', () => {
+      // Defense-in-depth clamp: even if a validator bypassed by an
+      // internal caller passes a huge number, the service must not
+      // forward it to Roon. Routes/socket additionally reject > MAX
+      // with a 400, but this test pins the service-internal cap.
+      mockTransport.subscribe_queue.mockImplementation(
+        (_zoneId: string, _maxItems: number, callback: Function) => {
+          callback('Subscribed', { items: [] });
+          return { unsubscribe: jest.fn() };
+        }
+      );
+
+      service.subscribeQueue('zone123', 1_000_000_000);
+
+      expect(mockTransport.subscribe_queue).toHaveBeenCalledWith(
+        'zone123',
+        TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS,
+        expect.any(Function)
+      );
+    });
+
+    it('M-4: caps zone-derived size at MAX even when queue_items_remaining is huge', () => {
+      // If a (malformed?) zone payload claims billions of remaining
+      // queue items, we shouldn't pass that through. The clamp also
+      // covers the basedOnZone path.
+      mockTransport.subscribe_zones.mockImplementation((callback: Function) => {
+        callback('Subscribed', {
+          zones: [
+            {
+              zone_id: 'zone123',
+              display_name: 'Main Zone',
+              state: 'playing',
+              queue_items_remaining: 999_999_999,
+            },
+          ],
+        });
+      });
+
+      mockTransport.subscribe_queue.mockImplementation(
+        (_zoneId: string, _maxItems: number, callback: Function) => {
+          callback('Subscribed', { items: [] });
+          return { unsubscribe: jest.fn() };
+        }
+      );
+
+      service.subscribeZones();
+      service.subscribeQueue('zone123');
+
+      expect(mockTransport.subscribe_queue).toHaveBeenCalledWith(
+        'zone123',
+        TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS,
+        expect.any(Function)
+      );
+    });
   });
 
   describe('queue positional diffs', () => {

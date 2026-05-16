@@ -70,6 +70,19 @@ export declare interface TransportService {
 export class TransportService extends EventEmitter {
   private static readonly MIN_QUEUE_SUBSCRIPTION_ITEMS = 5000;
   private static readonly QUEUE_SUBSCRIPTION_HEADROOM = 32;
+  /**
+   * Upper bound on `max_item_count` for queue subscriptions. Exposed
+   * publicly so REST/socket route validators can reject oversized
+   * requests with a clear error rather than silently clamping. The
+   * cap also lives inside `resolveQueueSubscriptionSize` as defense
+   * in depth — even a bypassed validator can't push a 1B-item
+   * subscription through to Roon.
+   *
+   * Sized as 10× the MIN floor. Real-world queues rarely top a few
+   * thousand; 50k headroom covers extreme playlists without exposing
+   * us to a malicious or buggy client requesting Number.MAX_SAFE_INTEGER.
+   */
+  public static readonly MAX_QUEUE_SUBSCRIPTION_ITEMS = 50_000;
 
   private transport: any | null = null;
   private subscriptions: Map<string, Zone> = new Map();
@@ -717,10 +730,18 @@ export class TransportService extends EventEmitter {
           TransportService.QUEUE_SUBSCRIPTION_HEADROOM
         : 0;
 
-    return Math.max(
-      TransportService.MIN_QUEUE_SUBSCRIPTION_ITEMS,
-      requested,
-      basedOnZone
+    // Clamp at MAX as defense in depth: REST/socket validators
+    // already reject > MAX, but a bypassed validator (or a future
+    // internal caller) shouldn't be able to push a million-item
+    // subscription through to Roon. The clamp is silent here — the
+    // upstream validators produce the user-facing error.
+    return Math.min(
+      TransportService.MAX_QUEUE_SUBSCRIPTION_ITEMS,
+      Math.max(
+        TransportService.MIN_QUEUE_SUBSCRIPTION_ITEMS,
+        requested,
+        basedOnZone
+      )
     );
   }
 
