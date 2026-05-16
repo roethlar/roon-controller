@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/svelte';
 import { writable, get } from 'svelte/store';
 import { tick, createRawSnippet } from 'svelte';
-import type { BrowseResult, BrowseItem, BrowseOptions } from '@shared/types';
+import type { BrowseResult, BrowseOptions } from '@shared/types';
 
 const { railWritable, gotoMock, apiBrowse } = vi.hoisted(() => {
 	const { writable: w } = require('svelte/store') as typeof import('svelte/store');
@@ -30,13 +30,8 @@ vi.mock('$app/stores', () => ({
 	}
 }));
 
-const fakeSocket = {
-	emit: vi.fn(),
-	on: vi.fn(),
-	off: vi.fn(),
-	connected: true,
-	io: { on: vi.fn(), off: vi.fn() }
-};
+import { createFakeSocket } from '../../test/fixtures/socket';
+const fakeSocket = createFakeSocket();
 vi.mock('$lib/socket/client', () => ({
 	getSocket: () => fakeSocket,
 	disconnectSocket: vi.fn()
@@ -88,30 +83,7 @@ import {
 	setBrowseError
 } from '$lib/stores/browseStore';
 
-function listResult(over: Partial<BrowseResult> = {}): BrowseResult {
-	return {
-		title: over.title ?? 'Browse',
-		subtitle: over.subtitle,
-		level: over.level ?? 0,
-		offset: over.offset ?? 0,
-		count: over.count ?? (over.items?.length ?? 0),
-		totalCount: over.totalCount ?? (over.items?.length ?? 0),
-		items: over.items ?? []
-	};
-}
-
-function makeItem(over: Partial<BrowseItem> = {}): BrowseItem {
-	return {
-		title: over.title ?? 'Item',
-		subtitle: over.subtitle,
-		itemKey: over.itemKey,
-		hint: over.hint ?? 'list',
-		imageKey: over.imageKey,
-		isLoadable: over.isLoadable ?? true,
-		isPlayable: over.isPlayable ?? false,
-		itemType: over.itemType
-	};
-}
+import { listResult, makeItem } from '../../test/fixtures/browse';
 
 // The layout calls `{@render children()}` (non-optional). A trivial
 // snippet keeps the mount from throwing; the children aren't inspected.

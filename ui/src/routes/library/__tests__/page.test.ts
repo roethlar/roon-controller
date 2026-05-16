@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
-import type { BrowseResult, BrowseItem, SearchResult } from '@shared/types';
+import type { BrowseResult, BrowseItem } from '@shared/types';
 
 // ---------------- Mocks ----------------
 //
@@ -21,13 +21,8 @@ vi.mock('$lib/api/client', () => ({
 	clearRecentlyPlayed: (...args: any[]) => apiClearRecentlyPlayed(...(args as [unknown]))
 }));
 
-const fakeSocket = {
-	emit: vi.fn(),
-	on: vi.fn(),
-	off: vi.fn(),
-	connected: true,
-	io: { on: vi.fn(), off: vi.fn() }
-};
+import { createFakeSocket } from '../../../test/fixtures/socket';
+const fakeSocket = createFakeSocket();
 vi.mock('$lib/socket/client', () => ({
 	getSocket: () => fakeSocket,
 	disconnectSocket: vi.fn()
@@ -54,39 +49,7 @@ import { setSelectedZone } from '$lib/stores/selectedZoneStore';
 
 // ---------------- Helpers ----------------
 
-function listResult(over: Partial<BrowseResult> = {}): BrowseResult {
-	return {
-		title: over.title ?? 'Browse',
-		subtitle: over.subtitle,
-		level: over.level ?? 0,
-		offset: over.offset ?? 0,
-		count: over.count ?? (over.items?.length ?? 0),
-		totalCount: over.totalCount ?? (over.items?.length ?? 0),
-		items: over.items ?? []
-	};
-}
-
-function makeItem(over: Partial<BrowseItem> = {}): BrowseItem {
-	return {
-		title: over.title ?? 'Item',
-		subtitle: over.subtitle,
-		itemKey: over.itemKey,
-		hint: over.hint ?? 'list',
-		imageKey: over.imageKey,
-		isLoadable: over.isLoadable ?? true,
-		isPlayable: over.isPlayable ?? false,
-		itemType: over.itemType
-	};
-}
-
-function makeSearchResult(
-	over: Partial<SearchResult> & { resultType: SearchResult['resultType'] }
-): SearchResult {
-	return {
-		...makeItem(over),
-		resultType: over.resultType
-	};
-}
+import { listResult, makeItem, makeSearchResult } from '../../../test/fixtures/browse';
 
 beforeEach(() => {
 	apiBrowse.mockReset();

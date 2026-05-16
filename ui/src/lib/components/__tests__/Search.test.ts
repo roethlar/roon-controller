@@ -4,14 +4,10 @@ import { tick } from 'svelte';
 import userEvent from '@testing-library/user-event';
 import Search from '../Search.svelte';
 import type { SearchResult } from '@shared/types';
+import { createFakeSocket } from '../../../test/fixtures/socket';
 
 // Mock socket client so the component doesn't try to open a real socket.
-const fakeSocket = {
-	emit: vi.fn(),
-	on: vi.fn(),
-	off: vi.fn(),
-	connected: true
-};
+const fakeSocket = createFakeSocket();
 vi.mock('$lib/socket/client', () => ({
 	getSocket: () => fakeSocket
 }));
@@ -22,15 +18,19 @@ import {
 	clearSearchResults
 } from '$lib/stores/browseStore';
 import { setSelectedZone } from '$lib/stores/selectedZoneStore';
+import { makeSearchResult } from '../../../test/fixtures/browse';
 
-function makeResult(over: Partial<SearchResult> & { resultType: SearchResult['resultType'] }): SearchResult {
-	return {
+// Local alias: Search.test was using a one-off `makeResult` shape with
+// a fixed `itemKey: 'k'` default. makeSearchResult is more strict
+// (matches the shared fixture), so adapt here.
+function makeResult(
+	over: Partial<SearchResult> & { resultType: SearchResult['resultType'] }
+): SearchResult {
+	return makeSearchResult({
 		title: 'Untitled',
-		isLoadable: true,
-		isPlayable: false,
 		itemKey: 'k',
 		...over
-	};
+	});
 }
 
 beforeEach(() => {
