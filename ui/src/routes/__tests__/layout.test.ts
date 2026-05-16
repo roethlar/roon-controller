@@ -387,7 +387,12 @@ describe('Layout — play-bar link (resolveAndNavigate)', () => {
 			seek_position: 0
 		});
 
-		// Seed prior history + pane + search context.
+		// Seed prior history + pane + search context. Crucially, seed
+		// a prior `lastSearchQuery` — the old broken ordering called
+		// setSearchLoading(opts.input) BEFORE the failing drill, which
+		// would clobber lastSearchQuery to opts.input ('Tori Amos').
+		// Pin the contract that the prior query survives a drill failure
+		// (M-2 reopen: original test missed this assertion entirely).
 		pushHistory({ hierarchy: 'browse', itemKey: 'prior-key' }, undefined, {
 			title: 'Prior Page'
 		});
@@ -396,6 +401,12 @@ describe('Layout — play-bar link (resolveAndNavigate)', () => {
 			level: 1,
 			items: [makeItem({ title: 'Prior Item', itemKey: 'prior-item-key' })]
 		});
+		// setSearchLoading flips searchLoading=true AND sets
+		// lastSearchQuery; setBrowseResult clears searchLoading back
+		// to false while preserving lastSearchQuery — leaving a
+		// clean prior search context: lastSearchQuery='prior-query',
+		// searchLoading=false, current=priorResult.
+		setSearchLoading('prior-query');
 		setBrowseResult(priorResult, 'browse');
 
 		// Search succeeds (match found); drill rejects.
@@ -429,11 +440,14 @@ describe('Layout — play-bar link (resolveAndNavigate)', () => {
 		const histAfter = get(browseHistoryStore);
 		expect(histAfter.history.map((s) => s.itemKey)).toEqual(['prior-key']);
 
-		// browseStore unchanged — searchLoading not set, pane intact.
+		// browseStore unchanged — searchLoading not set, pane intact,
+		// AND the prior lastSearchQuery is preserved (this is the
+		// reopen-fix assertion that the old ordering would have failed).
 		const storeAfter = get(browseStore);
 		expect(storeAfter.searchLoading).toBe(false);
 		expect(storeAfter.current).toBe(priorResult);
 		expect(storeAfter.hierarchy).toBe('browse');
+		expect(storeAfter.lastSearchQuery).toBe('prior-query');
 	});
 
 	it('M-2: search apiBrowse failure leaves prior history + search context intact', async () => {
