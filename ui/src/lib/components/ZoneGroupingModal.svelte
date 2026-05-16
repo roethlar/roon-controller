@@ -46,15 +46,24 @@
 	let selectedOutputs = $state<Set<string>>(new Set());
 	let submitting = $state(false);
 
-	// Reset selection every time the modal opens. Pre-check the
-	// active zone's outputs so the user starts from a sensible base.
+	// Reset selection ONLY on the closed→open transition. Reviewer
+	// caught (feat-5 reopen #1): the prior effect re-ran on every
+	// zonesStore update (because it reads activeZone, derived from
+	// zonesStore). A socket-driven zone refresh mid-selection would
+	// clobber the user's checkbox state back to "active zone outputs
+	// only". Track the previous open value and re-seed only when
+	// transitioning false → true.
+	let wasOpen = false;
 	$effect(() => {
-		if (!$zoneGroupingStore) return;
-		const next = new Set<string>();
-		for (const out of activeZone?.outputs ?? []) {
-			if (out.output_id) next.add(out.output_id);
+		const open = $zoneGroupingStore;
+		if (open && !wasOpen) {
+			const next = new Set<string>();
+			for (const out of activeZone?.outputs ?? []) {
+				if (out.output_id) next.add(out.output_id);
+			}
+			selectedOutputs = next;
 		}
-		selectedOutputs = next;
+		wasOpen = open;
 	});
 
 	function toggleOutput(output_id: string): void {
@@ -80,7 +89,14 @@
 		}
 		submitting = true;
 		try {
-			await emitWithAck(
+			// emitWithAck contract: resolves with AckResponse<T>, never
+			// rejects for server-side failures (timeout, malformed ack,
+			// disconnected, server-reported error). Inspect the result
+			// and keep the modal open on failure so the user can retry
+			// without losing their selection. The `feedback` option
+			// already surfaces a toast via commandFeedbackStore — we
+			// just preserve the dialog state.
+			const response = await emitWithAck(
 				socket,
 				'transport:group',
 				{ output_ids: Array.from(selectedOutputs) },
@@ -89,7 +105,11 @@
 					feedback: { source: 'transport', command: 'transport:group' }
 				}
 			);
-			closeZoneGrouping();
+			if (response.success) {
+				closeZoneGrouping();
+			}
+			// else: stay open, selection preserved, toast handled by
+			// emitWithAck's feedback option.
 		} finally {
 			submitting = false;
 		}

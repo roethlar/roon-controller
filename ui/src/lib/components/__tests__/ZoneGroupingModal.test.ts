@@ -196,4 +196,81 @@ describe('ZoneGroupingModal', () => {
 		// Group button stays disabled.
 		expect(screen.getByRole('button', { name: 'Group selected outputs' })).toBeDisabled();
 	});
+
+	it('reopen #1 P1: user-checked outputs survive a zonesStore refresh mid-selection', async () => {
+		// Prior $effect re-ran on every zonesStore update (because it
+		// read activeZone, derived from zonesStore). Socket-driven
+		// zone refreshes would clobber the user's checked boxes back
+		// to "active zone outputs only". Fix re-seeds only on the
+		// closed→open transition.
+		seedTwoZones();
+		render(ZoneGroupingModal);
+		openZoneGrouping();
+		await tick();
+
+		const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+		await fireEvent.click(checkboxes[1]); // Add Kitchen
+		expect(checkboxes[0].checked).toBe(true);
+		expect(checkboxes[1].checked).toBe(true);
+
+		// Socket-driven refresh: same zones but a new state value
+		// flows through the derived chain. Pre-fix this reset
+		// selectedOutputs back to {out-a}.
+		setZonesSnapshot([
+			makeZone({
+				zone_id: 'zone-a',
+				display_name: 'Living Room',
+				state: 'paused',
+				outputs: [{ output_id: 'out-a', display_name: 'Speakers' }]
+			}),
+			makeZone({
+				zone_id: 'zone-b',
+				display_name: 'Kitchen',
+				state: 'playing',
+				outputs: [{ output_id: 'out-b', display_name: 'Sonos' }]
+			})
+		]);
+		await tick();
+
+		const refreshed = screen.getAllByRole('checkbox') as HTMLInputElement[];
+		expect(refreshed[0].checked).toBe(true);
+		expect(refreshed[1].checked).toBe(true);
+	});
+
+	it('reopen #1 P2: failed save keeps the modal open with selection intact', async () => {
+		// emitWithAck doesn't throw for server-reported failures; it
+		// resolves with { success: false, error }. Save must inspect
+		// the result and keep the modal open + selection intact on
+		// failure.
+		vi.mocked(emitWithAck).mockResolvedValue({
+			success: false,
+			error: 'group_outputs failed: NetworkError'
+		});
+
+		seedTwoZones();
+		render(ZoneGroupingModal);
+		openZoneGrouping();
+		await tick();
+
+		const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+		await fireEvent.click(checkboxes[1]);
+
+		const groupBtn = screen.getByRole('button', {
+			name: 'Group selected outputs'
+		});
+		await fireEvent.click(groupBtn);
+
+		await waitFor(() => {
+			expect(emitWithAck).toHaveBeenCalled();
+		});
+
+		expect(get(zoneGroupingStore)).toBe(true);
+		const stillThere = screen.getAllByRole('checkbox') as HTMLInputElement[];
+		expect(stillThere[0].checked).toBe(true);
+		expect(stillThere[1].checked).toBe(true);
+		// submitting cleared so user can retry.
+		expect(
+			screen.getByRole('button', { name: 'Group selected outputs' })
+		).not.toBeDisabled();
+	});
 });
