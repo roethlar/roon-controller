@@ -13,7 +13,11 @@ See `SETUP.md` for the generic two-agent workflow rationale.
 
 | ID    | Severity | Title                                  | Status | Branch |
 |-------|----------|----------------------------------------|--------|--------|
-| _(none yet — reviewer populates as findings are identified)_ |
+| M-1 | MEDIUM | Rail navigation loses current state on REST failure | [ ] | `fix/m-1-rail-rest-failure` |
+| M-2 | MEDIUM | Play-bar navigation commits history before final browse succeeds | [~] | `fix/m-2-playbar-history-commit` |
+| M-3 | MEDIUM | Recently Played inserts are broadcast before durable persistence | [ ] | |
+| M-4 | MEDIUM | Queue subscriptions accept unbounded item counts | [ ] | |
+| L-1 | LOW | Missing Recently Played readiness/health diagnostics | [ ] | |
 
 ## Conventions
 

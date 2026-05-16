@@ -282,6 +282,8 @@
 		playBarNavInFlight = true;
 		try {
 			const zoneId = $selectedZoneStore || undefined;
+			const onLibrary = $page.url.pathname === '/library';
+
 			const search = await apiBrowse(fetch, {
 				hierarchy: 'search',
 				input: opts.input,
@@ -310,12 +312,28 @@
 				return;
 			}
 
-			// Set search context BEFORE pushing history so the search
-			// query is available to remount-restore. pushHistory captures
-			// `lastSearchQuery` at the time of the call; without this
-			// `setSearchLoading` the persisted history step would be
-			// search-rooted with searchQuery=null, and Phase A's
-			// restoreBrowse would discard it.
+			// Drill into the matched entity BEFORE mutating visible
+			// state. The old code set setSearchLoading + resetHistory
+			// + pushHistory before this call; a drill failure left
+			// searchLoading stuck true, the prior back stack wiped, and
+			// (off-library) a staged search-rooted history step without
+			// a goto. The first apiBrowse already returned successfully,
+			// so the drill is the only remaining failure point — defer
+			// all state mutation until it succeeds.
+			const result = await apiBrowse(fetch, {
+				hierarchy: 'search',
+				itemKey: match.itemKey,
+				zoneId,
+				multiSessionKey: SEARCH_SESSION_KEY
+			});
+
+			// Drill succeeded — atomic commit of search context +
+			// history + pane. setSearchLoading also re-seeds
+			// lastSearchQuery so Search.svelte's "for X" label and the
+			// library page's forward-nav reads match the entity we just
+			// opened. On /library setBrowseResult flips searchLoading
+			// back to false; the off-library path leaves it set briefly
+			// until mount's restoreBrowse renders the result.
 			setSearchLoading(opts.input);
 			resetHistory();
 			pushHistory(
@@ -336,15 +354,7 @@
 				}
 			);
 
-			// Drill into the matched entity to populate the right pane.
-			const result = await apiBrowse(fetch, {
-				hierarchy: 'search',
-				itemKey: match.itemKey,
-				zoneId,
-				multiSessionKey: SEARCH_SESSION_KEY
-			});
-
-			if ($page.url.pathname === '/library') {
+			if (onLibrary) {
 				setBrowseResult(result, 'search');
 			} else {
 				void goto('/library');
@@ -355,6 +365,9 @@
 				command: 'play-bar',
 				message: `Couldn't open: ${(err as Error).message}`
 			});
+			// No restore needed: we deferred all visible-state mutation
+			// until after the drill succeeded, so a failure of either
+			// apiBrowse leaves history + browseStore untouched.
 		} finally {
 			playBarNavInFlight = false;
 		}

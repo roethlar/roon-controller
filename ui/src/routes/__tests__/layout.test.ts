@@ -74,12 +74,18 @@ import Layout from '../+layout.svelte';
 import {
 	browseHistoryStore,
 	resetHistory,
+	pushHistory,
 	type BrowseHistoryStep
 } from '$lib/stores/browseHistoryStore';
 import { pendingSearchStore } from '$lib/stores/pendingSearchStore';
 import { setNowPlaying, resetNowPlaying } from '$lib/stores/nowPlayingStore';
 import { setSelectedZone } from '$lib/stores/selectedZoneStore';
-import { resetBrowse, browseStore } from '$lib/stores/browseStore';
+import {
+	resetBrowse,
+	browseStore,
+	setBrowseResult,
+	setSearchLoading
+} from '$lib/stores/browseStore';
 
 function listResult(over: Partial<BrowseResult> = {}): BrowseResult {
 	return {
@@ -362,5 +368,174 @@ describe('Layout — play-bar link (resolveAndNavigate)', () => {
 		const store = get(browseStore);
 		expect(store.hierarchy).toBe('search');
 		expect(store.current?.level).toBe(1);
+	});
+
+	it('M-2: drill failure leaves prior history + search context intact', async () => {
+		// Old code: setSearchLoading + resetHistory + pushHistory ran
+		// BEFORE the drill apiBrowse. A failing drill left searchLoading
+		// stuck true, prior back stack wiped, and a search-rooted
+		// history step pointing at the matched-but-undrilled itemKey.
+		// New behavior: defer all mutations until drill succeeds.
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 'Cornflake Girl',
+			artist: 'Tori Amos',
+			album: 'Under the Pink',
+			duration: 300,
+			seek_position: 0
+		});
+
+		// Seed prior history + pane + search context.
+		pushHistory({ hierarchy: 'browse', itemKey: 'prior-key' }, undefined, {
+			title: 'Prior Page'
+		});
+		const priorResult = listResult({
+			title: 'Prior Page',
+			level: 1,
+			items: [makeItem({ title: 'Prior Item', itemKey: 'prior-item-key' })]
+		});
+		setBrowseResult(priorResult, 'browse');
+
+		// Search succeeds (match found); drill rejects.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Tori Amos',
+						itemKey: 'fresh-artist-key',
+						itemType: 'artist',
+						subtitle: ''
+					})
+				]
+			})
+		);
+		apiBrowse.mockRejectedValueOnce(new Error('drill failed'));
+
+		renderLayout();
+		const artistBtn = await screen.findByRole('button', { name: 'Tori Amos' });
+		await fireEvent.click(artistBtn);
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import(
+				'$lib/stores/commandFeedbackStore'
+			);
+			expect(get(commandFeedbackStore)?.message).toMatch(/Couldn't open/i);
+		});
+
+		// History untouched — prior back stack preserved.
+		const histAfter = get(browseHistoryStore);
+		expect(histAfter.history.map((s) => s.itemKey)).toEqual(['prior-key']);
+
+		// browseStore unchanged — searchLoading not set, pane intact.
+		const storeAfter = get(browseStore);
+		expect(storeAfter.searchLoading).toBe(false);
+		expect(storeAfter.current).toBe(priorResult);
+		expect(storeAfter.hierarchy).toBe('browse');
+	});
+
+	it('M-2: search apiBrowse failure leaves prior history + search context intact', async () => {
+		// First apiBrowse (the search itself) rejecting is the easier
+		// case — no state should be mutated before that call returns.
+		// Pin the contract anyway: a play-bar click that can't even
+		// complete the search must not corrupt back state.
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 'Cornflake Girl',
+			artist: 'Tori Amos',
+			album: 'Under the Pink',
+			duration: 300,
+			seek_position: 0
+		});
+
+		pushHistory({ hierarchy: 'browse', itemKey: 'prior-key' }, undefined, {
+			title: 'Prior Page'
+		});
+		const priorResult = listResult({
+			title: 'Prior Page',
+			level: 1,
+			items: [makeItem({ title: 'Prior Item', itemKey: 'prior-item-key' })]
+		});
+		setBrowseResult(priorResult, 'browse');
+		// Seed an unrelated lastSearchQuery to confirm it's not overwritten.
+		setSearchLoading('prior-query');
+		// setSearchLoading flips searchLoading=true; clear it back so
+		// the failure-path assertion (searchLoading still false) is
+		// meaningful.
+		setBrowseResult(priorResult, 'browse');
+
+		apiBrowse.mockRejectedValueOnce(new Error('search blew up'));
+
+		renderLayout();
+		const artistBtn = await screen.findByRole('button', { name: 'Tori Amos' });
+		await fireEvent.click(artistBtn);
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import(
+				'$lib/stores/commandFeedbackStore'
+			);
+			expect(get(commandFeedbackStore)?.message).toMatch(/Couldn't open/i);
+		});
+
+		const histAfter = get(browseHistoryStore);
+		expect(histAfter.history.map((s) => s.itemKey)).toEqual(['prior-key']);
+
+		const storeAfter = get(browseStore);
+		expect(storeAfter.searchLoading).toBe(false);
+		expect(storeAfter.current).toBe(priorResult);
+		expect(storeAfter.lastSearchQuery).toBe('prior-query');
+	});
+
+	it('M-2: off-library drill failure does NOT stage a search-rooted history without goto', async () => {
+		// Old code's bug: from a non-library route, the drill failure
+		// left a search-rooted history step pushed but no goto fired.
+		// A later visit to /library would replay that broken step.
+		// New behavior: nothing is pushed until the drill succeeds.
+		pageState.set({ url: new URL('http://localhost/queue') });
+
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 'Cornflake Girl',
+			artist: 'Tori Amos',
+			album: 'Under the Pink',
+			duration: 300,
+			seek_position: 0
+		});
+
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Tori Amos',
+						itemKey: 'fresh-artist-key',
+						itemType: 'artist',
+						subtitle: ''
+					})
+				]
+			})
+		);
+		apiBrowse.mockRejectedValueOnce(new Error('drill failed'));
+
+		renderLayout();
+		const artistBtn = await screen.findByRole('button', { name: 'Tori Amos' });
+		await fireEvent.click(artistBtn);
+
+		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalledTimes(2);
+		});
+
+		// No goto fired (drill failed before the commit branch).
+		expect(gotoMock).not.toHaveBeenCalled();
+
+		// No history pushed — a later /library visit must not see an
+		// orphan search-rooted step.
+		expect(get(browseHistoryStore).history).toEqual([]);
 	});
 });
