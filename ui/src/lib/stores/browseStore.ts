@@ -130,46 +130,33 @@ export function setBrowseError(message: string): void {
 }
 
 /**
- * Snapshot of the visible-pane slice — what a viewer sees in the
- * browse pane: current result, hierarchy, loading flag, and error
- * banner. Used by failure-rollback paths that need to restore the
- * pane to exactly what it showed before an optimistic mutation.
+ * Full snapshot of BrowseState. Used by failure-rollback paths
+ * (rail / play-bar navigation) that need to restore EVERY field
+ * exactly as it was before an optimistic mutation.
  *
- * Deliberately does NOT include the search-pane state
- * (lastSearch/searchLoading/searchError) — those are owned by a
- * different surface and have their own setters.
+ * We capture the whole state — not just current+hierarchy+loading+
+ * error — because `setBrowseLoading` clears `searchLoading` and
+ * `error` as side effects, and other setters in this file have
+ * similar cross-slice clears. A narrow snapshot would silently lose
+ * any field that a future "set*Loading"-style helper happens to
+ * clear. The full snapshot is the safe default; the cost (one
+ * object copy per click) is negligible.
+ *
+ * Concurrency note: any unrelated mutation that lands DURING the
+ * await window between snapshot and restore will be reverted.
+ * Today's call sites gate concurrency via per-flow `*InFlight`
+ * flags (e.g. `railNavInFlight`) so this is not a practical issue.
+ * If a future call site needs to coexist with concurrent writes,
+ * snapshot+restore is the wrong tool.
  */
-export interface BrowseViewSnapshot {
-	current: BrowseResult | null;
-	hierarchy: string;
-	loading: boolean;
-	error: string | null;
+export type BrowseStateSnapshot = BrowseState;
+
+export function snapshotBrowseState(state: BrowseState): BrowseStateSnapshot {
+	return { ...state };
 }
 
-export function snapshotBrowseView(state: BrowseState): BrowseViewSnapshot {
-	return {
-		current: state.current,
-		hierarchy: state.hierarchy,
-		loading: state.loading,
-		error: state.error
-	};
-}
-
-/**
- * Restore the four visible-pane fields from a prior snapshot. Used
- * by rail/play-bar navigation failure paths to undo an optimistic
- * `setBrowseLoading` so the user returns to whatever was visible
- * before they clicked. Other browse fields (search state) are
- * preserved.
- */
-export function restoreBrowseView(prev: BrowseViewSnapshot): void {
-	internalStore.update((state) => ({
-		...state,
-		current: prev.current,
-		hierarchy: prev.hierarchy,
-		loading: prev.loading,
-		error: prev.error
-	}));
+export function restoreBrowseState(prev: BrowseStateSnapshot): void {
+	internalStore.set({ ...prev });
 }
 
 export function resetBrowse(): void {

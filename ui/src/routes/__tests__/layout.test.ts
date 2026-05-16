@@ -523,6 +523,51 @@ describe('Layout — Explore rail click', () => {
 		expect(store.current).toBeNull();
 		expect(store.loading).toBe(false);
 	});
+
+	it('M-1 reopen #2: active search-loading state is preserved on rail-click failure', async () => {
+		// Second reopen: setBrowseLoading clears `searchLoading` and
+		// `error` as side effects. The narrow snapshot covered
+		// `error` but not `searchLoading`. A user with an in-flight
+		// search panel could click a rail item, hit a REST failure,
+		// and lose the visible "searching" spinner in the search
+		// panel. Full-state snapshot must preserve the entire
+		// search slice.
+		railWritable.set({
+			entries: [
+				{ id: 'rail-albums', label: 'Albums', labelPath: ['Albums'], isEmpty: false }
+			],
+			loading: false,
+			error: null
+		});
+
+		// Seed an in-flight search: setSearchLoading flips
+		// searchLoading=true and sets lastSearchQuery.
+		setSearchLoading('beatles');
+		const before = get(browseStore);
+		expect(before.searchLoading).toBe(true);
+		expect(before.lastSearchQuery).toBe('beatles');
+
+		apiBrowse.mockRejectedValueOnce(new Error('REST blew up'));
+
+		renderLayout();
+		const railBtn = await screen.findByRole('button', { name: 'Albums' });
+		await fireEvent.click(railBtn);
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import(
+				'$lib/stores/commandFeedbackStore'
+			);
+			expect(get(commandFeedbackStore)?.message).toMatch(
+				/Rail navigation failed/i
+			);
+		});
+
+		// Active search state restored exactly.
+		const store = get(browseStore);
+		expect(store.searchLoading).toBe(true);
+		expect(store.lastSearchQuery).toBe('beatles');
+		expect(store.loading).toBe(false);
+	});
 });
 
 describe('Layout — play-bar link (resolveAndNavigate)', () => {

@@ -28,8 +28,8 @@
 		setBrowseLoading,
 		setBrowseResult,
 		setSearchLoading,
-		snapshotBrowseView,
-		restoreBrowseView
+		snapshotBrowseState,
+		restoreBrowseState
 	} from '$lib/stores/browseStore';
 	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
 	import { goto } from '$app/navigation';
@@ -418,7 +418,7 @@
 		const onLibrary = $page.url.pathname === '/library';
 		const zoneId = $selectedZoneStore || undefined;
 
-		// Snapshot the prior browse view so a mid-walk failure can
+		// Snapshot the prior browse state so a mid-walk failure can
 		// restore it. The old code mutated visible state up-front
 		// (setBrowseLoading + resetHistory) BEFORE the first apiBrowse;
 		// a failure left the pane stuck in "loading" with the user's
@@ -426,16 +426,19 @@
 		// whole label-walk succeeds — on any failure (catch OR stale-
 		// label early return), we revert to the snapshot.
 		//
-		// The snapshot covers current + hierarchy + loading + error
-		// (see snapshotBrowseView). The optimistic setBrowseLoading
-		// below clears `error`, so a user looking at a prior error
-		// pane must get that error back on failure — not a blank
-		// welcome view. (M-1 reopen: review caught error-pane loss.)
-		const priorSnapshot = onLibrary ? snapshotBrowseView(get(browseStore)) : null;
+		// The snapshot is the FULL BrowseState. setBrowseLoading
+		// below clears `error` AND `searchLoading` as side effects,
+		// and other setters have similar cross-slice clears. A narrow
+		// snapshot would silently lose any field that a future
+		// "set*Loading"-style helper happens to clear — e.g. M-1
+		// reopen #1 caught a missing-`error` rollback, reopen #2
+		// caught a missing-`searchLoading` rollback. Full-state
+		// snapshot is the safe default.
+		const priorSnapshot = onLibrary ? snapshotBrowseState(get(browseStore)) : null;
 
 		const restorePriorView = () => {
 			if (!onLibrary || !priorSnapshot) return;
-			restoreBrowseView(priorSnapshot);
+			restoreBrowseState(priorSnapshot);
 		};
 
 		try {
