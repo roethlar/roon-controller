@@ -44,6 +44,8 @@
 	import Search from '$lib/components/Search.svelte';
 	import NowPlayingOverlay from '$lib/components/NowPlayingOverlay.svelte';
 	import { openNowPlayingOverlay } from '$lib/stores/nowPlayingOverlayStore';
+	import ZoneGroupingModal from '$lib/components/ZoneGroupingModal.svelte';
+	import { openZoneGrouping } from '$lib/stores/zoneGroupingStore';
 	import { imageUrl } from '$lib/imageUrl';
 	import type {
 		TransportControlRequest,
@@ -164,6 +166,34 @@
 	}
 	function previous() {
 		if ($selectedZoneStore) void sendCommand('transport:previous', { zone_id: $selectedZoneStore });
+	}
+
+	/**
+	 * Ungroup the active zone. Roon's ungroup_outputs takes the list
+	 * of outputs to split off; passing all-but-the-first effectively
+	 * dissolves the group while keeping the first output as its own
+	 * zone. The button only renders when the active zone has >1
+	 * output (a single-output "zone" is already ungrouped).
+	 */
+	async function ungroupCurrent() {
+		const z = activeZone;
+		if (!z || !z.outputs || z.outputs.length < 2 || commandInFlight) return;
+		const s = getLiveSocket();
+		if (!s) return;
+		commandInFlight = true;
+		try {
+			await emitWithAck(
+				s,
+				'transport:ungroup',
+				{ output_ids: z.outputs.slice(1).map((o) => o.output_id) },
+				{
+					timeoutMs: 5000,
+					feedback: { source: 'transport', command: 'transport:ungroup' }
+				}
+			);
+		} finally {
+			commandInFlight = false;
+		}
 	}
 
 	const isPlaying = $derived(activeZone?.state === 'playing');
@@ -742,12 +772,31 @@
 				{/each}
 			{/if}
 		</select>
+		<button
+			type="button"
+			class="zone-action-btn"
+			onclick={openZoneGrouping}
+			disabled={$zonesStore.length === 0}
+			aria-label="Group zones"
+			title="Group zones"
+		>⛓</button>
+		{#if activeZone?.outputs && activeZone.outputs.length > 1}
+			<button
+				type="button"
+				class="zone-action-btn"
+				onclick={ungroupCurrent}
+				disabled={commandInFlight}
+				aria-label="Ungroup current zone"
+				title="Ungroup current zone"
+			>⊟</button>
+		{/if}
 		<a href="/queue" class="queue-btn" data-sveltekit-preload-data="hover">Queue</a>
 	</div>
 	</footer>
 </div>
 
 <NowPlayingOverlay onOpenAlbum={openAlbumOfNowPlaying} />
+<ZoneGroupingModal />
 <ErrorToast />
 
 <style>
@@ -1212,6 +1261,26 @@
 		color: inherit;
 		font-size: 0.85rem;
 		max-width: 160px;
+	}
+
+	/* Group / ungroup icon buttons sit between the zone selector
+	   and the queue link. Square-ish so the emoji glyph centers. */
+	.zone-action-btn {
+		padding: 0.32rem 0.55rem;
+		border-radius: 9px;
+		border: 1px solid rgba(255, 255, 255, 0.18);
+		background: rgba(255, 255, 255, 0.07);
+		color: inherit;
+		font-size: 0.9rem;
+		line-height: 1;
+		cursor: pointer;
+	}
+	.zone-action-btn:hover:not(:disabled) {
+		background: rgba(255, 255, 255, 0.14);
+	}
+	.zone-action-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
 	}
 
 	.queue-btn:hover {
