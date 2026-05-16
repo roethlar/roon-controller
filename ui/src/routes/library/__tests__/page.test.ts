@@ -2373,3 +2373,77 @@ describe('Library page — Recently Played tile click', () => {
 		expect(get(recentlyPlayedStore).entries).toHaveLength(1);
 	});
 });
+
+describe('Library page — album chips (PR2 album-page polish)', () => {
+	function albumPageResult(subtitle: string | undefined) {
+		// Build a level-2 track list (6 action_list rows with `track`
+		// itemType) so `isTrackList` is true and `isAlbumPage` returns
+		// true. Subtitle drives chip extraction.
+		const trackRows: BrowseItem[] = [];
+		for (let i = 1; i <= 6; i++) {
+			trackRows.push(
+				makeItem({
+					title: `${i}. Track ${i}`,
+					itemKey: `t${i}`,
+					hint: 'action_list',
+					itemType: 'track'
+				})
+			);
+		}
+		return listResult({
+			level: 2,
+			title: 'Under the Pink',
+			subtitle,
+			items: trackRows
+		});
+	}
+
+	it('renders year + format chips on an album page with subtitle "Artist · 1994 · FLAC"', async () => {
+		setBrowseResult(albumPageResult('Tori Amos · 1994 · FLAC'), 'browse');
+
+		render(LibraryPage);
+		await tick();
+
+		const chips = await screen.findByLabelText('Album metadata');
+		expect(chips.textContent).toContain('1994');
+		expect(chips.textContent).toContain('FLAC');
+	});
+
+	it('renders nothing when subtitle is just an artist name (no year, no format)', async () => {
+		setBrowseResult(albumPageResult('Tori Amos'), 'browse');
+		render(LibraryPage);
+		await tick();
+
+		expect(screen.queryByLabelText('Album metadata')).toBeNull();
+	});
+
+	it('does not render chips on non-album pages (level 0–1, artist listings, etc.)', async () => {
+		// Level 0 navigation menu with subtitle that LOOKS like an
+		// album subtitle ("Tori Amos · 1994"). isAlbumPage gates on
+		// level ≥ 2 AND isTrackList — neither is true here.
+		setBrowseResult(
+			listResult({
+				level: 0,
+				title: 'Library',
+				subtitle: 'Tori Amos · 1994',
+				items: [makeItem({ title: 'Albums', itemKey: 'albums' })]
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		expect(screen.queryByLabelText('Album metadata')).toBeNull();
+	});
+
+	it('renders only the year chip when subtitle has a year but no format tag', async () => {
+		setBrowseResult(albumPageResult('Tori Amos · 1994'), 'browse');
+		render(LibraryPage);
+		await tick();
+
+		const chips = await screen.findByLabelText('Album metadata');
+		expect(chips.textContent).toContain('1994');
+		// No format tag present.
+		expect(chips.textContent).not.toMatch(/FLAC|MQA|DSD|Hi-Res/);
+	});
+});

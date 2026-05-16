@@ -6,6 +6,7 @@
 	import TrackList from '$lib/components/TrackList.svelte';
 	import { trackTitle } from '$lib/trackTitle';
 	import { imageUrl } from '$lib/imageUrl';
+	import { extractAlbumChips, isAlbumPage } from '$lib/albumChips';
 	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
 	import {
 		browseStore,
@@ -1211,6 +1212,19 @@
 	/** Levels 0–1 are navigation menus; level 2+ is content (artists, albums, etc.). */
 	const isContentList = $derived(($browseStore.current?.level ?? 0) >= 2);
 
+	/**
+	 * Album-page header chips (year, format) extracted from the
+	 * subtitle. Only render on level-2+ track lists so subtitle
+	 * patterns like "Artist · 1994" on artist/genre pages don't
+	 * generate spurious year chips. See `$lib/albumChips.ts` for
+	 * the extraction heuristics.
+	 */
+	const albumChips = $derived(
+		isAlbumPage($browseStore.current, isTrackList)
+			? extractAlbumChips($browseStore.current?.subtitle)
+			: []
+	);
+
 	const gridItems = $derived(isContentList ? browseItems : []);
 	const listItems = $derived(isContentList ? [] : browseItems);
 
@@ -1320,6 +1334,13 @@
 							onclick={() => searchArtist($browseStore.current!.subtitle!)}
 							title="Search for this artist"
 						>{$browseStore.current.subtitle}</button>
+						{#if albumChips.length > 0}
+							<div class="album-chips" aria-label="Album metadata">
+								{#each albumChips as chip}
+									<span class="album-chip album-chip-{chip.kind}">{chip.label}</span>
+								{/each}
+							</div>
+						{/if}
 					</div>
 				{/if}
 				<TrackList
@@ -1841,9 +1862,39 @@
 		flex-wrap: wrap;
 	}
 
-	/* ── Album header (artist link in tracklist view) ── */
+	/* ── Album header (artist link + metadata chips in tracklist view) ── */
 	.album-header {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
 		margin-bottom: 0.5rem;
+	}
+
+	.album-chips {
+		display: inline-flex;
+		gap: 0.4rem;
+	}
+
+	.album-chip {
+		display: inline-block;
+		padding: 0.1rem 0.55rem;
+		border-radius: 999px;
+		font-size: 0.75rem;
+		font-weight: 600;
+		background: rgba(255, 255, 255, 0.07);
+		color: var(--text-muted, rgba(255, 255, 255, 0.75));
+		letter-spacing: 0.02em;
+	}
+
+	.album-chip-year {
+		background: rgba(108, 204, 255, 0.12);
+		color: var(--accent, #6cf);
+	}
+
+	.album-chip-format {
+		background: rgba(180, 220, 110, 0.12);
+		color: #b4dc6e;
 	}
 
 	.artist-link {
