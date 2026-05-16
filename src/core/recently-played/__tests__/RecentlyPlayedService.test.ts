@@ -42,6 +42,19 @@ async function makeTmpPath(): Promise<string> {
 
 async function readPersisted(filePath: string): Promise<unknown> {
   const raw = await fs.readFile(filePath, "utf-8");
+  const parsed = JSON.parse(raw);
+  // The service now writes `{ entries, generation }` but legacy
+  // tests asserted against a bare array. Unwrap so the array
+  // assertions still apply; tests that care about generation read
+  // the raw file via readPersistedRaw.
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray(parsed.entries)) {
+    return parsed.entries;
+  }
+  return parsed;
+}
+
+async function readPersistedRaw(filePath: string): Promise<unknown> {
+  const raw = await fs.readFile(filePath, "utf-8");
   return JSON.parse(raw);
 }
 
@@ -723,6 +736,73 @@ describe("RecentlyPlayedService", () => {
 
       expect(svc.getEntries().map((e) => e.title)).toEqual(["A", "B"]);
       expect(svc.getEntries()[0].played_at).toBe("2026-05-14T03:00:00.000Z");
+    });
+
+    it("increments + persists the generation on each start (monotonic epoch source)", async () => {
+      const filePath = await makeTmpPath();
+      const transport = new FakeTransport();
+
+      // First start: file doesn't exist → generation starts at 0 →
+      // epoch = 1, persisted immediately.
+      const svc1 = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      await svc1.start();
+      expect(svc1.getEpoch()).toBe(1);
+
+      const raw1 = (await readPersistedRaw(filePath)) as {
+        entries: unknown[];
+        generation: number;
+      };
+      expect(raw1.generation).toBe(1);
+      expect(raw1.entries).toEqual([]);
+
+      // Second start (simulating a restart): loads generation=1,
+      // bumps to epoch=2, persists.
+      const svc2 = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      await svc2.start();
+      expect(svc2.getEpoch()).toBe(2);
+
+      const raw2 = (await readPersistedRaw(filePath)) as { generation: number };
+      expect(raw2.generation).toBe(2);
+    });
+
+    it("migrates a legacy bare-array file to the new {entries, generation} shape", async () => {
+      const filePath = await makeTmpPath();
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      const legacy = [
+        {
+          title: "Hey Jude",
+          zone_id: "zone-a",
+          played_at: "2026-05-08T00:00:00.000Z",
+        },
+      ];
+      await fs.writeFile(filePath, JSON.stringify(legacy), "utf-8");
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      await svc.start();
+
+      // Entries survived migration; epoch starts at 1 (legacy file had
+      // no persisted generation, so we treat it as 0).
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["Hey Jude"]);
+      expect(svc.getEpoch()).toBe(1);
+
+      // File is now in the new shape.
+      const raw = (await readPersistedRaw(filePath)) as Record<string, unknown>;
+      expect(Array.isArray(raw)).toBe(false);
+      expect(Array.isArray(raw.entries)).toBe(true);
+      expect(raw.generation).toBe(1);
     });
 
     it("filters out implausible entries when loading", async () => {

@@ -48,26 +48,29 @@ export const recentlyPlayedStore = {
 const CAP = 50;
 
 /**
- * Sync state we track from the server. `epoch` identifies the server
- * process; a change means the server restarted and we should adopt
- * its new revision baseline rather than reject everything as stale.
- * `revision` is the monotonic counter for ordering within an epoch.
+ * Sync state we track from the server. `epoch` is a STRICTLY MONOTONIC
+ * per-server-process generation (persisted on the backend, incremented
+ * on each start). Older epochs from in-flight stale payloads MUST be
+ * rejected — if we adopted them blindly the store would roll back to
+ * an obsolete server's view. `revision` orders within an epoch.
  *
- * Sentinel `lastAppliedEpoch = 0` won't match any real `Date.now()`
- * epoch, so the first payload from any server is always adopted.
+ * Sentinel `lastAppliedEpoch = 0` is less than any real persisted
+ * generation (epochs start at 1 — see RecentlyPlayedService.loadFromDisk),
+ * so the first real payload always wins.
  */
 let lastAppliedEpoch = 0;
 let lastAppliedRevision = 0;
 
 /**
- * Snapshots are AUTHORITATIVE: apply on equal revision too (they
- * fully describe state at their revision, so they can repair drift
- * from missed deltas). Different epoch means a new server instance —
- * adopt its revision baseline.
+ * Snapshots are AUTHORITATIVE: apply on equal revision too (a snapshot
+ * fully describes state at its revision and can repair drift from
+ * missed deltas). A strictly-newer epoch means a new server instance —
+ * adopt its revision baseline. Strictly-older epoch is stale and gets
+ * rejected.
  */
 function applySnapshot(snapshot: RecentlyPlayedSnapshot): void {
-	const sameEpoch = snapshot.epoch === lastAppliedEpoch;
-	if (sameEpoch && snapshot.revision < lastAppliedRevision) return;
+	if (snapshot.epoch < lastAppliedEpoch) return;
+	if (snapshot.epoch === lastAppliedEpoch && snapshot.revision < lastAppliedRevision) return;
 	lastAppliedEpoch = snapshot.epoch;
 	lastAppliedRevision = snapshot.revision;
 	internalStore.update((s) => ({
@@ -78,18 +81,30 @@ function applySnapshot(snapshot: RecentlyPlayedSnapshot): void {
 }
 
 /**
- * Deltas (insert / cleared) require STRICTLY newer revision — equal
- * means we've already seen the change, so applying again would
- * double-apply. Different epoch is the server-restart signal: adopt
- * the new authority. (The next snapshot/load will repair any drift
- * from missed prior-epoch state.)
+ * Deltas (insert / cleared) need to be both newer AND in-order:
+ *   - Strictly-newer revision within the same epoch (equal would
+ *     double-apply).
+ *   - Strictly-newer epoch (a new server instance).
+ * Older epochs are rejected (stale).
  */
 function shouldApplyDelta(sync: { revision: number; epoch: number }): boolean {
-	if (sync.epoch !== lastAppliedEpoch) return true;
+	if (sync.epoch < lastAppliedEpoch) return false;
+	if (sync.epoch > lastAppliedEpoch) return true;
 	return sync.revision > lastAppliedRevision;
 }
 
+/**
+ * Adopt a delta. If the epoch advanced, CLEAR the local entries
+ * first — the delta represents a change against the new server's
+ * state, not on top of the prior server's. Without this clear, an
+ * `inserted` from a fresh server would land on top of stale entries
+ * and stay mixed until a follow-up load arrived (or worse, never).
+ * The next load will baseline any prior-epoch entries we drop here.
+ */
 function adoptDelta(sync: { revision: number; epoch: number }): void {
+	if (sync.epoch > lastAppliedEpoch) {
+		internalStore.update((s) => ({ ...s, entries: [] }));
+	}
 	lastAppliedEpoch = sync.epoch;
 	lastAppliedRevision = sync.revision;
 }

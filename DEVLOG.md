@@ -1,5 +1,33 @@
 # Dev Log
 
+## 2026-05-16 (really truly final) — RP: persisted monotonic epoch + strict ordering
+
+Three flaws in the previous epoch design that the reviewer caught:
+
+1. **Stale old-epoch payloads could roll the client back.** `epoch !== lastApplied → adopt` accepted *any* different epoch, including older ones. An in-flight stale event from a prior server instance would overwrite the freshly-adopted new epoch.
+2. **`Date.now()` was a weak epoch source.** A fast restart, clock skew, or container snapshot rollback could repeat or move the epoch backward — and ordering correctness depended on it.
+3. **A new-epoch delta layered on top of stale prior-epoch state.** If a fresh server's `inserted` reached the client before the reconnect GET, the new entry got mixed with the old server's entries until (or unless) a load arrived.
+
+### Fix
+- **Persisted monotonic epoch** (server). Extended `recently-played.json` to `{ entries, generation }`, with migration from the legacy bare-array shape. `loadFromDisk` reads `generation`, bumps it (`epoch = persisted + 1`), and eagerly persists the new value before `start()` resolves. Crash-before-bump is impossible: even if the next event never lands, the next startup increments further. Clients never see a repeated epoch.
+- **Strict epoch ordering** (frontend). `applySnapshot` discards `epoch < lastAppliedEpoch`; `shouldApplyDelta` rejects strictly-older epochs. Equal-epoch falls through to revision ordering as before.
+- **Clear-on-transition for deltas.** When `adoptDelta` sees a strictly-newer epoch, it wipes local entries before applying the delta — the new server's delta is "this just changed against the new state," not on top of the prior server's view. The next load baselines anything missing.
+
+### Tests
+- Backend (+2, 98 → 100):
+  - "increments + persists the generation on each start (monotonic epoch source)" — two service instances over the same file produce epochs 1 and 2.
+  - "migrates a legacy bare-array file to the new {entries, generation} shape" — old file shape works, gets rewritten to the new shape with `generation: 1`.
+- Frontend (+3, 144 → 147):
+  - "stale older-epoch payload is rejected after a newer epoch has been adopted" — covers snapshot, insert, and cleared paths.
+  - "new-epoch delta clears prior-epoch entries before applying" — proves the wipe.
+  - "new-epoch cleared also wipes prior-epoch entries" — symmetry.
+- Verified the two frontend behavior changes are load-bearing by temporarily reverting `shouldApplyDelta` and `adoptDelta` to the old logic; both tests failed exactly as expected.
+
+### Eager-persist failure mode
+`loadFromDisk`'s eager `schedulePersistAsync` is wrapped in try/catch: a failure (e.g., unwritable path) logs and continues — `start()` still resolves. Matches the rest of the service's "in-memory still authoritative on persist failure" stance, and keeps the existing unwritable-path tests passing.
+
+svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-16 (truly final) — RP: epoch + snapshot-authoritative apply
 
 Two real gaps the prior revision-based fix had:

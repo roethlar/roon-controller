@@ -102,13 +102,16 @@ export class RecentlyPlayedService extends EventEmitter {
   // races where socket events and REST responses arrive out of
   // server-emit order. Per-process — a restart resets to 0.
   //
-  // The accompanying `epoch` (set once at construction) lets clients
-  // detect a restart and adopt the new authority: a different epoch
-  // means "this is a new server instance, your prior revision is
-  // meaningless." Without it, a fresh server at revision 0 would be
-  // ignored forever by a client that had reached revision 100.
+  // The accompanying `epoch` is a STRICTLY MONOTONIC generation
+  // persisted alongside entries on disk and incremented on every
+  // service start. Clients treat `payload.epoch > lastAppliedEpoch`
+  // as "new authority, adopt"; older or equal epochs from the same
+  // server are bound by revision. A monotonic-and-persisted source
+  // is needed because Date.now() can repeat (same-ms restart, clock
+  // adjustment, container snapshot rollback), and correctness
+  // depends on epoch ordering being trustworthy.
   private revision = 0;
-  private readonly epoch: number = Date.now();
+  private epoch = 0;
 
   constructor(
     private readonly transportService: TransportService,
@@ -398,35 +401,74 @@ export class RecentlyPlayedService extends EventEmitter {
   // ── Persistence ───────────────────────────────────────────────────
 
   private async loadFromDisk(): Promise<void> {
+    let rawEntries: unknown[] = [];
+    let persistedGeneration = 0;
+
     try {
       const raw = await fs.readFile(this.filePath, "utf-8");
       const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
+      // Format detection: bare array is the legacy shape (pre-epoch);
+      // object with `entries` is the current shape that also carries
+      // `generation`. Both are accepted on read; we always write the
+      // current shape via `persist()`.
+      if (Array.isArray(parsed)) {
+        rawEntries = parsed;
+      } else if (parsed && typeof parsed === "object") {
+        const obj = parsed as { entries?: unknown; generation?: unknown };
+        if (Array.isArray(obj.entries)) {
+          rawEntries = obj.entries;
+          if (typeof obj.generation === "number" && Number.isFinite(obj.generation)) {
+            persistedGeneration = Math.max(0, Math.floor(obj.generation));
+          }
+        } else {
+          this.logger.warn(
+            { filePath: this.filePath },
+            "RecentlyPlayedService: persisted file has no `entries` array; starting empty"
+          );
+        }
+      } else {
         this.logger.warn(
           { filePath: this.filePath },
-          "RecentlyPlayedService: persisted file is not an array; starting empty"
+          "RecentlyPlayedService: persisted file is not an array or object; starting empty"
         );
-        this.entries = [];
-        return;
       }
-      // Dedupe on load: a file written before move-to-front dedup
-      // existed can hold duplicates. Without this they'd surface via
-      // /api/recently-played until each track happened to replay.
-      this.entries = dedupeRecentlyPlayed(
-        parsed.filter((it): it is RecentlyPlayedEntry => isPlausibleEntry(it))
-      ).slice(0, this.cap);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
-      if (code === "ENOENT") {
-        // First run, no file yet. Quiet success.
-        this.entries = [];
-        return;
+      if (code !== "ENOENT") {
+        // First run is quiet; anything else gets logged. Either way
+        // we proceed with empty entries / generation 0.
+        this.logger.warn(
+          { err, filePath: this.filePath },
+          "RecentlyPlayedService: failed to read persisted file; starting empty"
+        );
       }
+    }
+
+    // Dedupe on load: a file written before move-to-front dedup
+    // existed can hold duplicates. Without this they'd surface via
+    // /api/recently-played until each track happened to replay.
+    this.entries = dedupeRecentlyPlayed(
+      rawEntries.filter((it): it is RecentlyPlayedEntry => isPlausibleEntry(it))
+    ).slice(0, this.cap);
+
+    // Monotonic-and-persisted epoch: increment the persisted
+    // generation and write it back BEFORE start() returns. If we
+    // crash before any state change, the next start increments again,
+    // so clients always see a fresh epoch — never a repeated one.
+    //
+    // The eager persist is best-effort: a permission/disk failure
+    // here is logged but doesn't block startup (matching the rest of
+    // the service's "in-memory still authoritative on persist
+    // failure" stance). Tests pin this behavior with an unwritable
+    // filepath.
+    this.epoch = persistedGeneration + 1;
+    try {
+      await this.schedulePersistAsync();
+    } catch (err) {
       this.logger.warn(
         { err, filePath: this.filePath },
-        "RecentlyPlayedService: failed to read persisted file; starting empty"
+        "RecentlyPlayedService: eager generation persist failed; in-memory epoch still set"
       );
-      this.entries = [];
     }
   }
 
@@ -457,9 +499,16 @@ export class RecentlyPlayedService extends EventEmitter {
   private async persist(): Promise<void> {
     const dir = path.dirname(this.filePath);
     const tmp = `${this.filePath}.tmp`;
+    // Persist `generation` alongside entries so the epoch survives
+    // restarts (and never repeats — see loadFromDisk for the bump).
+    const payload = JSON.stringify(
+      { entries: this.entries, generation: this.epoch },
+      null,
+      2
+    );
     try {
       await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(tmp, JSON.stringify(this.entries, null, 2), "utf-8");
+      await fs.writeFile(tmp, payload, "utf-8");
       await fs.rename(tmp, this.filePath);
     } catch (err) {
       this.logger.warn(

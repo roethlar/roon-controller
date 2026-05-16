@@ -227,6 +227,55 @@ describe('recentlyPlayedStore', () => {
 		expect(get(recentlyPlayedStore).entries).toEqual([]);
 	});
 
+	it('stale older-epoch payload is rejected after a newer epoch has been adopted', async () => {
+		// Client has adopted epoch 200 (post-reconnect after server
+		// restart). An in-flight stale payload from epoch 100 (the
+		// previous server instance) arrives — must NOT roll the
+		// client back. Older epochs are strictly rejected.
+		applyClearResponse(snapshot([makeEntry({ title: 'Fresh' })], 0, /* epoch */ 200));
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['Fresh']);
+
+		// Stale snapshot from epoch 100 — discard, even with high revision.
+		applyClearResponse(snapshot([makeEntry({ title: 'Stale snap' })], 999, /* epoch */ 100));
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['Fresh']);
+
+		// Stale delta from epoch 100 — same rule, discard.
+		applyRecentlyPlayedInserted(inserted(makeEntry({ title: 'Stale ins' }), 5, /* epoch */ 100));
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['Fresh']);
+
+		// Stale cleared from epoch 100 — discard.
+		applyRecentlyPlayedCleared(cleared(5, /* epoch */ 100));
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['Fresh']);
+	});
+
+	it('new-epoch delta clears prior-epoch entries before applying (no mixed state)', async () => {
+		// Client has [A, B] from epoch 1. A new server (epoch 2)
+		// emits an insert that reaches the client before any GET
+		// re-baselines. The new delta must NOT layer on top of stale
+		// epoch-1 entries; the prior list is wiped first so the
+		// delta is the only entry until a follow-up load arrives.
+		applyRecentlyPlayedInserted(inserted(makeEntry({ title: 'A' }), 1, /* epoch */ 1));
+		applyRecentlyPlayedInserted(
+			inserted(makeEntry({ title: 'B', album: 'Album B' }), 2, /* epoch */ 1)
+		);
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['B', 'A']);
+
+		applyRecentlyPlayedInserted(
+			inserted(makeEntry({ title: 'New', album: 'Album New' }), 1, /* epoch */ 2)
+		);
+
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['New']);
+	});
+
+	it('new-epoch cleared also wipes prior-epoch entries (no leftover stale state)', () => {
+		applyRecentlyPlayedInserted(inserted(makeEntry({ title: 'Old' }), 1, /* epoch */ 1));
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['Old']);
+
+		applyRecentlyPlayedCleared(cleared(1, /* epoch */ 2));
+
+		expect(get(recentlyPlayedStore).entries).toEqual([]);
+	});
+
 	it('different epoch (server restart) adopts the new authority even with lower revision', async () => {
 		// Client has applied up to rev=100 from epoch A. The server
 		// restarts at epoch B with revision counter reset to 0 and
