@@ -42,6 +42,8 @@
 	import { get } from 'svelte/store';
 	import ErrorToast from '$lib/components/ErrorToast.svelte';
 	import Search from '$lib/components/Search.svelte';
+	import NowPlayingOverlay from '$lib/components/NowPlayingOverlay.svelte';
+	import { openNowPlayingOverlay } from '$lib/stores/nowPlayingOverlayStore';
 	import { imageUrl } from '$lib/imageUrl';
 	import type {
 		TransportControlRequest,
@@ -668,14 +670,20 @@
 		<div class="pb-progress-fill" style="width: {progress * 100}%"></div>
 	</div>
 	<div class="pb-track">
-		<div class="pb-art">
+		<button
+			type="button"
+			class="pb-art pb-art-button"
+			onclick={openNowPlayingOverlay}
+			disabled={!nowPlaying?.title}
+			aria-label="Open now playing"
+		>
 			{#if nowPlaying?.image_key}
 				<img src={imageUrl(nowPlaying.image_key, { width: 80, height: 80 })} alt="Artwork" />
 			{/if}
-		</div>
+		</button>
 		<div class="pb-meta">
 			{#if nowPlaying?.title}
-				<button type="button" class="pb-title pb-link" disabled={playBarNavInFlight} onclick={() => openAlbumOfNowPlaying()}>{nowPlaying.title}</button>
+				<button type="button" class="pb-title pb-link" onclick={openNowPlayingOverlay}>{nowPlaying.title}</button>
 			{:else}
 				<p class="pb-title">Nothing playing</p>
 			{/if}
@@ -739,6 +747,7 @@
 	</footer>
 </div>
 
+<NowPlayingOverlay onOpenAlbum={openAlbumOfNowPlaying} />
 <ErrorToast />
 
 <style>
@@ -1077,6 +1086,24 @@
 		overflow: hidden;
 		background: rgba(255, 255, 255, 0.08);
 		flex-shrink: 0;
+	}
+
+	/* Override button defaults: the pb-art is now a button (clickable to
+	   open the now-playing overlay), but it must look identical to the
+	   old non-clickable square. */
+	.pb-art-button {
+		padding: 0;
+		border: 0;
+		color: inherit;
+		cursor: pointer;
+		display: block;
+	}
+	.pb-art-button:disabled {
+		cursor: default;
+	}
+	.pb-art-button:not(:disabled):hover {
+		outline: 2px solid var(--accent, #6cf);
+		outline-offset: 2px;
 	}
 
 	.pb-art img {

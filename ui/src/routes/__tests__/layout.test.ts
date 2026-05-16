@@ -1282,8 +1282,12 @@ describe('Layout — seek bar', () => {
 	});
 });
 
-describe('Layout — openAlbumOfNowPlaying', () => {
-	it('clicking the play-bar title opens the album via resolveAndNavigate', async () => {
+describe('Layout — play-bar → now-playing overlay wiring (PR2)', () => {
+	// PR2 replaced the play-bar title's "navigate to album" behavior
+	// with "open the now-playing overlay" (album navigation now lives
+	// inside the overlay as a "Go to album" button). The artwork is
+	// also a button for the same purpose.
+	it('clicking the play-bar artwork opens the now-playing overlay', async () => {
 		setSelectedZone('zone-a');
 		setNowPlaying('zone-a', {
 			zone_id: 'zone-a',
@@ -1291,76 +1295,56 @@ describe('Layout — openAlbumOfNowPlaying', () => {
 			title: 'Cornflake Girl',
 			artist: 'Tori Amos',
 			album: 'Under the Pink',
-			duration: 300,
+			image_key: 'img-x',
+			duration: 200,
 			seek_position: 0
 		});
 
-		apiBrowse.mockResolvedValueOnce(
-			listResult({
-				level: 0,
-				items: [
-					makeItem({
-						title: 'Under the Pink',
-						subtitle: 'Tori Amos',
-						itemKey: 'album-fresh-key',
-						itemType: 'album'
-					})
-				]
-			})
+		const { nowPlayingOverlayStore, closeNowPlayingOverlay } = await import(
+			'$lib/stores/nowPlayingOverlayStore'
 		);
-		apiBrowse.mockResolvedValueOnce(
-			listResult({
-				level: 1,
-				items: [makeItem({ title: 'Cornflake Girl', itemKey: 'track-1' })]
-			})
-		);
+		closeNowPlayingOverlay();
 
 		renderLayout();
-		const titleBtn = await screen.findByRole('button', { name: 'Cornflake Girl' });
-		await fireEvent.click(titleBtn);
-
-		await waitFor(() => {
-			expect(apiBrowse).toHaveBeenCalledTimes(2);
-		});
-
-		// Search-rooted browse: input is the album name.
-		expect(apiBrowse.mock.calls[0][1]).toEqual(
-			expect.objectContaining({
-				hierarchy: 'search',
-				input: 'Under the Pink'
-			})
-		);
-		// Drill into the matched album.
-		expect(apiBrowse.mock.calls[1][1]).toEqual(
-			expect.objectContaining({ hierarchy: 'search', itemKey: 'album-fresh-key' })
-		);
-
-		// History records the album breadcrumb.
-		const history = get(browseHistoryStore).history;
-		expect(history).toHaveLength(1);
-		expect(history[0].breadcrumb?.title).toBe('Under the Pink');
+		const artBtn = await screen.findByRole('button', { name: 'Open now playing' });
+		expect(get(nowPlayingOverlayStore)).toBe(false);
+		await fireEvent.click(artBtn);
+		expect(get(nowPlayingOverlayStore)).toBe(true);
+		closeNowPlayingOverlay();
 	});
 
-	it('clicking the play-bar title is a no-op when there is no album metadata', async () => {
+	it('clicking the play-bar title opens the now-playing overlay (no album navigation)', async () => {
 		setSelectedZone('zone-a');
 		setNowPlaying('zone-a', {
 			zone_id: 'zone-a',
 			state: 'playing',
-			title: 'Radio Stream',
-			artist: 'Unknown',
-			album: undefined,
-			duration: 0,
+			title: 'Cornflake Girl',
+			artist: 'Tori Amos',
+			album: 'Under the Pink',
+			duration: 200,
 			seek_position: 0
 		});
 
+		const { nowPlayingOverlayStore, closeNowPlayingOverlay } = await import(
+			'$lib/stores/nowPlayingOverlayStore'
+		);
+		closeNowPlayingOverlay();
+
 		renderLayout();
-		await tick();
-		const titleBtn = screen.queryByRole('button', { name: 'Radio Stream' });
-		// Title still renders as a button (it's always wrapped), but
-		// clicking it must not fire apiBrowse because nowPlaying.album
-		// is falsy.
-		if (titleBtn) await fireEvent.click(titleBtn);
-		await tick();
+		const titleBtn = await screen.findByRole('button', { name: 'Cornflake Girl' });
+		await fireEvent.click(titleBtn);
+		expect(get(nowPlayingOverlayStore)).toBe(true);
+		// Title click no longer triggers apiBrowse — navigation moved
+		// into the overlay's "Go to album" button.
 		expect(apiBrowse).not.toHaveBeenCalled();
+		closeNowPlayingOverlay();
+	});
+
+	it('artwork button is disabled when there is no track playing', async () => {
+		// No nowPlaying for the selected zone.
+		setSelectedZone('zone-a');
+		renderLayout();
+		const artBtn = await screen.findByRole('button', { name: 'Open now playing' });
+		expect(artBtn).toBeDisabled();
 	});
 });
