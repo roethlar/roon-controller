@@ -24,17 +24,21 @@
 			zone_id: string;
 			zone_name: string;
 			/**
-			 * True when at least one source_control on this output
-			 * reports supports_standby. Drives whether the standby/wake
-			 * button renders.
+			 * Set ONLY when the output has exactly one supports_standby
+			 * source_control. Per the ZoneOutput contract in
+			 * src/shared/types.ts: a single control gets a direct
+			 * button; multiple controls require a per-control affordance
+			 * (nested menu) which this iteration doesn't ship. When
+			 * undefined no button renders, so a multi-control output
+			 * (e.g. one selected + one standby) can't be sent the wrong
+			 * action via an "any control is asleep → wake everything"
+			 * heuristic.
+			 *
+			 * `isInStandby` and `control_key` come straight from that
+			 * one control, so the emit targets exactly it instead of
+			 * fanning out across the output.
 			 */
-			canStandby: boolean;
-			/**
-			 * True when ANY supports_standby source_control is currently
-			 * in standby state. Clicking the button calls wake;
-			 * otherwise it calls standby.
-			 */
-			isInStandby: boolean;
+			powerControl?: { control_key: string; isInStandby: boolean };
 		}> = [];
 		for (const zone of $zonesStore) {
 			for (const out of zone.outputs ?? []) {
@@ -42,13 +46,19 @@
 				seen.add(out.output_id);
 				const standbyControls =
 					out.source_controls?.filter((c) => c.supports_standby) ?? [];
+				const powerControl =
+					standbyControls.length === 1
+						? {
+								control_key: standbyControls[0].control_key,
+								isInStandby: standbyControls[0].status === 'standby'
+							}
+						: undefined;
 				items.push({
 					output_id: out.output_id,
 					display_name: out.display_name,
 					zone_id: zone.zone_id,
 					zone_name: zone.display_name,
-					canStandby: standbyControls.length > 0,
-					isInStandby: standbyControls.some((c) => c.status === 'standby')
+					powerControl
 				});
 			}
 		}
@@ -93,19 +103,21 @@
 	}
 
 	/**
-	 * Toggle power for an output. Per Roon API contract:
+	 * Toggle power for a single supports_standby source control:
 	 * - `transport:standby` is idempotent — a duplicate call against
-	 *   an already-standby output is a no-op (won't wake it).
-	 * - `transport:wake` (convenience_switch) wakes the output and
-	 *   selects its sources.
-	 * We pick which event based on the current `isInStandby` derived
-	 * state, omitting `control_key` so Roon applies the action to all
-	 * supports_standby controls on the output (matches the user's
-	 * single-button mental model). If a future need to target a
-	 * specific control emerges, the UI can grow a nested menu — the
-	 * backend already accepts an optional `control_key`.
+	 *   an already-standby control is a no-op (won't wake it).
+	 * - `transport:wake` (convenience_switch) wakes the control and
+	 *   selects its source.
+	 * Always passes `control_key` so the backend acts on exactly the
+	 * control the button represents (matches the types.ts contract:
+	 * the direct button only exists when there is exactly one
+	 * supports_standby control on the output).
 	 */
-	async function togglePower(output_id: string, isInStandby: boolean): Promise<void> {
+	async function togglePower(
+		output_id: string,
+		control_key: string,
+		isInStandby: boolean
+	): Promise<void> {
 		const socket = getSocket();
 		if (!socket) {
 			pushCommandFeedback({
@@ -119,7 +131,7 @@
 		await emitWithAck(
 			socket,
 			event,
-			{ output_id },
+			{ output_id, control_key },
 			{ timeoutMs: 5000, feedback: { source: 'transport', command: event } }
 		);
 		// State update is server-driven: the next zones broadcast
@@ -264,16 +276,17 @@
 							<span class="zg-name">{out.display_name}</span>
 							<span class="zg-zone">{out.zone_name}</span>
 						</label>
-						{#if out.canStandby}
+						{#if out.powerControl}
+							{@const pc = out.powerControl}
 							<button
 								type="button"
 								class="zg-power"
-								class:zg-power-standby={out.isInStandby}
-								onclick={() => togglePower(out.output_id, out.isInStandby)}
-								aria-label={out.isInStandby
+								class:zg-power-standby={pc.isInStandby}
+								onclick={() => togglePower(out.output_id, pc.control_key, pc.isInStandby)}
+								aria-label={pc.isInStandby
 									? `Wake ${out.display_name}`
 									: `Standby ${out.display_name}`}
-								title={out.isInStandby
+								title={pc.isInStandby
 									? `Wake ${out.display_name}`
 									: `Standby ${out.display_name}`}
 							>⏻</button>

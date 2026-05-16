@@ -289,7 +289,7 @@ describe('ZoneGroupingModal', () => {
 		expect(screen.queryByRole('button', { name: /Standby Speakers/i })).toBeNull();
 	});
 
-	it('feat-6: click emits transport:standby when output is not in standby', async () => {
+	it('feat-6: click emits transport:standby with control_key when output is not in standby', async () => {
 		setZonesSnapshot([
 			makeZone({
 				zone_id: 'zone-a',
@@ -299,7 +299,7 @@ describe('ZoneGroupingModal', () => {
 						display_name: 'Naim',
 						source_controls: [
 							{
-								control_key: '1',
+								control_key: 'sc-1',
 								display_name: 'Naim NAC',
 								status: 'selected',
 								supports_standby: true
@@ -321,13 +321,59 @@ describe('ZoneGroupingModal', () => {
 			expect(emitWithAck).toHaveBeenCalledWith(
 				fakeSocket,
 				'transport:standby',
-				{ output_id: 'out-a' },
+				{ output_id: 'out-a', control_key: 'sc-1' },
 				expect.any(Object)
 			);
 		});
 	});
 
-	it('feat-6: click emits transport:wake when output is in standby', async () => {
+	it('feat-6 reopen P1: multi-control output renders no power button', async () => {
+		// Per types.ts contract, multi-control outputs need a
+		// per-control affordance (nested menu) — not in scope for this
+		// iteration. The aggregate "any control is asleep → wake all"
+		// heuristic from the pre-reopen build could send the wrong
+		// action when one control was selected and another was in
+		// standby. Until the menu ships, render nothing for this case.
+		setZonesSnapshot([
+			makeZone({
+				zone_id: 'zone-a',
+				outputs: [
+					{
+						output_id: 'out-a',
+						display_name: 'Mixed',
+						source_controls: [
+							{
+								control_key: 'sc-1',
+								display_name: 'Input A',
+								status: 'selected',
+								supports_standby: true
+							},
+							{
+								control_key: 'sc-2',
+								display_name: 'Input B',
+								status: 'standby',
+								supports_standby: true
+							}
+						]
+					}
+				]
+			})
+		]);
+		setSelectedZone('zone-a');
+		render(ZoneGroupingModal);
+		openZoneGrouping();
+		await tick();
+
+		expect(screen.queryByRole('button', { name: /Wake Mixed/i })).toBeNull();
+		expect(screen.queryByRole('button', { name: /Standby Mixed/i })).toBeNull();
+	});
+
+	it('feat-6 reopen P1: mixed standby+non-standby controls — only the standby-capable one counts', async () => {
+		// One supports_standby control + an unrelated non-standby
+		// control (e.g. an aux input that doesn't sleep) is still a
+		// single-control output for power-button purposes — the
+		// non-standby control isn't a power destination, so it
+		// doesn't push the count to 2.
 		setZonesSnapshot([
 			makeZone({
 				zone_id: 'zone-a',
@@ -337,7 +383,51 @@ describe('ZoneGroupingModal', () => {
 						display_name: 'Naim',
 						source_controls: [
 							{
-								control_key: '1',
+								control_key: 'sc-1',
+								display_name: 'Naim NAC',
+								status: 'standby',
+								supports_standby: true
+							},
+							{
+								control_key: 'sc-aux',
+								display_name: 'Aux',
+								status: 'selected',
+								supports_standby: false
+							}
+						]
+					}
+				]
+			})
+		]);
+		setSelectedZone('zone-a');
+		render(ZoneGroupingModal);
+		openZoneGrouping();
+		await tick();
+
+		const btn = screen.getByRole('button', { name: 'Wake Naim' });
+		await fireEvent.click(btn);
+
+		await waitFor(() => {
+			expect(emitWithAck).toHaveBeenCalledWith(
+				fakeSocket,
+				'transport:wake',
+				{ output_id: 'out-a', control_key: 'sc-1' },
+				expect.any(Object)
+			);
+		});
+	});
+
+	it('feat-6: click emits transport:wake with control_key when output is in standby', async () => {
+		setZonesSnapshot([
+			makeZone({
+				zone_id: 'zone-a',
+				outputs: [
+					{
+						output_id: 'out-a',
+						display_name: 'Naim',
+						source_controls: [
+							{
+								control_key: 'sc-1',
 								display_name: 'Naim NAC',
 								status: 'standby',
 								supports_standby: true
@@ -359,7 +449,7 @@ describe('ZoneGroupingModal', () => {
 			expect(emitWithAck).toHaveBeenCalledWith(
 				fakeSocket,
 				'transport:wake',
-				{ output_id: 'out-a' },
+				{ output_id: 'out-a', control_key: 'sc-1' },
 				expect.any(Object)
 			);
 		});
