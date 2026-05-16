@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractAlbumChips, isAlbumPage } from '../albumChips';
+import { extractAlbumChips, extractArtistFromSubtitle, isAlbumPage } from '../albumChips';
 import { listResult } from '../../test/fixtures/browse';
 
 describe('extractAlbumChips', () => {
@@ -80,19 +80,98 @@ describe('isAlbumPage', () => {
 	});
 
 	it('false when not a track list', () => {
-		const cur = listResult({ level: 2, items: [] });
+		const cur = listResult({ level: 2, subtitle: 'Tori Amos', items: [] });
 		expect(isAlbumPage(cur, false)).toBe(false);
 	});
 
 	it('false at navigation levels (< 2) even if track-list-shaped', () => {
-		const cur = listResult({ level: 1, items: [] });
+		const cur = listResult({ level: 1, subtitle: 'Tori Amos', items: [] });
 		expect(isAlbumPage(cur, true)).toBe(false);
 	});
 
-	it('true at level 2+ track list', () => {
-		const cur = listResult({ level: 2, items: [] });
+	it('true at level 2+ track list with a non-empty subtitle', () => {
+		const cur = listResult({ level: 2, subtitle: 'Tori Amos', items: [] });
 		expect(isAlbumPage(cur, true)).toBe(true);
-		const deeper = listResult({ level: 3, items: [] });
+		const deeper = listResult({ level: 3, subtitle: 'Tori Amos', items: [] });
 		expect(isAlbumPage(deeper, true)).toBe(true);
+	});
+
+	it('P2 reopen: false when inferredAllTracks (Library/Tracks, playlist contents)', () => {
+		// Pages that satisfy the track-list size heuristic without any
+		// itemType=track row aren't albums — they're flat "all tracks"
+		// listings. The 3rd arg = true gates them out.
+		const cur = listResult({ level: 2, subtitle: '12345 tracks', items: [] });
+		expect(isAlbumPage(cur, true, true)).toBe(false);
+		expect(isAlbumPage(cur, true, false)).toBe(true); // sanity: arg gates it
+	});
+
+	it('false when subtitle is missing or only whitespace', () => {
+		const noSubtitle = listResult({ level: 2, items: [] });
+		expect(isAlbumPage(noSubtitle, true)).toBe(false);
+		const blank = listResult({ level: 2, subtitle: '   ', items: [] });
+		expect(isAlbumPage(blank, true)).toBe(false);
+	});
+});
+
+describe('extractArtistFromSubtitle (P1 reopen)', () => {
+	it('returns empty for undefined / empty', () => {
+		expect(extractArtistFromSubtitle(undefined)).toBe('');
+		expect(extractArtistFromSubtitle('')).toBe('');
+	});
+
+	it('returns the subtitle as-is when no chips are present', () => {
+		expect(extractArtistFromSubtitle('Tori Amos')).toBe('Tori Amos');
+		expect(extractArtistFromSubtitle('The Beatles')).toBe('The Beatles');
+	});
+
+	it('strips a year and surrounding separators', () => {
+		expect(extractArtistFromSubtitle('Tori Amos · 1994')).toBe('Tori Amos');
+		expect(extractArtistFromSubtitle('1994 · Tori Amos')).toBe('Tori Amos');
+		expect(extractArtistFromSubtitle('Tori Amos / 1994')).toBe('Tori Amos');
+	});
+
+	it('strips a format tag and surrounding separators', () => {
+		expect(extractArtistFromSubtitle('Tori Amos · FLAC')).toBe('Tori Amos');
+		expect(extractArtistFromSubtitle('FLAC · Tori Amos')).toBe('Tori Amos');
+	});
+
+	it('strips both year and format together (the bug shape from the reopen)', () => {
+		expect(extractArtistFromSubtitle('Tori Amos · 1994 · FLAC')).toBe('Tori Amos');
+		expect(extractArtistFromSubtitle('Tori Amos / 1994 / FLAC')).toBe('Tori Amos');
+		expect(extractArtistFromSubtitle('Pet Sounds · 1966 · Hi-Res')).toBe('Pet Sounds');
+	});
+
+	it('returns empty when subtitle is ONLY chip tokens', () => {
+		expect(extractArtistFromSubtitle('1994 · FLAC')).toBe('');
+		expect(extractArtistFromSubtitle('FLAC')).toBe('');
+	});
+});
+
+describe('extractAlbumChips word-boundary matching (P3 reopen)', () => {
+	it('does NOT match format tags embedded in album / artist names', () => {
+		// "Wavves" contains "WAV" but is an artist name, not a format.
+		expect(extractAlbumChips('Wavves')).toEqual([]);
+		// "Flacid" contains "FLAC".
+		expect(extractAlbumChips('Flacid')).toEqual([]);
+		// "Mp3 Trees" contains "MP3" only as part of a word.
+		expect(extractAlbumChips('Mp3Trees')).toEqual([]);
+	});
+
+	it('still matches the same tag when separated by a non-alphanumeric character', () => {
+		expect(extractAlbumChips('Wavves · WAV')).toContainEqual({
+			kind: 'format',
+			label: 'WAV'
+		});
+		expect(extractAlbumChips('Flacid · FLAC')).toContainEqual({
+			kind: 'format',
+			label: 'FLAC'
+		});
+	});
+
+	it('matches hyphenated tags (Hi-Res) even though hyphen is the boundary', () => {
+		expect(extractAlbumChips('Album · Hi-Res')).toContainEqual({
+			kind: 'format',
+			label: 'Hi-Res'
+		});
 	});
 });

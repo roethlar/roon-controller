@@ -6,7 +6,11 @@
 	import TrackList from '$lib/components/TrackList.svelte';
 	import { trackTitle } from '$lib/trackTitle';
 	import { imageUrl } from '$lib/imageUrl';
-	import { extractAlbumChips, isAlbumPage } from '$lib/albumChips';
+	import {
+		extractAlbumChips,
+		extractArtistFromSubtitle,
+		isAlbumPage
+	} from '$lib/albumChips';
 	import { SEARCH_SESSION_KEY } from '$lib/browseSessions';
 	import {
 		browseStore,
@@ -1220,9 +1224,19 @@
 	 * the extraction heuristics.
 	 */
 	const albumChips = $derived(
-		isAlbumPage($browseStore.current, isTrackList)
+		isAlbumPage($browseStore.current, isTrackList, inferredAllTracks)
 			? extractAlbumChips($browseStore.current?.subtitle)
 			: []
+	);
+
+	/**
+	 * Artist label used by the album-header "Search for this artist"
+	 * link. The raw subtitle may contain chip tokens
+	 * ("Artist · 1994 · FLAC"); strip them so the search query is
+	 * just the artist portion.
+	 */
+	const albumArtist = $derived(
+		extractArtistFromSubtitle($browseStore.current?.subtitle)
 	);
 
 	const gridItems = $derived(isContentList ? browseItems : []);
@@ -1328,12 +1342,16 @@
 			{#if isTrackList}
 				{#if $browseStore.current?.subtitle}
 					<div class="album-header">
-						<button
-							type="button"
-							class="artist-link"
-							onclick={() => searchArtist($browseStore.current!.subtitle!)}
-							title="Search for this artist"
-						>{$browseStore.current.subtitle}</button>
+						{#if albumArtist}
+							<button
+								type="button"
+								class="artist-link"
+								onclick={() => searchArtist(albumArtist)}
+								title="Search for this artist"
+							>{albumArtist}</button>
+						{:else}
+							<span class="artist-link-static">{$browseStore.current.subtitle}</span>
+						{/if}
 						{#if albumChips.length > 0}
 							<div class="album-chips" aria-label="Album metadata">
 								{#each albumChips as chip}
@@ -1907,6 +1925,16 @@
 		cursor: pointer;
 		text-decoration: underline;
 		text-underline-offset: 3px;
+	}
+
+	/* Rare: subtitle present but extractArtistFromSubtitle returned
+	   empty (only chip tokens, no artist remainder). Render the raw
+	   subtitle as plain text so the album header isn't blank, but
+	   without the searchArtist click affordance. */
+	.artist-link-static {
+		font-size: 0.88rem;
+		font-weight: 600;
+		color: var(--text-muted, rgba(255, 255, 255, 0.7));
 	}
 
 	.artist-link:hover {

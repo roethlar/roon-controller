@@ -2446,4 +2446,52 @@ describe('Library page — album chips (PR2 album-page polish)', () => {
 		// No format tag present.
 		expect(chips.textContent).not.toMatch(/FLAC|MQA|DSD|Hi-Res/);
 	});
+
+	it('P1 reopen: "Search for this artist" link text is the artist portion only, not the raw chip-laden subtitle', async () => {
+		setBrowseResult(albumPageResult('Tori Amos · 1994 · FLAC'), 'browse');
+		render(LibraryPage);
+		await tick();
+
+		// The artist-link button reads "Tori Amos", not the full
+		// subtitle. The previous behavior set the button label (and
+		// search query) to the full string. Find by visible text
+		// (the button's text content is the accessible name).
+		const link = await screen.findByRole('button', { name: 'Tori Amos' });
+		expect(link.textContent?.trim()).toBe('Tori Amos');
+		expect(link.textContent?.trim()).not.toContain('1994');
+		expect(link.textContent?.trim()).not.toContain('FLAC');
+	});
+
+	it('P2 reopen: no chips render on a non-album track list (Library/Tracks-style inferred-all-tracks page)', async () => {
+		// Same shape as albumPageResult — level 2, every row is an
+		// action_list — but NO `itemType: track` AND no numeric-
+		// prefix titles (which would trigger the title-regex
+		// fallback in isTrackItem). isTrackList kicks in via the
+		// size heuristic alone → inferredAllTracks becomes true →
+		// isAlbumPage returns false → no chips.
+		const trackRows: BrowseItem[] = [];
+		for (let i = 1; i <= 6; i++) {
+			trackRows.push(
+				makeItem({
+					title: `Some Track ${i}`, // No numeric prefix → not flagged by isTrackItem regex
+					itemKey: `t${i}`,
+					hint: 'action_list'
+					// no itemType
+				})
+			);
+		}
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'Tracks',
+				subtitle: '12345 tracks · 2024',
+				items: trackRows
+			}),
+			'browse'
+		);
+
+		render(LibraryPage);
+		await tick();
+		expect(screen.queryByLabelText('Album metadata')).toBeNull();
+	});
 });
