@@ -14,6 +14,12 @@ const bootstrap = () => {
     const shutdown = (signal: string) => {
       logger.info({ signal }, "Received shutdown signal");
 
+      // Tell startServer to skip the deferred httpServer.listen if
+      // RP startup hasn't completed yet. Without this, the listen
+      // would still fire after our close() ran (or close() would
+      // error because the server never bound).
+      context.requestShutdown();
+
       // Tear down Roon subscriptions before closing transports so the Core
       // doesn't queue stale callbacks for this extension while it restarts.
       try {
@@ -25,6 +31,14 @@ const bootstrap = () => {
       void context.socketContext.io.close(() => {
         logger.info("Socket server closed");
       });
+
+      if (!context.isListening()) {
+        // Shutdown landed during the deferred-listen window. There's
+        // no httpServer to close; just exit cleanly.
+        logger.info("HTTP server never started listening; exiting");
+        process.exit(0);
+        return;
+      }
 
       context.httpServer.close((error) => {
         if (error) {

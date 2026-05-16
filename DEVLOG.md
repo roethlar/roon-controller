@@ -1,5 +1,33 @@
 # Dev Log
 
+## 2026-05-16 (one more) — RP: corrupt-file degrades + stop/start cycle + safe shutdown-during-listen
+
+Three more follow-ups:
+
+### P1 — corrupt/wrong-shape persisted file silently reset generation
+`loadFromDisk` fell back to `persistedGeneration = 0` on any parse / shape problem, then eagerly persisted as `generation = 1`. If `recently-played.json` was writable but corrupt (or missing the `entries` array), startup quietly reset the generation even when previous boots had committed a much higher value. Existing clients carrying `lastApplied = N` from the prior server would then reject the new server's events as stale.
+
+Fix: on any non-ENOENT load failure (parse error, wrong shape, read error), enter **degraded mode** and skip the eager persist — the corrupt file stays untouched for inspection/recovery and routes return 503. Generation is now also extracted *independently* of the entries shape, so a file like `{ "generation": 12 }` without a valid `entries` array still preserves the generation field for the eventual recovery.
+
+### P2 — `stop()` then `start()` no longer reattached
+After memoizing `startPromise` for idempotency, `stop()` only detached the listener; subsequent `start()` returned the old resolved promise and never re-attached. Fix: `stop()` clears `startPromise` so a fresh `start()` re-runs `doStart` (which loads, bumps generation, attaches). Each restart cycle conceptually represents a new server instance — generation advances, matching the real-restart semantics.
+
+### P3 — shutdown during the deferred listen could race or fail
+With listen deferred until `recentlyPlayedService.start()` resolves, a SIGTERM landing in that window had `index.ts` calling `httpServer.close()` on a never-bound server (Node reports it as an error → `process.exit(1)`), and the pending startup could still call `listen()` afterward.
+
+Fix: `ServerContext` exposes `requestShutdown()` + `isListening()`. The deferred-listen `.then` checks `shutdownRequested` and skips `listen()` if shutdown landed first; the `index.ts` shutdown handler skips `close()` when `!isListening()` and exits cleanly. Both operations are now race-safe.
+
+### Tests (+3 backend, 103 → 106)
+- "degrades on a corrupt JSON file instead of silently resetting generation" — writes garbage to the path, asserts `isDegraded()` true.
+- "degrades on a wrong-shape file (object without entries) but still extracts generation" — proves the independent generation extraction.
+- "stop() then start() reattaches the listener and bumps generation again" — verified load-bearing by temporarily reverting `stop()` (test failed as expected).
+- The P3 shutdown lifecycle is wired through small, locally-verifiable helpers (`requestShutdown` / `isListening`); a full integration test would require driving real signals + sockets, deferred.
+
+### Missing feature still deferred
+The /api/health surface from the prior round — still not addressed, still not a bug fix.
+
+UI 147 unchanged. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-16 (the last one, really) — RP: await-before-serve + degraded mode + idempotent start
 
 Four follow-up findings on the persisted-epoch commit:

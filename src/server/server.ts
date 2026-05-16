@@ -17,6 +17,16 @@ export interface ServerContext {
   readonly roonClient: RoonClient;
   readonly transportService: TransportService;
   readonly recentlyPlayedService: RecentlyPlayedService;
+  /**
+   * httpServer.listen() is deferred until RecentlyPlayedService.start
+   * resolves (so the API can't serve epoch-0 sentinel snapshots).
+   * If shutdown is requested during that window, callers MUST signal
+   * it via `requestShutdown()` so the listen call is skipped — and
+   * MUST check `isListening()` before calling `httpServer.close()`,
+   * which Node reports as an error when the server never bound.
+   */
+  requestShutdown(): void;
+  isListening(): boolean;
 }
 
 export const startServer = (
@@ -185,9 +195,25 @@ export const startServer = (
   roonClient.start();
   transportService.start();
   imageService.start();
+
+  // Lifecycle state for the deferred-listen window. SIGTERM during
+  // that window calls `requestShutdown()`; the pending startup then
+  // skips listen() and `isListening()` reports false so the shutdown
+  // handler can avoid `httpServer.close()` (which errors on a
+  // never-bound server).
+  let shutdownRequested = false;
+  let listening = false;
+
   void recentlyPlayedService.start().then(
     () => {
+      if (shutdownRequested) {
+        logger.info(
+          "Shutdown requested before RP startup completed; skipping httpServer.listen"
+        );
+        return;
+      }
       httpServer.listen(config.port, config.host, () => {
+        listening = true;
         logger.info(
           { host: config.host, port: config.port },
           "HTTP server listening"
@@ -214,5 +240,9 @@ export const startServer = (
     roonClient,
     transportService,
     recentlyPlayedService,
+    requestShutdown: () => {
+      shutdownRequested = true;
+    },
+    isListening: () => listening,
   };
 };

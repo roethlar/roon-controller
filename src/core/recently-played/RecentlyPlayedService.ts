@@ -168,12 +168,20 @@ export class RecentlyPlayedService extends EventEmitter {
     this.transportService.on("now-playing-updated", this.nowPlayingHandler);
   }
 
-  /** Detach the now-playing listener. Idempotent. */
+  /**
+   * Detach the now-playing listener and clear the start memo so a
+   * subsequent `start()` can fully reinitialize (re-load from disk,
+   * re-bump the generation, re-attach the listener). A repeated
+   * start without an intervening stop is still idempotent.
+   * Idempotent itself: stop() on a never-started or already-stopped
+   * service is a no-op.
+   */
   public stop(): void {
     if (this.nowPlayingHandler) {
       this.transportService.off("now-playing-updated", this.nowPlayingHandler);
       this.nowPlayingHandler = undefined;
     }
+    this.startPromise = null;
   }
 
   /**
@@ -431,45 +439,61 @@ export class RecentlyPlayedService extends EventEmitter {
   private async loadFromDisk(): Promise<void> {
     let rawEntries: unknown[] = [];
     let persistedGeneration = 0;
+    let degradedReason: string | undefined;
 
     try {
       const raw = await fs.readFile(this.filePath, "utf-8");
-      const parsed = JSON.parse(raw);
-      // Format detection: bare array is the legacy shape (pre-epoch);
-      // object with `entries` is the current shape that also carries
-      // `generation`. Both are accepted on read; we always write the
-      // current shape via `persist()`.
-      if (Array.isArray(parsed)) {
-        rawEntries = parsed;
-      } else if (parsed && typeof parsed === "object") {
-        const obj = parsed as { entries?: unknown; generation?: unknown };
-        if (Array.isArray(obj.entries)) {
-          rawEntries = obj.entries;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (err) {
+        // Corrupt JSON: we can't recover the previous generation. If
+        // we silently reset to 0, clients with higher lastApplied
+        // epochs from before the corruption would reject our events
+        // as stale (or worse, the same epoch would be reused). Degrade
+        // so routes 503 instead — the file stays untouched so it can
+        // be inspected/restored.
+        degradedReason = `JSON parse failure (${(err as Error).message})`;
+      }
+      if (parsed !== undefined) {
+        // Format detection: bare array is the legacy shape; object
+        // with `entries` is the current shape that also carries
+        // `generation`. Generation is extracted independently of the
+        // entries shape — a file like `{ "generation": 12 }` with no
+        // valid entries still preserves the generation (we'd degrade
+        // on entries but the monotonic guarantee survives).
+        if (Array.isArray(parsed)) {
+          rawEntries = parsed;
+        } else if (parsed && typeof parsed === "object") {
+          const obj = parsed as { entries?: unknown; generation?: unknown };
           if (typeof obj.generation === "number" && Number.isFinite(obj.generation)) {
             persistedGeneration = Math.max(0, Math.floor(obj.generation));
           }
+          if (Array.isArray(obj.entries)) {
+            rawEntries = obj.entries;
+          } else {
+            degradedReason = "missing or invalid `entries` array";
+          }
         } else {
-          this.logger.warn(
-            { filePath: this.filePath },
-            "RecentlyPlayedService: persisted file has no `entries` array; starting empty"
-          );
+          degradedReason = "persisted shape is neither array nor object";
         }
-      } else {
-        this.logger.warn(
-          { filePath: this.filePath },
-          "RecentlyPlayedService: persisted file is not an array or object; starting empty"
-        );
       }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
       if (code !== "ENOENT") {
-        // First run is quiet; anything else gets logged. Either way
-        // we proceed with empty entries / generation 0.
-        this.logger.warn(
-          { err, filePath: this.filePath },
-          "RecentlyPlayedService: failed to read persisted file; starting empty"
-        );
+        // ENOENT is a legit first run. Other read errors (permission,
+        // I/O) leave us unable to know the previous generation —
+        // degrade rather than risk an epoch reset.
+        degradedReason = `file read failure (${code ?? "unknown"})`;
       }
+    }
+
+    if (degradedReason) {
+      this.degraded = true;
+      this.logger.warn(
+        { reason: degradedReason, filePath: this.filePath },
+        "RecentlyPlayedService: persisted state unreadable — entering degraded mode (routes will 503, broadcasts suppressed)"
+      );
     }
 
     // Dedupe on load: a file written before move-to-front dedup
@@ -479,17 +503,23 @@ export class RecentlyPlayedService extends EventEmitter {
       rawEntries.filter((it): it is RecentlyPlayedEntry => isPlausibleEntry(it))
     ).slice(0, this.cap);
 
+    // Skip the eager persist when degraded — overwriting a corrupt
+    // file with our (potentially-empty) view would lose any
+    // recoverable state. Routes are 503 anyway; the next clean
+    // startup will pick up wherever the user/admin restored to.
+    if (this.degraded) {
+      return;
+    }
+
     // Monotonic-and-persisted epoch: increment the persisted
     // generation and write it back BEFORE start() returns. If we
     // crash before any state change, the next start increments again,
     // so clients always see a fresh epoch — never a repeated one.
     //
-    // If the eager persist fails, we enter `degraded` mode: the
+    // If the eager persist fails, we enter degraded mode: the
     // in-memory epoch is set but uncommitted, so a subsequent restart
     // could reuse it and break the monotonic guarantee that clients
-    // rely on. Rather than silently serve from a poisoned epoch we
-    // mark degraded; routes return 503 and socket emits are
-    // suppressed by the wiring in server.ts.
+    // rely on.
     this.epoch = persistedGeneration + 1;
     try {
       await this.schedulePersistAsync();

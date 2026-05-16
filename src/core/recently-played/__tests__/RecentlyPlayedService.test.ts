@@ -802,6 +802,76 @@ describe("RecentlyPlayedService", () => {
       expect(svc.getEntries().map((e) => e.title)).toEqual(["A"]);
     });
 
+    it("degrades on a corrupt JSON file instead of silently resetting generation", async () => {
+      // A writable-but-garbage file would otherwise let the service
+      // boot with epoch 1, even though previous boots committed
+      // generation 12. Clients carrying lastApplied=12 from the
+      // prior server would then reject the new server's events as
+      // stale. Degrading instead surfaces the problem (routes 503).
+      const filePath = await makeTmpPath();
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, "{ this is not valid json", "utf-8");
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      await svc.start();
+
+      expect(svc.isDegraded()).toBe(true);
+    });
+
+    it("degrades on a wrong-shape file (object without entries) but still extracts generation", async () => {
+      // The file lost its `entries` array somehow but `generation`
+      // is intact. We degrade (we can't trust the entries view) but
+      // the generation has been read — if a follow-up clean run
+      // recovers the file, the epoch can pick up where we left off.
+      const filePath = await makeTmpPath();
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, JSON.stringify({ generation: 12 }), "utf-8");
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      await svc.start();
+
+      expect(svc.isDegraded()).toBe(true);
+      // Degraded so we don't bump or persist — the bad file stays
+      // untouched for inspection/recovery. epoch is still 0.
+      expect(svc.getEpoch()).toBe(0);
+    });
+
+    it("stop() then start() reattaches the listener and bumps generation again", async () => {
+      // The start memoization is reset by stop() so a true restart
+      // cycle works. Each cycle conceptually represents a new
+      // server instance, so the generation advances every time.
+      const filePath = await makeTmpPath();
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+
+      await svc.start();
+      expect(svc.getEpoch()).toBe(1);
+
+      svc.stop();
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Ignored" }));
+      expect(svc.getEntries()).toHaveLength(0);
+
+      await svc.start();
+      expect(svc.getEpoch()).toBe(2);
+
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Heard" }));
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["Heard"]);
+    });
+
     it("enters degraded mode when the eager generation persist fails", async () => {
       // Unwritable path: file-as-parent-dir trick → mkdir ENOTDIR
       // during the eager persist.
