@@ -1,5 +1,36 @@
 # Dev Log
 
+## 2026-05-16 (truly one more) — RP: degraded suppresses ingest + generation required + stop cancels in-flight start
+
+Three real gaps in the prior commit:
+
+### P1 — Degraded mode still mutated and persisted
+`doStart` attached the now-playing listener even when `loadFromDisk` had set `degraded`. A subsequent now-playing event ran `handleNowPlayingImpl`, mutated `this.entries`, and called `schedulePersist` — which overwrites the (corrupt) file with `{ entries, generation: 0 }`. The "leave the file untouched" goal collapsed and the epoch reset reappeared on the next restart.
+
+Fix: `doStart` returns early when `this.degraded` is set after `loadFromDisk`. No listener attached, no mutation, no persist. The corrupt file stays untouched for inspection / recovery.
+
+### P1 — Object file without valid generation silently reset epoch
+`{ "entries": [...] }` with a missing or non-numeric `generation` was accepted as a clean current-shape load, with `persistedGeneration` defaulting to 0 → `epoch = 1` persisted. Same epoch-reset hole as the prior round, just a different shape variant.
+
+Fix: object-shape files MUST carry a valid finite-number `generation`. If missing or invalid, degrade. The bare-array legacy format remains the only path where `generation = 0` is accepted (since legacy files predate generation tracking).
+
+### P2 — `stop()` during in-flight `start()` left a ghost listener
+`stop()` cleared `startPromise` + detached `nowPlayingHandler`, but couldn't cancel an already-running `doStart`. If `stop()` ran while `loadFromDisk` was awaiting fs.readFile, there was no handler to detach yet; then the in-flight `doStart` resumed and attached a listener. A later `start()` during the same window could also kick off a second `doStart`, ending with two listeners on the same event.
+
+Fix: a `startToken` counter. `doStart` captures `++this.startToken` before its first await and rechecks after `loadFromDisk` — if it changed (stop or stop+start happened during the await), the run returns without attaching. `stop()` bumps the token. Subsequent `start()` runs cleanly with a fresh attach.
+
+### Test restructuring
+Two existing rollback tests (`rejects and rolls back the in-memory list when persist fails`, `drains buffered inserts onto the rolled-back list when persist fails`) used the file-as-parent-dir bad-path trick to make every persist fail. With degraded mode now actually suppressing the listener attach, that approach broke the very inserts those tests were exercising. Restructured: writable path so the service starts healthy, then `jest.spyOn(fs, 'writeFile')` injects the failure for the specific operation under test.
+
+### Tests (+0 net, 106 → 106 — removed 2 redundant tests from prior commit, reframed 2 old "recovers from corrupt"/"recovers from wrong shape" tests as "degrades on...", added in-flight cancel test)
+- "degrades on corrupt JSON and suppresses now-playing ingestion (file stays untouched)" — asserts the listener-is-not-attached invariant and reads the file back to prove it's byte-for-byte unchanged.
+- "degrades when JSON is an object but missing the entries array."
+- "degrades on an object file without a valid generation field even when entries are present."
+- "stop() during in-flight start() cancels listener attach" — fires now-playing AFTER `stop()` resolves the in-flight `start()`, asserts no insert; then runs a fresh `start()` and proves it attaches cleanly.
+- Verified both new behaviors are load-bearing by temporarily reverting the degraded-guard and the cancellation-check separately; both tests failed as expected.
+
+UI 147 unchanged. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-16 (one more) — RP: corrupt-file degrades + stop/start cycle + safe shutdown-during-listen
 
 Three more follow-ups:

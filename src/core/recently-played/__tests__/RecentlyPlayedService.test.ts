@@ -408,16 +408,12 @@ describe("RecentlyPlayedService", () => {
       // restores the prior list, the drained insert applies on top,
       // and `cleared` is NOT broadcast (clients shouldn't see a
       // wipe that didn't survive).
-      const tmpdir = await fs.mkdtemp(path.join(os.tmpdir(), "rp-race-fail-"));
-      const blocker = path.join(tmpdir, "blocker");
-      await fs.writeFile(blocker, "");
-      const badPath = path.join(blocker, "recently-played.json");
-
+      const filePath = await makeTmpPath();
       const transport = new FakeTransport();
       const svc = new RecentlyPlayedService(
         transport as unknown as TransportService,
         mockLogger,
-        { filePath: badPath }
+        { filePath }
       );
       const events: string[] = [];
       svc.on("cleared", () => events.push("cleared"));
@@ -426,18 +422,26 @@ describe("RecentlyPlayedService", () => {
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Before" }));
       expect(svc.getEntries().map((e) => e.title)).toEqual(["Before"]);
+      await flushWrites(svc);
 
-      const clearPromise = svc.clear();
-      transport.fireNowPlaying("zone-a", nowPlaying({ title: "MidClear" }));
-      await expect(clearPromise).rejects.toThrow();
+      const writeSpy = jest
+        .spyOn(fs, "writeFile")
+        .mockRejectedValue(new Error("injected persist failure"));
+      try {
+        const clearPromise = svc.clear();
+        transport.fireNowPlaying("zone-a", nowPlaying({ title: "MidClear" }));
+        await expect(clearPromise).rejects.toThrow();
 
-      // No cleared broadcast on failure.
-      expect(events).toEqual(["inserted:Before", "inserted:MidClear"]);
-      // Rolled back + buffered insert applied on top.
-      expect(svc.getEntries().map((e) => e.title)).toEqual([
-        "MidClear",
-        "Before",
-      ]);
+        // No cleared broadcast on failure.
+        expect(events).toEqual(["inserted:Before", "inserted:MidClear"]);
+        // Rolled back + buffered insert applied on top.
+        expect(svc.getEntries().map((e) => e.title)).toEqual([
+          "MidClear",
+          "Before",
+        ]);
+      } finally {
+        writeSpy.mockRestore();
+      }
     });
 
     it("coalesces overlapping clear() calls into one persist + one cleared broadcast", async () => {
@@ -547,20 +551,17 @@ describe("RecentlyPlayedService", () => {
     });
 
     it("rejects and rolls back the in-memory list when persist fails", async () => {
-      // Construct an unwritable file path: a directory component
-      // points at a regular file, so mkdir(recursive) fails with
-      // ENOTDIR. Reproduces a real failure (disk full, permission
-      // error) without platform-specific mocking.
-      const tmpdir = await fs.mkdtemp(path.join(os.tmpdir(), "rp-fail-"));
-      const blocker = path.join(tmpdir, "blocker");
-      await fs.writeFile(blocker, "");
-      const badPath = path.join(blocker, "recently-played.json");
-
+      // start() with a writable path so the service comes up
+      // healthy (not degraded). Then inject a persist failure
+      // mid-test via fs.writeFile spy so we can isolate the
+      // "clear's persist fails → rollback" path from the
+      // "startup fails → degraded" path.
+      const filePath = await makeTmpPath();
       const transport = new FakeTransport();
       const svc = new RecentlyPlayedService(
         transport as unknown as TransportService,
         mockLogger,
-        { filePath: badPath }
+        { filePath }
       );
       let clearedCount = 0;
       svc.on("cleared", () => clearedCount++);
@@ -568,16 +569,23 @@ describe("RecentlyPlayedService", () => {
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Stays" }));
       expect(svc.getEntries()).toHaveLength(1);
+      await flushWrites(svc);
 
-      await expect(svc.clear()).rejects.toThrow();
+      const writeSpy = jest
+        .spyOn(fs, "writeFile")
+        .mockRejectedValue(new Error("injected persist failure"));
+      try {
+        await expect(svc.clear()).rejects.toThrow();
 
-      // Rolled back: the in-memory list matches what's still on disk
-      // (or would be, if disk were writable). `cleared` was NOT
-      // emitted — clients don't see a broadcast they'd then disagree
-      // with after restart.
-      expect(svc.getEntries()).toHaveLength(1);
-      expect(svc.getEntries()[0].title).toBe("Stays");
-      expect(clearedCount).toBe(0);
+        // Rolled back: the in-memory list matches the prior state.
+        // `cleared` was NOT emitted — clients don't see a broadcast
+        // they'd then disagree with after restart.
+        expect(svc.getEntries()).toHaveLength(1);
+        expect(svc.getEntries()[0].title).toBe("Stays");
+        expect(clearedCount).toBe(0);
+      } finally {
+        writeSpy.mockRestore();
+      }
     });
   });
 
@@ -656,10 +664,17 @@ describe("RecentlyPlayedService", () => {
       await expect(fs.access(`${filePath}.tmp`)).rejects.toThrow();
     });
 
-    it("recovers from corrupt JSON on disk (starts empty, doesn't throw)", async () => {
+    it("degrades on corrupt JSON and suppresses now-playing ingestion (file stays untouched)", async () => {
+      // Old behavior: silently recover and continue ingesting. That
+      // would overwrite the corrupt file with `{ entries, generation:
+      // 0 }`, destroying the only evidence of the prior state AND
+      // resetting the epoch (which would let restarted clients
+      // reject events as stale). New behavior: degrade, don't attach
+      // the listener, leave the file alone.
       const filePath = await makeTmpPath();
       await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, "{ not json", "utf-8");
+      const garbage = "{ not json";
+      await fs.writeFile(filePath, garbage, "utf-8");
 
       const transport = new FakeTransport();
       const svc = new RecentlyPlayedService(
@@ -669,14 +684,21 @@ describe("RecentlyPlayedService", () => {
       );
       await svc.start();
 
+      expect(svc.isDegraded()).toBe(true);
       expect(svc.getEntries()).toEqual([]);
 
-      // Service still works after recovery.
+      // Listener not attached → fireNowPlaying is a no-op.
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
-      expect(svc.getEntries()).toHaveLength(1);
+      expect(svc.getEntries()).toEqual([]);
+
+      // File on disk is unchanged — degraded mode skips the eager
+      // persist so the original (corrupt) content can be inspected
+      // or restored from backup.
+      await flushWrites(svc);
+      expect(await fs.readFile(filePath, "utf-8")).toBe(garbage);
     });
 
-    it("recovers when persisted JSON is the wrong shape (not an array)", async () => {
+    it("degrades when JSON is an object but missing the entries array", async () => {
       const filePath = await makeTmpPath();
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, JSON.stringify({ entries: [] }), "utf-8");
@@ -689,7 +711,38 @@ describe("RecentlyPlayedService", () => {
       );
       await svc.start();
 
-      expect(svc.getEntries()).toEqual([]);
+      // `{ entries: [] }` is an object shape WITHOUT a valid
+      // `generation` field — degrades (a missing generation would
+      // otherwise reset epoch to 1, moving it backward for clients
+      // carrying higher lastApplied values from a prior boot).
+      expect(svc.isDegraded()).toBe(true);
+    });
+
+    it("degrades on an object file without a valid generation field even when entries are present", async () => {
+      // Same shape the service writes, MINUS generation. Could
+      // happen via manual edit, partial truncation, or a schema we
+      // don't recognize. Don't silently reset.
+      const filePath = await makeTmpPath();
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(
+        filePath,
+        JSON.stringify({
+          entries: [
+            { title: "A", zone_id: "z1", played_at: new Date().toISOString() },
+          ],
+        }),
+        "utf-8"
+      );
+
+      const transport = new FakeTransport();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath }
+      );
+      await svc.start();
+
+      expect(svc.isDegraded()).toBe(true);
     });
 
     it("dedupes legacy duplicates from the persisted file on load", async () => {
@@ -802,48 +855,33 @@ describe("RecentlyPlayedService", () => {
       expect(svc.getEntries().map((e) => e.title)).toEqual(["A"]);
     });
 
-    it("degrades on a corrupt JSON file instead of silently resetting generation", async () => {
-      // A writable-but-garbage file would otherwise let the service
-      // boot with epoch 1, even though previous boots committed
-      // generation 12. Clients carrying lastApplied=12 from the
-      // prior server would then reject the new server's events as
-      // stale. Degrading instead surfaces the problem (routes 503).
+    it("stop() during in-flight start() cancels listener attach", async () => {
+      // Without a cancellation token, an in-flight doStart resuming
+      // after stop() would still attach its listener, leaving a
+      // ghost handler that mutates state after the caller asked the
+      // service to stop.
       const filePath = await makeTmpPath();
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, "{ this is not valid json", "utf-8");
-
       const transport = new FakeTransport();
       const svc = new RecentlyPlayedService(
         transport as unknown as TransportService,
         mockLogger,
         { filePath }
       );
+
+      const startPromise = svc.start();
+      // Sync slice of doStart has run (token captured, loadFromDisk
+      // initiated and now awaiting fs.readFile). Yank the rug:
+      svc.stop();
+      await startPromise;
+
+      // Listener never attached — fireNowPlaying is a no-op.
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Ghost" }));
+      expect(svc.getEntries()).toEqual([]);
+
+      // A subsequent start() runs cleanly with a fresh attach.
       await svc.start();
-
-      expect(svc.isDegraded()).toBe(true);
-    });
-
-    it("degrades on a wrong-shape file (object without entries) but still extracts generation", async () => {
-      // The file lost its `entries` array somehow but `generation`
-      // is intact. We degrade (we can't trust the entries view) but
-      // the generation has been read — if a follow-up clean run
-      // recovers the file, the epoch can pick up where we left off.
-      const filePath = await makeTmpPath();
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, JSON.stringify({ generation: 12 }), "utf-8");
-
-      const transport = new FakeTransport();
-      const svc = new RecentlyPlayedService(
-        transport as unknown as TransportService,
-        mockLogger,
-        { filePath }
-      );
-      await svc.start();
-
-      expect(svc.isDegraded()).toBe(true);
-      // Degraded so we don't bump or persist — the bad file stays
-      // untouched for inspection/recovery. epoch is still 0.
-      expect(svc.getEpoch()).toBe(0);
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Real" }));
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["Real"]);
     });
 
     it("stop() then start() reattaches the listener and bumps generation again", async () => {

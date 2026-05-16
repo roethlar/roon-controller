@@ -116,6 +116,11 @@ export class RecentlyPlayedService extends EventEmitter {
   // same promise instead of re-running loadFromDisk (which would
   // bump generation and reload disk over the live in-memory state).
   private startPromise: Promise<void> | null = null;
+  // Bumped on every stop(). doStart captures the token before its
+  // first await and rechecks after — if it changed, a stop landed
+  // mid-startup and the run must NOT attach a listener (the caller
+  // already wants the service torn down).
+  private startToken = 0;
   // Set when the eager generation persist at startup fails. The
   // service is "running" but its epoch hasn't been committed to
   // disk; if we kept serving, a restart could reuse the same epoch
@@ -153,7 +158,22 @@ export class RecentlyPlayedService extends EventEmitter {
   }
 
   private async doStart(): Promise<void> {
+    const myToken = ++this.startToken;
     await this.loadFromDisk();
+
+    // Cancellation check: stop() (or stop+start) during loadFromDisk
+    // bumped the token. Don't attach a listener — the caller wanted
+    // the service stopped or restarted, and a stale handler here
+    // would leak state into whatever the new run produces.
+    if (myToken !== this.startToken) return;
+
+    // Degraded: persisted state is untrusted (corrupt file, missing
+    // generation, or eager persist failed). Attaching the listener
+    // would let inserts mutate this.entries and trigger
+    // schedulePersist — which would overwrite the corrupt file with
+    // { entries, generation: 0 }, destroying the only evidence of
+    // the prior state and resetting the epoch.
+    if (this.degraded) return;
 
     this.nowPlayingHandler = (data) => {
       try {
@@ -182,6 +202,9 @@ export class RecentlyPlayedService extends EventEmitter {
       this.nowPlayingHandler = undefined;
     }
     this.startPromise = null;
+    // Invalidate any doStart still in flight so it skips its
+    // listener attach when it resumes.
+    this.startToken++;
   }
 
   /**
@@ -463,16 +486,33 @@ export class RecentlyPlayedService extends EventEmitter {
         // valid entries still preserves the generation (we'd degrade
         // on entries but the monotonic guarantee survives).
         if (Array.isArray(parsed)) {
+          // Legacy bare-array format (pre-generation tracking).
+          // generation == 0 here is correct — nothing was ever
+          // committed, so the next start can safely bump to 1.
           rawEntries = parsed;
         } else if (parsed && typeof parsed === "object") {
           const obj = parsed as { entries?: unknown; generation?: unknown };
+          // Always extract generation if present, even when we'll end
+          // up degrading on entries — preserves the monotonic
+          // guarantee if a follow-up clean run picks up the file.
           if (typeof obj.generation === "number" && Number.isFinite(obj.generation)) {
             persistedGeneration = Math.max(0, Math.floor(obj.generation));
           }
-          if (Array.isArray(obj.entries)) {
+          if (!Array.isArray(obj.entries)) {
+            degradedReason = "missing or invalid `entries` array";
+          } else if (
+            typeof obj.generation !== "number" ||
+            !Number.isFinite(obj.generation)
+          ) {
+            // Object-shape files MUST carry a valid generation —
+            // anything we'd write looks like this, so a missing
+            // field means manual edit, partial truncation, or a
+            // future-version schema we don't understand. Resetting
+            // to 0 would let epoch move backward.
+            degradedReason = "missing or invalid `generation` field";
             rawEntries = obj.entries;
           } else {
-            degradedReason = "missing or invalid `entries` array";
+            rawEntries = obj.entries;
           }
         } else {
           degradedReason = "persisted shape is neither array nor object";
