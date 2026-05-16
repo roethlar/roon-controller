@@ -17,7 +17,7 @@ See `SETUP.md` for the generic two-agent workflow rationale.
 | M-2 | MEDIUM | Play-bar navigation commits history before final browse succeeds | [~] | `fix/m-2-playbar-history-commit` |
 | M-3 | MEDIUM | Recently Played inserts are broadcast before durable persistence | [ ] | |
 | M-4 | MEDIUM | Queue subscriptions accept unbounded item counts | [ ] | |
-| L-1 | LOW | Missing Recently Played readiness/health diagnostics | [ ] | |
+| L-1 | LOW | Missing Recently Played readiness/health diagnostics | [~] | `fix/l-1-rp-health-diagnostics` |
 
 ## Conventions
 

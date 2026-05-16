@@ -82,7 +82,7 @@ export const createHttpApp = (
   });
   app.use("/api", apiLimiter);
 
-  app.use(createHealthRouter());
+  app.use(createHealthRouter(recentlyPlayedService));
   app.use("/api/core", createCoreRouter(roonClient));
   app.use("/api/zones", createZonesRouter(transportService));
   app.use("/api/transport", createTransportRouter(transportService));

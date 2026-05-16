@@ -128,6 +128,10 @@ export class RecentlyPlayedService extends EventEmitter {
   // Routes/socket emits gate on this so the failure is visible
   // (503 / no broadcast) instead of silent corruption.
   private degraded = false;
+  // Most recent persist failure, if any — for /api/health
+  // diagnostics. Cleared on next successful persist. Doesn't gate
+  // routes (degraded does that); this is purely operator-facing.
+  private lastPersistError: { message: string; ts: string } | undefined;
 
   constructor(
     private readonly transportService: TransportService,
@@ -286,6 +290,16 @@ export class RecentlyPlayedService extends EventEmitter {
    */
   public isDegraded(): boolean {
     return this.degraded;
+  }
+
+  /**
+   * Most recent persist failure, if any — for /api/health
+   * diagnostics. Undefined when the last persist succeeded (or no
+   * persist has been attempted yet). Doesn't gate route behavior;
+   * `isDegraded()` is the authoritative readiness signal.
+   */
+  public getLastPersistError(): { message: string; ts: string } | undefined {
+    return this.lastPersistError;
   }
 
   /**
@@ -643,7 +657,14 @@ export class RecentlyPlayedService extends EventEmitter {
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(tmp, payload, "utf-8");
       await fs.rename(tmp, this.filePath);
+      // Successful persist clears any prior diagnostic so /api/health
+      // doesn't keep reporting a stale failure forever.
+      this.lastPersistError = undefined;
     } catch (err) {
+      this.lastPersistError = {
+        message: err instanceof Error ? err.message : String(err),
+        ts: new Date(this.now()).toISOString(),
+      };
       this.logger.warn(
         { err, filePath: this.filePath },
         "RecentlyPlayedService: persist failed; in-memory list still authoritative"

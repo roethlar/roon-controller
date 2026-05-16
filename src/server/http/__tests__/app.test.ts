@@ -71,11 +71,84 @@ describe('HTTP app routing', () => {
     expect(body.error).toBe('Not Found');
   });
 
-  it('answers /api/health', async () => {
+  it('answers /api/health with status ok + per-subsystem diagnostics', async () => {
     const res = await fetch(`${app.url}/api/health`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string };
+    const body = (await res.json()) as {
+      status: string;
+      ready: boolean;
+      subsystems: {
+        recently_played?: {
+          ready: boolean;
+          degraded: boolean;
+          epoch: number;
+          revision: number;
+          entry_count: number;
+          last_persist_error?: { message: string; ts: string };
+        };
+      };
+    };
     expect(body.status).toBe('ok');
+    expect(body.ready).toBe(true);
+    expect(body.subsystems.recently_played).toBeDefined();
+    expect(body.subsystems.recently_played!.ready).toBe(true);
+    expect(body.subsystems.recently_played!.degraded).toBe(false);
+    expect(typeof body.subsystems.recently_played!.epoch).toBe('number');
+    expect(typeof body.subsystems.recently_played!.revision).toBe('number');
+    expect(typeof body.subsystems.recently_played!.entry_count).toBe('number');
+  });
+
+  it('L-1: /api/health returns 503 + status degraded when recently_played is degraded', async () => {
+    const svc = app.recentlyPlayed as unknown as { degraded: boolean };
+    const saved = svc.degraded;
+    svc.degraded = true;
+    try {
+      const res = await fetch(`${app.url}/api/health`);
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as {
+        status: string;
+        ready: boolean;
+        subsystems: { recently_played: { degraded: boolean; ready: boolean } };
+      };
+      expect(body.status).toBe('degraded');
+      expect(body.ready).toBe(false);
+      expect(body.subsystems.recently_played.degraded).toBe(true);
+      expect(body.subsystems.recently_played.ready).toBe(false);
+    } finally {
+      svc.degraded = saved;
+    }
+  });
+
+  it('L-1: /api/health surfaces last_persist_error when a persist has failed', async () => {
+    // Inject a lastPersistError directly — exercising the persist
+    // failure path would require either the M-3 await-persist
+    // semantics (not on this branch) or filesystem patching, both
+    // overkill for verifying the health serializer.
+    const svc = app.recentlyPlayed as unknown as {
+      lastPersistError: { message: string; ts: string } | undefined;
+    };
+    const saved = svc.lastPersistError;
+    svc.lastPersistError = {
+      message: 'ENOSPC: no space left',
+      ts: '2026-05-16T16:00:00.000Z',
+    };
+    try {
+      const res = await fetch(`${app.url}/api/health`);
+      expect(res.status).toBe(200); // degraded is false; service "ready" still
+      const body = (await res.json()) as {
+        subsystems: {
+          recently_played: {
+            last_persist_error?: { message: string; ts: string };
+          };
+        };
+      };
+      expect(body.subsystems.recently_played.last_persist_error).toEqual({
+        message: 'ENOSPC: no space left',
+        ts: '2026-05-16T16:00:00.000Z',
+      });
+    } finally {
+      svc.lastPersistError = saved;
+    }
   });
 
   it('GET /api/recently-played returns the service\'s entries', async () => {
