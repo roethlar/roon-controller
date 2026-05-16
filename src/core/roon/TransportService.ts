@@ -348,10 +348,52 @@ export class TransportService extends EventEmitter {
   }
 
   /**
-   * Toggle the standby state of an output. If the output has
-   * multiple `source_controls` that expose `supports_standby`, the
-   * caller picks which one via `control_key`; for single-control
-   * outputs the key can be omitted.
+   * Put an output into standby. **Idempotent** — calling on an
+   * already-standby output is a no-op (per Roon's `standby`
+   * semantics). Prefer this over `toggleStandby` for "make sure
+   * the output is asleep" intent: a duplicate / retried / stale
+   * command can't accidentally wake it up.
+   *
+   * If `control_key` is omitted, all `source_controls` on the
+   * output that report `supports_standby: true` are put into
+   * standby together.
+   */
+  public async standby(
+    output_id: string,
+    control_key?: string
+  ): Promise<void> {
+    this.ensureTransport();
+
+    return new Promise((resolve, reject) => {
+      const output = { output_id };
+      const opts: { control_key?: string } = {};
+      if (control_key) opts.control_key = control_key;
+      this.transport.standby(output, opts, (error: any) => {
+        if (error) {
+          this.logger.error(
+            { err: error, output_id, control_key },
+            "standby failed"
+          );
+          reject(
+            new RoonOperationError("standby", error, { output_id, control_key })
+          );
+        } else {
+          this.logger.debug({ output_id, control_key }, "standby succeeded");
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
+   * Toggle the standby state of an output. NOT idempotent — a
+   * duplicate / retried call flips the state. Use `standby()` for
+   * idempotent "put to sleep" intent.
+   *
+   * If the output has multiple `source_controls` that expose
+   * `supports_standby`, the caller picks which one via
+   * `control_key`; for single-control outputs the key can be
+   * omitted.
    */
   public async toggleStandby(
     output_id: string,
@@ -904,8 +946,54 @@ export class TransportService extends EventEmitter {
         output_id: output.output_id,
         display_name: output.display_name,
         volume: output.volume ? this.normalizeVolume(output.volume) : undefined,
+        source_controls: this.normalizeSourceControls(output.source_controls),
       })),
     };
+  }
+
+  /**
+   * Normalize Roon's `source_controls` array on an output. Each entry
+   * carries the power/standby endpoint info the UI needs to render
+   * standby/wake affordances. Filter to entries with a usable
+   * `control_key` and `display_name` — anything malformed is dropped
+   * silently so we never surface a button that can't be acted on.
+   *
+   * Returns `undefined` when the input is missing or yields no usable
+   * entries, so the JSON serialization omits the field entirely
+   * (matches how a `null` volume is handled).
+   */
+  private normalizeSourceControls(
+    raw: unknown
+  ): Zone["outputs"] extends Array<infer O>
+    ? O extends { source_controls?: infer SC }
+      ? SC | undefined
+      : never
+    : never {
+    if (!Array.isArray(raw)) return undefined as never;
+    const out = raw
+      .filter(
+        (c: any) =>
+          c &&
+          typeof c.control_key === "string" &&
+          c.control_key.length > 0 &&
+          typeof c.display_name === "string"
+      )
+      .map((c: any) => {
+        const status: "selected" | "deselected" | "standby" | "indeterminate" =
+          c.status === "selected" ||
+          c.status === "deselected" ||
+          c.status === "standby" ||
+          c.status === "indeterminate"
+            ? c.status
+            : "indeterminate";
+        return {
+          control_key: c.control_key as string,
+          display_name: c.display_name as string,
+          status,
+          supports_standby: c.supports_standby === true,
+        };
+      });
+    return (out.length > 0 ? out : undefined) as never;
   }
 
   private emitNowPlaying(zone_id: string, nowPlaying: NowPlaying): void {

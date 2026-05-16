@@ -40,6 +40,7 @@ describe('TransportService', () => {
       play_from_here: jest.fn(),
       group_outputs: jest.fn(),
       ungroup_outputs: jest.fn(),
+      standby: jest.fn(),
       toggle_standby: jest.fn(),
       convenience_switch: jest.fn(),
     };
@@ -602,6 +603,162 @@ describe('TransportService', () => {
       await expect(service.ungroupOutputs(['out-a'])).rejects.toThrow(
         RoonOperationError
       );
+    });
+  });
+
+  describe('standby — idempotent (PR3 reopen #2)', () => {
+    it('calls transport.standby with output_id (no control_key)', async () => {
+      mockTransport.standby.mockImplementation(
+        (_o: unknown, _opts: unknown, callback: (err?: unknown) => void) => callback(null)
+      );
+      await service.standby('out-a');
+      expect(mockTransport.standby).toHaveBeenCalledWith(
+        { output_id: 'out-a' },
+        {},
+        expect.any(Function)
+      );
+    });
+
+    it('passes control_key through when provided', async () => {
+      mockTransport.standby.mockImplementation(
+        (_o: unknown, _opts: unknown, callback: (err?: unknown) => void) => callback(null)
+      );
+      await service.standby('out-a', 'source-1');
+      expect(mockTransport.standby).toHaveBeenCalledWith(
+        { output_id: 'out-a' },
+        { control_key: 'source-1' },
+        expect.any(Function)
+      );
+    });
+
+    it('uses Roon standby (not toggle_standby) so duplicate calls are idempotent', async () => {
+      mockTransport.standby.mockImplementation(
+        (_o: unknown, _opts: unknown, callback: (err?: unknown) => void) => callback(null)
+      );
+      await service.standby('out-a');
+      await service.standby('out-a');
+      // standby is called twice; toggle_standby is never called.
+      expect(mockTransport.standby).toHaveBeenCalledTimes(2);
+      expect(mockTransport.toggle_standby).not.toHaveBeenCalled();
+    });
+
+    it('rejects with RoonOperationError on failure', async () => {
+      mockTransport.standby.mockImplementation(
+        (_o: unknown, _opts: unknown, callback: (err?: unknown) => void) =>
+          callback('StandbyUnsupported')
+      );
+      await expect(service.standby('out-a')).rejects.toThrow(RoonOperationError);
+    });
+  });
+
+  describe('source_controls normalization (PR3 reopen #2)', () => {
+    function captureZones(zones: unknown[]): void {
+      mockTransport.subscribe_zones.mockImplementation((callback: Function) => {
+        callback('Subscribed', { zones });
+      });
+      service.subscribeZones();
+    }
+
+    it('exposes a multi-control output with all source_controls', () => {
+      captureZones([
+        {
+          zone_id: 'zone-a',
+          display_name: 'Living Room',
+          state: 'playing',
+          outputs: [
+            {
+              output_id: 'out-a',
+              display_name: 'Main',
+              source_controls: [
+                {
+                  control_key: 's1',
+                  display_name: 'Naim NAC-N172 XS',
+                  status: 'selected',
+                  supports_standby: true
+                },
+                {
+                  control_key: 's2',
+                  display_name: 'TV Input',
+                  status: 'standby',
+                  supports_standby: true
+                }
+              ]
+            }
+          ]
+        }
+      ]);
+
+      const zone = service.getZone('zone-a');
+      const controls = zone?.outputs?.[0].source_controls;
+      expect(controls).toHaveLength(2);
+      expect(controls?.[0]).toEqual({
+        control_key: 's1',
+        display_name: 'Naim NAC-N172 XS',
+        status: 'selected',
+        supports_standby: true
+      });
+      expect(controls?.[1].status).toBe('standby');
+    });
+
+    it('omits source_controls when absent on the Roon payload', () => {
+      captureZones([
+        {
+          zone_id: 'zone-a',
+          display_name: 'X',
+          state: 'playing',
+          outputs: [{ output_id: 'out-a', display_name: 'Main' }]
+        }
+      ]);
+      const zone = service.getZone('zone-a');
+      expect(zone?.outputs?.[0].source_controls).toBeUndefined();
+    });
+
+    it('drops malformed source_controls entries (missing control_key or display_name)', () => {
+      captureZones([
+        {
+          zone_id: 'zone-a',
+          display_name: 'X',
+          state: 'playing',
+          outputs: [
+            {
+              output_id: 'out-a',
+              display_name: 'Main',
+              source_controls: [
+                { control_key: 's1', display_name: 'OK', status: 'selected', supports_standby: true },
+                { control_key: '', display_name: 'no key', status: 'selected', supports_standby: false },
+                { display_name: 'missing key', status: 'selected', supports_standby: false },
+                { control_key: 's2', status: 'selected', supports_standby: false } // missing display_name
+              ]
+            }
+          ]
+        }
+      ]);
+      const zone = service.getZone('zone-a');
+      expect(zone?.outputs?.[0].source_controls).toHaveLength(1);
+      expect(zone?.outputs?.[0].source_controls?.[0].control_key).toBe('s1');
+    });
+
+    it('defaults unknown status to "indeterminate" and supports_standby to false', () => {
+      captureZones([
+        {
+          zone_id: 'zone-a',
+          display_name: 'X',
+          state: 'playing',
+          outputs: [
+            {
+              output_id: 'out-a',
+              display_name: 'Main',
+              source_controls: [
+                { control_key: 's1', display_name: 'Weird', status: 'mystery-state' }
+              ]
+            }
+          ]
+        }
+      ]);
+      const zone = service.getZone('zone-a');
+      const c = zone?.outputs?.[0].source_controls?.[0];
+      expect(c?.status).toBe('indeterminate');
+      expect(c?.supports_standby).toBe(false);
     });
   });
 

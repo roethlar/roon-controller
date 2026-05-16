@@ -351,6 +351,9 @@ export const attachSocketServer = (
         payload: { output_id?: unknown; control_key?: unknown },
         ack?: AckFn
       ) => {
+        // IDEMPOTENT: puts an output into standby. Duplicate /
+        // retried / stale call won't wake it. Use
+        // transport:toggle-standby for explicit toggle semantics.
         if (
           !payload?.output_id ||
           typeof payload.output_id !== "string"
@@ -378,10 +381,58 @@ export const attachSocketServer = (
           return;
         }
         await handleAsync(socket, "transport:error", "transport:standby", ack, () =>
-          transportService.toggleStandby(
+          transportService.standby(
             payload.output_id as string,
             payload.control_key as string | undefined
           )
+        );
+      }
+    );
+
+    socket.on(
+      "transport:toggle-standby",
+      async (
+        payload: { output_id?: unknown; control_key?: unknown },
+        ack?: AckFn
+      ) => {
+        // NOT idempotent: flips the state every call. For "make
+        // sure output is asleep" intent use transport:standby.
+        if (
+          !payload?.output_id ||
+          typeof payload.output_id !== "string"
+        ) {
+          sendError(
+            socket,
+            "transport:error",
+            "transport:toggle-standby",
+            "output_id required",
+            ack
+          );
+          return;
+        }
+        if (
+          payload.control_key !== undefined &&
+          typeof payload.control_key !== "string"
+        ) {
+          sendError(
+            socket,
+            "transport:error",
+            "transport:toggle-standby",
+            "control_key must be a string when provided",
+            ack
+          );
+          return;
+        }
+        await handleAsync(
+          socket,
+          "transport:error",
+          "transport:toggle-standby",
+          ack,
+          () =>
+            transportService.toggleStandby(
+              payload.output_id as string,
+              payload.control_key as string | undefined
+            )
         );
       }
     );

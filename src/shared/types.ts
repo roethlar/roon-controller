@@ -93,6 +93,35 @@ export interface ZoneOutput {
 
   /** Volume level (0-100, null if fixed volume) */
   volume?: VolumeSettings;
+
+  /**
+   * Source controls — power/standby endpoints exposed by the output.
+   * Used by the UI to render per-output standby/wake affordances:
+   * - If exactly one entry has `supports_standby: true` → single
+   *   power button, click maps to `standby(output_id, control_key)`
+   *   (idempotent) or `convenience_switch` (wake).
+   * - If multiple → nested menu listing each by `display_name`.
+   * - If none → render nothing.
+   *
+   * `status` values track Roon's vocabulary: `selected` /
+   * `deselected` / `standby` / `indeterminate`. Treat anything
+   * other than `standby` as "powered on".
+   */
+  source_controls?: ZoneSourceControl[];
+}
+
+export interface ZoneSourceControl {
+  /** Stable identifier for this source control within the output. */
+  control_key: string;
+
+  /** Display name (e.g. "Naim NAC-N172 XS"). */
+  display_name: string;
+
+  /** Current state of the control. */
+  status: 'selected' | 'deselected' | 'standby' | 'indeterminate';
+
+  /** True if the control can be put into standby via Roon's standby API. */
+  supports_standby: boolean;
 }
 
 /**
