@@ -72,6 +72,13 @@ export class RecentlyPlayedService extends EventEmitter {
   private readonly now: () => number;
   private entries: RecentlyPlayedEntry[] = [];
   private writeChain: Promise<void> = Promise.resolve();
+  // Serializes async `handleNowPlayingImpl` calls so each insert's
+  // snapshot → mutate → persist → emit/rollback runs atomically with
+  // respect to the next. Without this chain, two now-playing events
+  // arriving back-to-back would interleave their mutations across
+  // await points, and a failed persist's rollback could clobber a
+  // later successful insert.
+  private insertChain: Promise<void> = Promise.resolve();
   private nowPlayingHandler?: (data: {
     zone_id: string;
     now_playing: NowPlaying;
@@ -292,7 +299,6 @@ export class RecentlyPlayedService extends EventEmitter {
     return this.degraded;
   }
 
-  /**
    * Most recent persist failure, if any — for /api/health
    * diagnostics. Undefined when the last persist succeeded (or no
    * persist has been attempted yet). Doesn't gate route behavior;
@@ -300,6 +306,25 @@ export class RecentlyPlayedService extends EventEmitter {
    */
   public getLastPersistError(): { message: string; ts: string } | undefined {
     return this.lastPersistError;
+  }
+
+  /**
+   * Wait for the insert + write chains to settle.
+   *
+   * Inserts are queued onto `insertChain` and serialized through
+   * `writeChain`, so the observable effect of a `fireNowPlaying`
+   * event lags by at least one async tick. Tests and HTTP request
+   * handlers that need to observe the result (or the lack of one,
+   * after a rolled-back failure) await this method.
+   *
+   * Production code generally shouldn't need this — the event-emit
+   * model is fire-and-forget — but the route layer can call it
+   * before reading state if a particular response must reflect the
+   * latest insert.
+   */
+  public async flush(): Promise<void> {
+    await this.insertChain.catch(() => undefined);
+    await this.writeChain.catch(() => undefined);
   }
 
   /**
@@ -397,34 +422,61 @@ export class RecentlyPlayedService extends EventEmitter {
   /**
    * Entry point from the transport-service listener. If a clear is
    * mid-flight, buffer the event so it can be applied AFTER `cleared`
-   * has been broadcast and the persist has committed; otherwise run
-   * the normal insert path.
+   * has been broadcast and the persist has committed; otherwise
+   * enqueue onto the insert chain so it runs serially with prior
+   * inserts (each one's persist completes before the next starts).
+   *
+   * Listener callbacks are sync, so we don't await the chain here —
+   * but the chain itself owns the ordering guarantee.
    */
   private handleNowPlaying(zoneId: string, nowPlaying: NowPlaying | null): void {
     if (this.clearInFlight && nowPlaying) {
       this.pendingDuringClear.push({ zoneId, nowPlaying });
       return;
     }
-    this.handleNowPlayingImpl(zoneId, nowPlaying);
+    this.enqueueInsert(zoneId, nowPlaying);
   }
 
-  /** Drain buffered events through the normal handler. */
+  private enqueueInsert(zoneId: string, nowPlaying: NowPlaying | null): void {
+    this.insertChain = this.insertChain
+      .catch(() => undefined)
+      .then(() => this.handleNowPlayingImpl(zoneId, nowPlaying))
+      .catch((err) => {
+        this.logger.warn(
+          { err },
+          "RecentlyPlayedService: insert handler crashed; entry skipped"
+        );
+      });
+  }
+
+  /** Drain buffered events through the normal insert chain. */
   private drainPendingInserts(): void {
     const drained = this.pendingDuringClear;
     this.pendingDuringClear = [];
     for (const { zoneId, nowPlaying } of drained) {
-      try {
-        this.handleNowPlayingImpl(zoneId, nowPlaying);
-      } catch (err) {
-        this.logger.warn(
-          { err },
-          "RecentlyPlayedService: drained handler crashed; entry skipped"
-        );
-      }
+      this.enqueueInsert(zoneId, nowPlaying);
     }
   }
 
-  private handleNowPlayingImpl(zoneId: string, nowPlaying: NowPlaying | null): void {
+  /**
+   * Insert path. Mutates `this.entries` + `this.revision`, awaits
+   * the persist, then emits `inserted` ONLY if the write committed.
+   * On persist failure, rolls back to the pre-mutation snapshot —
+   * clients are never told about an entry that won't survive a
+   * restart. Serialized via `insertChain` (see `enqueueInsert`) so
+   * the snapshot/mutate/persist/rollback sequence is atomic relative
+   * to other inserts.
+   *
+   * M-3: prior to this change, `schedulePersist` was fire-and-forget
+   * and `inserted` was emitted immediately. A post-startup persist
+   * failure (disk full, permission flip) would broadcast revisions
+   * the file never received; a restart would revert to the older
+   * file while `/health` still reported OK.
+   */
+  private async handleNowPlayingImpl(
+    zoneId: string,
+    nowPlaying: NowPlaying | null
+  ): Promise<void> {
     if (!nowPlaying) return;
     // Defensive: zone_id might be on the now_playing payload too.
     const resolvedZoneId = zoneId || nowPlaying.zone_id;
@@ -449,6 +501,13 @@ export class RecentlyPlayedService extends EventEmitter {
       return;
     }
 
+    // Snapshot BEFORE mutating so a failed persist can roll back to
+    // the exact prior state. Array reference is safe to keep — we
+    // replace `this.entries` with a new array below rather than
+    // mutating in place.
+    const previousEntries = this.entries;
+    const previousRevision = this.revision;
+
     // Not suppressed → either a brand-new track or a genuine replay
     // (same track, but the prior entry is outside the noise window).
     // Drop any prior occurrence so a replay bubbles to the top
@@ -456,17 +515,33 @@ export class RecentlyPlayedService extends EventEmitter {
     // up any legacy duplicates left by the pre-bubble behavior. The
     // list therefore holds at most one entry per dedupe key.
     const key = recentlyPlayedDedupeKey(entry);
-    this.entries = this.entries.filter(
-      (existing) => recentlyPlayedDedupeKey(existing) !== key
-    );
-
-    this.entries.unshift(entry);
-    if (this.entries.length > this.cap) {
-      this.entries.length = this.cap;
+    const next = [
+      entry,
+      ...this.entries.filter(
+        (existing) => recentlyPlayedDedupeKey(existing) !== key
+      ),
+    ];
+    if (next.length > this.cap) {
+      next.length = this.cap;
     }
+
+    this.entries = next;
     this.revision++;
 
-    this.schedulePersist();
+    try {
+      await this.schedulePersistAsync();
+    } catch (err) {
+      // Roll back so the in-memory list matches the file and clients
+      // never see a phantom revision. Drop the broadcast.
+      this.entries = previousEntries;
+      this.revision = previousRevision;
+      this.logger.warn(
+        { err, entry: { title: entry.title, zone_id: entry.zone_id } },
+        "RecentlyPlayedService: insert persist failed; rolled back in-memory state and suppressed 'inserted' broadcast"
+      );
+      return;
+    }
+
     this.emit("inserted", entry);
   }
 

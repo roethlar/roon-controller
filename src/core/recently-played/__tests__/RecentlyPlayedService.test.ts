@@ -59,16 +59,14 @@ async function readPersistedRaw(filePath: string): Promise<unknown> {
 }
 
 async function flushWrites(svc: RecentlyPlayedService): Promise<void> {
-  // The service serializes writes onto an internal chain. Awaiting
-  // the chain itself isn't exposed; flush by issuing a no-op tick.
-  // In practice, the chain settles within microtasks once nothing
-  // new is queued — `await Promise.resolve()` twice is enough to
-  // observe rename completion.
+  // Drain insert chain AND write chain. Inserts are now serialized
+  // through `insertChain` and only emit `inserted` once their
+  // persist commits — so observable state lags by an async tick.
+  // svc.flush() awaits both chains in order.
+  await svc.flush();
+  // Settle any follow-up microtasks (e.g. listener bodies that ran
+  // synchronously inside emit but enqueued additional work).
   await Promise.resolve();
-  await Promise.resolve();
-  // One filesystem round-trip:
-  await new Promise((r) => setTimeout(r, 5));
-  void svc;
 }
 
 describe("RecentlyPlayedService", () => {
@@ -87,6 +85,7 @@ describe("RecentlyPlayedService", () => {
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Hey Jude" }));
 
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(1);
       expect(svc.getEntries()[0].title).toBe("Hey Jude");
       expect(inserts).toHaveLength(1);
@@ -112,6 +111,7 @@ describe("RecentlyPlayedService", () => {
       clock += 10_000; // 15s total
       transport.fireNowPlaying("zone-a", np);
 
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(1);
       expect(inserts).toHaveLength(1);
     });
@@ -133,12 +133,14 @@ describe("RecentlyPlayedService", () => {
 
       const np = nowPlaying({ title: "Hey Jude", duration: 0 });
       transport.fireNowPlaying("zone-a", np);
+      await flushWrites(svc);
       const firstPlayedAt = svc.getEntries()[0].played_at;
       clock += 31_000; // past the 30s window (duration is 0)
       transport.fireNowPlaying("zone-a", np);
 
       // Replay bubbles in place: one entry, fresh played_at, and the
       // bubble re-emits `inserted` so the socket broadcast fires.
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(1);
       expect(svc.getEntries()[0].played_at).not.toBe(firstPlayedAt);
       expect(inserts).toHaveLength(2);
@@ -166,6 +168,7 @@ describe("RecentlyPlayedService", () => {
       clock += 5; // 5ms later — group-play emit
       transport.fireNowPlaying("zone-b", { ...np, zone_id: "zone-b" });
 
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(1);
     });
 
@@ -190,6 +193,7 @@ describe("RecentlyPlayedService", () => {
       clock += 107_000; // 107s in — past 30s default, well within song
       transport.fireNowPlaying("zone-a", np);
 
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(1);
     });
 
@@ -222,6 +226,7 @@ describe("RecentlyPlayedService", () => {
 
       // Two distinct tracks recorded; the X re-emit was suppressed
       // even though head was Y.
+      await flushWrites(svc);
       const titles = svc.getEntries().map((e) => e.title);
       expect(titles).toEqual(["Track Y", "Track X"]);
     });
@@ -243,6 +248,7 @@ describe("RecentlyPlayedService", () => {
       transport.fireNowPlaying("zone-a", np);
 
       // Legitimate replay → bubble, not duplicate.
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(1);
     });
 
@@ -265,11 +271,14 @@ describe("RecentlyPlayedService", () => {
       const trackB = nowPlaying({ title: "Track B", duration: 60 });
 
       transport.fireNowPlaying("zone-a", trackA);
+      await flushWrites(svc);
       clock += 1_000;
       transport.fireNowPlaying("zone-a", trackB);
+      await flushWrites(svc);
       clock += 70_000; // past Track A's 65s window
       transport.fireNowPlaying("zone-a", trackA); // genuine replay
 
+      await flushWrites(svc);
       expect(svc.getEntries().map((e) => e.title)).toEqual([
         "Track A",
         "Track B",
@@ -289,6 +298,7 @@ describe("RecentlyPlayedService", () => {
       transport.fireNowPlaying("zone-a", null);
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "" }));
 
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(0);
     });
 
@@ -308,6 +318,7 @@ describe("RecentlyPlayedService", () => {
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" })); // dup
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "B" }));
 
+      await flushWrites(svc);
       expect(inserts).toHaveLength(2);
       expect(svc.getEntries().map((e) => e.title)).toEqual(["B", "A"]);
     });
@@ -328,6 +339,7 @@ describe("RecentlyPlayedService", () => {
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
       transport.fireNowPlaying("zone-b", nowPlaying({ title: "B", zone_id: "zone-b" }));
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(2);
 
       await svc.clear();
@@ -392,6 +404,7 @@ describe("RecentlyPlayedService", () => {
       // After clear: cleared emitted first, then the buffered insert
       // drained through the normal handler → inserted emitted with
       // the entry.
+      await flushWrites(svc);
       expect(events).toEqual(["cleared", "inserted:MidClear"]);
       expect(svc.getEntries().map((e) => e.title)).toEqual(["MidClear"]);
 
@@ -402,12 +415,16 @@ describe("RecentlyPlayedService", () => {
       expect(persisted.map((e) => e.title)).toEqual(["MidClear"]);
     });
 
-    it("drains buffered inserts onto the rolled-back list when persist fails", async () => {
+    it("drains buffered inserts onto the rolled-back list when persist fails; drained inserts also roll back if their persist fails", async () => {
       // Failure path of the same race: a now-playing event arrives
-      // during a clear that ultimately fails to persist. Rollback
-      // restores the prior list, the drained insert applies on top,
-      // and `cleared` is NOT broadcast (clients shouldn't see a
-      // wipe that didn't survive).
+      // during a clear that ultimately fails to persist.
+      //
+      // M-3 contract: inserts are durable-or-nothing. The drained
+      // insert is enqueued (correct — it wasn't lost), but if its
+      // own persist also fails (the writeSpy is still active), it
+      // rolls back too and does NOT broadcast `inserted`. Clients
+      // are never told about an entry that won't survive a restart.
+      // `cleared` is also NOT broadcast (clear's persist failed).
       const filePath = await makeTmpPath();
       const transport = new FakeTransport();
       const svc = new RecentlyPlayedService(
@@ -421,8 +438,8 @@ describe("RecentlyPlayedService", () => {
       await svc.start();
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Before" }));
-      expect(svc.getEntries().map((e) => e.title)).toEqual(["Before"]);
       await flushWrites(svc);
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["Before"]);
 
       const writeSpy = jest
         .spyOn(fs, "writeFile")
@@ -432,16 +449,28 @@ describe("RecentlyPlayedService", () => {
         transport.fireNowPlaying("zone-a", nowPlaying({ title: "MidClear" }));
         await expect(clearPromise).rejects.toThrow();
 
-        // No cleared broadcast on failure.
-        expect(events).toEqual(["inserted:Before", "inserted:MidClear"]);
-        // Rolled back + buffered insert applied on top.
-        expect(svc.getEntries().map((e) => e.title)).toEqual([
-          "MidClear",
-          "Before",
-        ]);
+        // Drained insert ran AFTER clear resolved; let its chain settle.
+        await flushWrites(svc);
+
+        // Neither `cleared` (clear's persist failed) nor
+        // `inserted:MidClear` (drained insert's persist also failed)
+        // is broadcast. Only the original "Before" insert (which
+        // committed before the writeSpy was installed) appears.
+        expect(events).toEqual(["inserted:Before"]);
+        // In-memory state is the clear-rollback list. MidClear's
+        // insert mutation was rolled back when its persist failed,
+        // so it does NOT appear.
+        expect(svc.getEntries().map((e) => e.title)).toEqual(["Before"]);
       } finally {
         writeSpy.mockRestore();
       }
+
+      // After the writeSpy is restored, a fresh insert commits normally
+      // — the rollback didn't poison the chain.
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "After" }));
+      await flushWrites(svc);
+      expect(events).toEqual(["inserted:Before", "inserted:After"]);
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["After", "Before"]);
     });
 
     it("coalesces overlapping clear() calls into one persist + one cleared broadcast", async () => {
@@ -463,6 +492,7 @@ describe("RecentlyPlayedService", () => {
       await svc.start();
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Before" }));
+      await flushWrites(svc);
       events.length = 0; // ignore the seed insert
 
       const a = svc.clear();
@@ -501,11 +531,11 @@ describe("RecentlyPlayedService", () => {
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "MidClear" }));
       await Promise.all([a, b]);
 
+      await flushWrites(svc);
       expect(events).toEqual(["cleared", "inserted:MidClear"]);
       expect(svc.getEntries().map((e) => e.title)).toEqual(["MidClear"]);
 
       // Disk converges with in-memory.
-      await flushWrites(svc);
       const persisted = (await readPersisted(filePath)) as Array<{ title: string }>;
       expect(persisted.map((e) => e.title)).toEqual(["MidClear"]);
     });
@@ -530,6 +560,7 @@ describe("RecentlyPlayedService", () => {
       await svc.start();
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(1);
 
       // First clear: listener throws; the service swallows it,
@@ -541,6 +572,7 @@ describe("RecentlyPlayedService", () => {
       // was reset (otherwise the event would be buffered, not
       // applied to entries).
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "B" }));
+      await flushWrites(svc);
       expect(svc.getEntries().map((e) => e.title)).toEqual(["B"]);
 
       // Subsequent clear works — proves pendingClear was reset
@@ -568,8 +600,8 @@ describe("RecentlyPlayedService", () => {
       await svc.start();
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Stays" }));
-      expect(svc.getEntries()).toHaveLength(1);
       await flushWrites(svc);
+      expect(svc.getEntries()).toHaveLength(1);
 
       const writeSpy = jest
         .spyOn(fs, "writeFile")
@@ -607,12 +639,106 @@ describe("RecentlyPlayedService", () => {
         );
       }
 
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(3);
       expect(svc.getEntries().map((e) => e.title)).toEqual([
         "Track 4",
         "Track 3",
         "Track 2",
       ]);
+    });
+  });
+
+  describe("M-3: insert is durable-or-nothing", () => {
+    it("does NOT emit `inserted` and rolls back in-memory state when persist fails after startup", async () => {
+      // Pre-M-3: schedulePersist was fire-and-forget and emit fired
+      // immediately. A disk-full / permission-flip after startup
+      // would broadcast revisions the file never received; on
+      // restart the list reverted to the older file while /health
+      // still reported OK.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath, suppressionWindowMs: 0 }
+      );
+      const inserts: string[] = [];
+      svc.on("inserted", (e) => inserts.push(e.title ?? ""));
+      await svc.start();
+
+      // A first successful insert commits the baseline.
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Committed" }));
+      await flushWrites(svc);
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["Committed"]);
+      expect(inserts).toEqual(["Committed"]);
+
+      // Now break the disk and fire another insert.
+      const writeSpy = jest
+        .spyOn(fs, "writeFile")
+        .mockRejectedValue(new Error("ENOSPC: no space left"));
+      try {
+        transport.fireNowPlaying("zone-a", nowPlaying({ title: "Lost" }));
+        await flushWrites(svc);
+
+        // No inserted broadcast for the lost entry; in-memory list
+        // matches the on-disk file (still just "Committed").
+        expect(inserts).toEqual(["Committed"]);
+        expect(svc.getEntries().map((e) => e.title)).toEqual(["Committed"]);
+
+        const persistedAfter = (await readPersisted(filePath)) as Array<{
+          title: string;
+        }>;
+        expect(persistedAfter.map((e) => e.title)).toEqual(["Committed"]);
+      } finally {
+        writeSpy.mockRestore();
+      }
+
+      // The chain isn't poisoned — once disk recovers, the next
+      // insert commits normally and broadcasts.
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Recovered" }));
+      await flushWrites(svc);
+      expect(inserts).toEqual(["Committed", "Recovered"]);
+      expect(svc.getEntries().map((e) => e.title)).toEqual([
+        "Recovered",
+        "Committed",
+      ]);
+    });
+
+    it("preserves revision monotonicity across failed inserts", async () => {
+      // The rollback also reverts the revision bump, so clients
+      // don't see a "gap" or future-revision broadcast that never
+      // happens. After a failed insert, the next successful insert
+      // bumps revision from the pre-failure value.
+      const transport = new FakeTransport();
+      const filePath = await makeTmpPath();
+      const svc = new RecentlyPlayedService(
+        transport as unknown as TransportService,
+        mockLogger,
+        { filePath, suppressionWindowMs: 0 }
+      );
+      await svc.start();
+
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
+      await flushWrites(svc);
+      const revAfterA = svc.getRevision();
+      expect(revAfterA).toBe(1);
+
+      const writeSpy = jest
+        .spyOn(fs, "writeFile")
+        .mockRejectedValueOnce(new Error("transient I/O"));
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "Failed" }));
+      await flushWrites(svc);
+      // Revision rolled back to pre-failure value.
+      expect(svc.getRevision()).toBe(revAfterA);
+      writeSpy.mockRestore();
+
+      transport.fireNowPlaying("zone-a", nowPlaying({ title: "B" }));
+      await flushWrites(svc);
+      // Next successful insert bumps from the pre-failure base, not
+      // from a phantom higher value.
+      expect(svc.getRevision()).toBe(revAfterA + 1);
+      expect(svc.getEntries().map((e) => e.title)).toEqual(["B", "A"]);
     });
   });
 
@@ -689,12 +815,12 @@ describe("RecentlyPlayedService", () => {
 
       // Listener not attached → fireNowPlaying is a no-op.
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
+      await flushWrites(svc);
       expect(svc.getEntries()).toEqual([]);
 
       // File on disk is unchanged — degraded mode skips the eager
       // persist so the original (corrupt) content can be inspected
       // or restored from backup.
-      await flushWrites(svc);
       expect(await fs.readFile(filePath, "utf-8")).toBe(garbage);
     });
 
@@ -901,6 +1027,7 @@ describe("RecentlyPlayedService", () => {
 
       // Mutate via an insert (revision should advance).
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
+      await flushWrites(svc);
       expect(svc.getRevision()).toBe(1);
 
       // Repeated start() must NOT reload disk over the in-memory
@@ -955,6 +1082,7 @@ describe("RecentlyPlayedService", () => {
           "zone-a",
           nowPlaying({ title: "After Restart" })
         );
+        await flushWrites(svc);
         expect(inserts).toHaveLength(1);
       } finally {
         writeSpy.mockRestore();
@@ -993,6 +1121,7 @@ describe("RecentlyPlayedService", () => {
 
       // Listener attached again — ingestion works.
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Recovered" }));
+      await flushWrites(svc);
       expect(svc.getEntries().map((e) => e.title)).toEqual(["Recovered"]);
     });
 
@@ -1017,11 +1146,13 @@ describe("RecentlyPlayedService", () => {
 
       // Listener never attached — fireNowPlaying is a no-op.
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Ghost" }));
+      await flushWrites(svc);
       expect(svc.getEntries()).toEqual([]);
 
       // A subsequent start() runs cleanly with a fresh attach.
       await svc.start();
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Real" }));
+      await flushWrites(svc);
       expect(svc.getEntries().map((e) => e.title)).toEqual(["Real"]);
     });
 
@@ -1042,12 +1173,14 @@ describe("RecentlyPlayedService", () => {
 
       svc.stop();
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Ignored" }));
+      await flushWrites(svc);
       expect(svc.getEntries()).toHaveLength(0);
 
       await svc.start();
       expect(svc.getEpoch()).toBe(2);
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Heard" }));
+      await flushWrites(svc);
       expect(svc.getEntries().map((e) => e.title)).toEqual(["Heard"]);
     });
 
@@ -1162,6 +1295,7 @@ describe("RecentlyPlayedService", () => {
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "A" }));
       transport.fireNowPlaying("zone-b", nowPlaying({ title: "B", zone_id: "zone-b" }));
 
+      await flushWrites(svc);
       const entries = svc.getEntries();
       expect(entries[1].zone_name).toBe("Living Room");
       expect(entries[0].zone_name).toBeUndefined();
@@ -1180,9 +1314,11 @@ describe("RecentlyPlayedService", () => {
       await svc.start();
 
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "Before" }));
+      await flushWrites(svc);
       svc.stop();
       transport.fireNowPlaying("zone-a", nowPlaying({ title: "After" }));
 
+      await flushWrites(svc);
       expect(svc.getEntries().map((e) => e.title)).toEqual(["Before"]);
     });
   });
