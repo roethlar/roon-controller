@@ -96,6 +96,13 @@ export class RecentlyPlayedService extends EventEmitter {
   // `cleared` broadcast, and a single drain — never a second clear
   // resetting state mid-drain of the first.
   private pendingClear: Promise<void> | null = null;
+  // Monotonic revision counter. Bumped on every state change (insert
+  // / clear). Clients track the highest revision they've applied and
+  // discard anything not strictly newer, which closes a family of
+  // races where socket events and REST responses arrive out of
+  // server-emit order. Per-process — a restart resets to 0; clients
+  // re-baseline on reconnect via the load response's revision.
+  private revision = 0;
 
   constructor(
     private readonly transportService: TransportService,
@@ -158,6 +165,11 @@ export class RecentlyPlayedService extends EventEmitter {
     return [...this.entries];
   }
 
+  /** Current monotonic revision — bumped on every state change. */
+  public getRevision(): number {
+    return this.revision;
+  }
+
   /**
    * Empty the list (user-initiated wipe). Awaits persistence before
    * emitting `cleared` so the socket broadcast only fires once the
@@ -184,7 +196,9 @@ export class RecentlyPlayedService extends EventEmitter {
 
   private async runClear(): Promise<void> {
     const previous = this.entries;
+    const previousRevision = this.revision;
     this.entries = [];
+    this.revision++;
     // Defer concurrent inserts until we resolve. Without this, a
     // now-playing event arriving during the persist await would mutate
     // `this.entries`, get its own `inserted` broadcast before
@@ -196,6 +210,7 @@ export class RecentlyPlayedService extends EventEmitter {
     } catch (err) {
       persistError = err instanceof Error ? err : new Error(String(err));
       this.entries = previous;
+      this.revision = previousRevision;
     }
 
     // State reset MUST run regardless of what listeners do — a
@@ -305,6 +320,7 @@ export class RecentlyPlayedService extends EventEmitter {
     if (this.entries.length > this.cap) {
       this.entries.length = this.cap;
     }
+    this.revision++;
 
     this.schedulePersist();
     this.emit("inserted", entry);

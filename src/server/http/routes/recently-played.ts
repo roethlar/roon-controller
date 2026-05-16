@@ -16,7 +16,10 @@ export const createRecentlyPlayedRouter = (
 
   router.get("/", (_req: Request, res: Response, next: NextFunction) => {
     try {
-      res.json({ entries: service.getEntries() });
+      res.json({
+        entries: service.getEntries(),
+        revision: service.getRevision(),
+      });
     } catch (error) {
       next(error);
     }
@@ -30,11 +33,13 @@ export const createRecentlyPlayedRouter = (
       // and the response body reflects the post-drain state — which
       // may be NON-EMPTY if a now-playing event landed during the
       // clear's persist window and was drained onto the empty list
-      // before this line runs. The caller applies that snapshot
-      // authoritatively instead of guessing whether a deferred
-      // `inserted` socket event will (or already did) arrive.
+      // before this line runs. The revision lets the client filter
+      // out any socket events that arrived from before this snapshot.
       await service.clear();
-      res.json({ entries: service.getEntries() });
+      res.json({
+        entries: service.getEntries(),
+        revision: service.getRevision(),
+      });
     } catch (error) {
       next(error);
     }

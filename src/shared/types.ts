@@ -212,6 +212,34 @@ export interface RecentlyPlayedEntry {
 }
 
 /**
+ * Monotonic revision on the RecentlyPlayedService. Incremented on
+ * every state change (insert / cap-drop / clear); included with all
+ * recently-played events and REST responses. Clients track the
+ * highest revision they've applied and discard anything not strictly
+ * newer — closes a family of races where the DELETE response is a
+ * snapshot at server time T, but the client receives socket events
+ * for state changes that happened after T before the slower HTTP
+ * response arrives.
+ *
+ * Note: this is a per-process counter. A server restart resets it
+ * to zero. Reconnect-triggered initializeStores() does a full load,
+ * which re-baselines the client's lastApplied to the load's revision.
+ */
+export interface RecentlyPlayedSnapshot {
+  entries: RecentlyPlayedEntry[];
+  revision: number;
+}
+
+export interface RecentlyPlayedInsertedPayload {
+  entry: RecentlyPlayedEntry;
+  revision: number;
+}
+
+export interface RecentlyPlayedClearedPayload {
+  revision: number;
+}
+
+/**
  * Queue entry for a zone
  */
 export interface QueueItem {

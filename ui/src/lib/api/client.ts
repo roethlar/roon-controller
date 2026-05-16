@@ -7,6 +7,7 @@ import type {
 	CoreStatusResponse,
 	ErrorResponse,
 	RecentlyPlayedEntry,
+	RecentlyPlayedSnapshot,
 	SearchResult,
 	ZonesResponse,
 	ZoneQueue,
@@ -75,23 +76,16 @@ export async function fetchZones(fetchFn: FetchLike): Promise<ZonesResponse['zon
 
 export async function fetchRecentlyPlayed(
 	fetchFn: FetchLike
-): Promise<RecentlyPlayedEntry[]> {
-	const { entries } = await request<{ entries: RecentlyPlayedEntry[] }>(
-		fetchFn,
-		'/api/recently-played'
-	);
-	return entries;
+): Promise<RecentlyPlayedSnapshot> {
+	return request<RecentlyPlayedSnapshot>(fetchFn, '/api/recently-played');
 }
 
 export async function clearRecentlyPlayed(
 	fetchFn: FetchLike
-): Promise<RecentlyPlayedEntry[]> {
-	const { entries } = await request<{ entries: RecentlyPlayedEntry[] }>(
-		fetchFn,
-		'/api/recently-played',
-		{ method: 'DELETE' }
-	);
-	return entries;
+): Promise<RecentlyPlayedSnapshot> {
+	return request<RecentlyPlayedSnapshot>(fetchFn, '/api/recently-played', {
+		method: 'DELETE'
+	});
 }
 
 export function browse(fetchFn: FetchLike, options: BrowseOptions): Promise<BrowseResult> {

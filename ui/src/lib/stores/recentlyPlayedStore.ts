@@ -1,13 +1,26 @@
 import { writable } from 'svelte/store';
-import type { RecentlyPlayedEntry } from '@shared/types';
+import type {
+	RecentlyPlayedEntry,
+	RecentlyPlayedInsertedPayload,
+	RecentlyPlayedClearedPayload,
+	RecentlyPlayedSnapshot
+} from '@shared/types';
 import { recentlyPlayedDedupeKey } from '@shared/recentlyPlayed';
 import { fetchRecentlyPlayed } from '../api/client';
 
 /**
  * "Recently played on this controller" — populated by the backend
  * RecentlyPlayedService. Loaded once via REST at first mount, then
- * kept fresh via the `recently-played-inserted` socket event (a new
- * entry is unshifted; capped at the same size the backend uses).
+ * kept fresh via socket events (`recently-played-inserted` and
+ * `recently-played-cleared`), each carrying a monotonic revision.
+ *
+ * Out-of-order delivery (socket events vs. REST responses, or socket
+ * events vs. each other) used to corrupt state in narrow races —
+ * e.g. a slow DELETE response arriving after a post-clear socket
+ * insert would wipe the legitimate new entry. The revision check
+ * below (`if revision <= lastApplied: discard`) makes every apply
+ * path idempotent against stale signals, so server, disk, and all
+ * clients converge regardless of arrival order.
  *
  * Honest scope: only reflects plays that happened while this
  * controller's backend was running and subscribed to Roon. Plays
@@ -35,52 +48,37 @@ export const recentlyPlayedStore = {
 const CAP = 50;
 
 /**
- * Bumped on every clear (user-initiated or socket-broadcast). A load
- * started before a clear must NOT overwrite the post-clear empty
- * state when its response finally arrives — that would resurrect
- * pre-clear entries. Each load captures the generation at start and
- * discards its response if the generation has advanced since.
+ * The highest revision we've successfully applied. A monotonic guard
+ * against stale events: anything not strictly newer is discarded.
  *
- * Reset bumps it too (so a reset-then-stale-load doesn't repopulate).
+ * Reset paths (resetRecentlyPlayed, load with revision <= current)
+ * also touch this — see those functions for the specific semantics.
+ * A server restart resets its counter to 0; reconnect-triggered
+ * `loadRecentlyPlayed` re-baselines this from the load response.
  */
-let clearGen = 0;
+let lastAppliedRevision = 0;
 
 /**
- * Defer-during-clear: while a DELETE is in flight, socket events get
- * queued instead of applied. After the DELETE response lands we apply
- * the authoritative snapshot, then drain the queue in arrival order
- * (which is server-emit order, per socket.io's per-connection
- * ordering guarantee). This closes the race where a post-snapshot
- * `inserted` event arrives at the client BEFORE the slower HTTP
- * response — without it, applying the snapshot would wipe the
- * legitimate post-snapshot insert.
- *
- * Single-flight: the UI's `clearRecentInFlight` boolean prevents
- * overlapping clears, so we don't need to track nested deferrals.
+ * Apply an authoritative snapshot if it's strictly newer than what
+ * we've already applied. Used internally by load and the DELETE
+ * response path; both deliver `{ entries, revision }` from the server.
  */
-let deferSocketEvents = false;
-let socketEventBuffer: Array<
-	| { type: 'inserted'; entry: RecentlyPlayedEntry }
-	| { type: 'cleared' }
-> = [];
+function applySnapshot(snapshot: RecentlyPlayedSnapshot): void {
+	if (snapshot.revision <= lastAppliedRevision) return;
+	lastAppliedRevision = snapshot.revision;
+	internalStore.update((s) => ({
+		...s,
+		entries: snapshot.entries.slice(0, CAP),
+		loaded: true
+	}));
+}
 
 export async function loadRecentlyPlayed(fetchFn: typeof fetch): Promise<void> {
-	const startGen = clearGen;
 	internalStore.update((s) => ({ ...s, loading: true }));
 	try {
-		const entries = await fetchRecentlyPlayed(fetchFn);
-		if (clearGen !== startGen) {
-			// A clear (or reset) happened while this load was in flight.
-			// The post-clear state is the source of truth; drop the
-			// stale response so it can't resurrect deleted entries.
-			internalStore.update((s) => ({ ...s, loading: false }));
-			return;
-		}
-		internalStore.set({
-			entries: entries.slice(0, CAP),
-			loading: false,
-			loaded: true
-		});
+		const snapshot = await fetchRecentlyPlayed(fetchFn);
+		applySnapshot(snapshot);
+		internalStore.update((s) => ({ ...s, loading: false }));
 	} catch {
 		// Network or REST hiccup — leave any previously-loaded list
 		// visible, just clear the loading flag. UI shows whatever
@@ -90,38 +88,20 @@ export async function loadRecentlyPlayed(fetchFn: typeof fetch): Promise<void> {
 }
 
 /**
- * Apply a `recently-played-inserted` socket event. Idempotent on
- * the off-chance the same entry is broadcast twice — checks the
- * current head before unshifting. Caps the list to mirror what the
- * backend persists.
- *
- * Mirrors the backend's bubble-to-front: drops any prior occurrence
+ * Apply a `recently-played-inserted` socket event. Discards stale
+ * events (revision not strictly newer than the last applied), then
+ * mirrors the backend's bubble-to-front: drops any prior occurrence
  * of the same track (by shared dedupe key) before unshifting, so a
  * replayed track moves to the top instead of duplicating.
  */
-export function appendRecentlyPlayedFromSocket(
-	entry: RecentlyPlayedEntry
+export function applyRecentlyPlayedInserted(
+	payload: RecentlyPlayedInsertedPayload
 ): void {
-	if (deferSocketEvents) {
-		socketEventBuffer.push({ type: 'inserted', entry });
-		return;
-	}
+	if (payload.revision <= lastAppliedRevision) return;
+	lastAppliedRevision = payload.revision;
+	const { entry } = payload;
 	internalStore.update((s) => {
 		const key = recentlyPlayedDedupeKey(entry);
-		// Idempotence guard: the exact same entry broadcast twice is a
-		// no-op (return the same reference so subscribers don't re-run).
-		// Must compare the dedupe key too — played_at + zone_id alone
-		// would wrongly collapse two distinct tracks that changed in
-		// the same millisecond in the same zone.
-		const head = s.entries[0];
-		if (
-			head &&
-			head.played_at === entry.played_at &&
-			head.zone_id === entry.zone_id &&
-			recentlyPlayedDedupeKey(head) === key
-		) {
-			return s;
-		}
 		const deduped = s.entries.filter((e) => recentlyPlayedDedupeKey(e) !== key);
 		const entries = [entry, ...deduped].slice(0, CAP);
 		return { ...s, entries, loaded: true };
@@ -129,80 +109,32 @@ export function appendRecentlyPlayedFromSocket(
 }
 
 /**
- * Empty the list in response to a user-initiated clear. Distinct from
- * `resetRecentlyPlayed` (which returns to the unloaded initial state):
- * here the list is *known* empty, so `loaded` stays true and the
- * welcome view shows nothing rather than a loading state. Called both
- * by the UI's Clear action (optimistically, on REST success) and by
- * the `recently-played-cleared` socket handler — clearing an
- * already-empty list is a harmless no-op, so the two paths converge.
+ * Apply a `recently-played-cleared` socket event. Discards stale
+ * events the same way `applyRecentlyPlayedInserted` does.
  */
-export function clearRecentlyPlayedEntries(): void {
-	if (deferSocketEvents) {
-		socketEventBuffer.push({ type: 'cleared' });
-		return;
-	}
-	clearGen++;
+export function applyRecentlyPlayedCleared(
+	payload: RecentlyPlayedClearedPayload
+): void {
+	if (payload.revision <= lastAppliedRevision) return;
+	lastAppliedRevision = payload.revision;
 	internalStore.update((s) => ({ ...s, entries: [], loaded: true }));
 }
 
 /**
- * Replace the entries with an authoritative snapshot — used by the
- * Clear button's UI handler when the DELETE response carries the
- * post-drain entries (which may be `[]` or, if a now-playing event
- * landed during the server's clear window, the drained insert).
- *
- * Bumps clearGen so a stale in-flight load can't repopulate after.
- * Subsequent `cleared` / `inserted` socket broadcasts (the server
- * fires both during its clear) still apply normally; they converge
- * to the same final state because they ARE this clear's outcome
- * delivered via a different transport.
+ * Apply the authoritative snapshot returned by a DELETE response.
+ * Wraps `applySnapshot` so the UI handler has a clear name for the
+ * "after the user clicked Clear, here's the server's truth" path.
  */
-export function setRecentlyPlayedEntries(entries: RecentlyPlayedEntry[]): void {
-	clearGen++;
-	internalStore.update((s) => ({
-		...s,
-		entries: entries.slice(0, CAP),
-		loaded: true
-	}));
+export function applyClearResponse(snapshot: RecentlyPlayedSnapshot): void {
+	applySnapshot(snapshot);
 }
 
+/**
+ * Wipe local store + revision tracking. Used by tests and any future
+ * full-reset path. Note: this does NOT contact the server — for a
+ * user-initiated wipe use the DELETE flow.
+ */
 export function resetRecentlyPlayed(): void {
-	clearGen++;
+	lastAppliedRevision = 0;
 	internalStore.set({ ...initialState });
-}
-
-/**
- * Open the deferral window. The UI's Clear handler calls this BEFORE
- * sending DELETE so any `recently-played-*` socket events that arrive
- * during the in-flight period get queued instead of mutating the
- * store. Drain happens via `endClearDeferral`.
- */
-export function beginClearDeferral(): void {
-	deferSocketEvents = true;
-}
-
-/**
- * Close the deferral window. If `applyEntries` is provided (DELETE
- * succeeded), it's set as the authoritative snapshot first; then
- * queued socket events drain through the normal handlers in arrival
- * order. On failure, callers pass nothing — queued events apply on
- * top of the current store (they're real server events).
- */
-export function endClearDeferral(
-	applyEntries?: RecentlyPlayedEntry[]
-): void {
-	if (applyEntries !== undefined) {
-		setRecentlyPlayedEntries(applyEntries);
-	}
-	deferSocketEvents = false;
-	const drained = socketEventBuffer;
-	socketEventBuffer = [];
-	for (const evt of drained) {
-		if (evt.type === 'inserted') {
-			appendRecentlyPlayedFromSocket(evt.entry);
-		} else {
-			clearRecentlyPlayedEntries();
-		}
-	}
 }

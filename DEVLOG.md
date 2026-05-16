@@ -1,5 +1,38 @@
 # Dev Log
 
+## 2026-05-16 (later) — Clear RP: monotonic revisions, end of the race series
+
+The deferral buffer closed the "snapshot wipes post-snapshot insert" race but not its complement: a queued `cleared` event draining after the snapshot would itself wipe the authoritative state. Patching the buffer per case (drop cleared events, count operation IDs, etc.) kept moving the goalposts. The reviewer's pointed recommendation — operation/revision metadata — is the real fix: each state change carries a monotonic revision, and the client filters anything not strictly newer than what it's already applied. With that, arrival order stops mattering at all.
+
+### Server
+- `RecentlyPlayedService` keeps a `private revision = 0`, exposed via `getRevision()`. Bumped after every state mutation (insert + cap, clear). On clear() failure the revision is rolled back along with `this.entries`, so a failed clear is fully transparent.
+- Route responses now `{ entries, revision }`.
+- `server.ts` wraps socket emits with the post-mutation revision: `recently-played-inserted` carries `{ entry, revision }`, `recently-played-cleared` carries `{ revision }`.
+
+### Shared
+- New types in `src/shared/types.ts`: `RecentlyPlayedSnapshot`, `RecentlyPlayedInsertedPayload`, `RecentlyPlayedClearedPayload`.
+
+### Frontend
+- `recentlyPlayedStore` tracks `lastAppliedRevision`. All apply paths check `if (incoming.revision <= lastAppliedRevision) return` before mutating; on apply they bump the counter.
+- Renamed handlers to make the responsibility explicit: `applyRecentlyPlayedInserted`, `applyRecentlyPlayedCleared`, `applyClearResponse`. `loadRecentlyPlayed` adopts the load's revision via the same `applySnapshot` helper used by the DELETE path.
+- The deferral buffer and `clearGen` machinery are gone — revisions subsume both. The UI handler is a simple `await clearRecentlyPlayed(fetch); applyClearResponse(snapshot);`.
+
+### Why this is comprehensive
+Every documented race in this series falls out of "ignore non-strictly-newer revisions":
+- Snapshot wipes post-snapshot insert → snapshot has smaller revision than the insert → discarded.
+- Queued `cleared` wipes the snapshot → `cleared` has smaller revision than the snapshot → discarded.
+- Stale `cleared` after the snapshot → smaller revision → discarded.
+- Load lands after a clear → load's revision < clear's revision → discarded.
+- Dropped events leave a revision gap but the next event/load still applies normally (we accept partial state, recoverable via reload).
+
+Server restart resets the server's counter to 0; the client's reconnect path runs `initializeStores → loadRecentlyPlayed`, which re-baselines `lastAppliedRevision` from the load's revision.
+
+### Tests
+- Frontend store tests rewritten end-to-end against the new API. New revision-focused cases: stale insert discarded, stale cleared discarded (load-vs-clear guard), applyClearResponse wins over earlier stale events, post-clear insert applies on top.
+- Page test for the original race rewritten: socket insert at rev 100 + stale DELETE response at rev 99 → store keeps `['NewTrack', 'Hey Jude']`, not wiped to `[]`.
+- **Verified the test catches the bug** by temporarily removing the revision guard — test failed exactly as expected.
+- Backend 98 (unchanged), UI 139 → 142. svelte-check 0/0, builds + lint clean.
+
 ## 2026-05-16 — Clear RP: defer socket events during in-flight DELETE
 
 The authoritative-response fix didn't close the last race: the DELETE response is a snapshot at *server clear-resolve time*, but the response can arrive at the client AFTER subsequent socket events. Concrete bug shape:

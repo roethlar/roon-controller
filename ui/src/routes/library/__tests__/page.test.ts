@@ -13,7 +13,7 @@ import type { BrowseResult, BrowseItem, SearchResult } from '@shared/types';
 
 const apiBrowse = vi.fn<(_fetch: unknown, opts: any) => Promise<BrowseResult>>();
 const apiBrowseLoad = vi.fn<(_fetch: unknown, opts: any) => Promise<BrowseResult>>();
-const apiClearRecentlyPlayed = vi.fn<(_fetch: unknown) => Promise<import('@shared/types').RecentlyPlayedEntry[]>>();
+const apiClearRecentlyPlayed = vi.fn<(_fetch: unknown) => Promise<import('@shared/types').RecentlyPlayedSnapshot>>();
 
 vi.mock('$lib/api/client', () => ({
 	browse: (...args: any[]) => apiBrowse(...(args as [unknown, any])),
@@ -102,7 +102,7 @@ beforeEach(() => {
 	setSelectedZone('');
 	// Default: any apiBrowse call returns an empty browse root.
 	apiBrowse.mockResolvedValue(listResult({ level: 0 }));
-	apiClearRecentlyPlayed.mockResolvedValue([]);
+	apiClearRecentlyPlayed.mockResolvedValue({ entries: [], revision: 1_000_000 });
 });
 
 // ---------------- Tests ----------------
@@ -1934,11 +1934,11 @@ describe('Library page — Recently Played tile click', () => {
 	};
 
 	beforeEach(async () => {
-		const { resetRecentlyPlayed, appendRecentlyPlayedFromSocket } = await import(
+		const { resetRecentlyPlayed, applyRecentlyPlayedInserted } = await import(
 			'$lib/stores/recentlyPlayedStore'
 		);
 		resetRecentlyPlayed();
-		appendRecentlyPlayedFromSocket(RECENT);
+		applyRecentlyPlayedInserted({ entry: RECENT, revision: 1 });
 	});
 
 	it('shows a feedback toast and skips REST when no zone is selected', async () => {
@@ -2297,17 +2297,14 @@ describe('Library page — Recently Played tile click', () => {
 		expect(screen.queryByRole('button', { name: /Play 'Hey Jude'/i })).toBeNull();
 	});
 
-	it('Clear button queues socket events during in-flight DELETE so the snapshot does not overwrite a post-snapshot insert', async () => {
-		// The race: DELETE response is the server's snapshot at clear
-		// time. If a post-clear now-playing event fires after the
-		// snapshot but before the HTTP response reaches the client,
-		// the socket `inserted` lands first; without deferral, the
-		// later HTTP response replaces the store with the older
-		// (empty) snapshot, wiping the legitimate new entry.
-		//
-		// With deferral: socket events during in-flight are queued
-		// and replayed after the snapshot is applied.
-		let resolveDelete!: (entries: import('@shared/types').RecentlyPlayedEntry[]) => void;
+	it('Clear button: stale DELETE response is discarded if a newer socket insert arrived first (revision guard)', async () => {
+		// The race: a post-clear now-playing event fires after the
+		// server snapshotted the DELETE response. The socket insert
+		// (revision N+1) reaches the client first; the slower HTTP
+		// response (revision N, the older snapshot) arrives later.
+		// Revision filtering ensures the response is discarded so it
+		// doesn't wipe the legitimate post-snapshot insert.
+		let resolveDelete!: (snapshot: import('@shared/types').RecentlyPlayedSnapshot) => void;
 		apiClearRecentlyPlayed.mockImplementationOnce(
 			() => new Promise((r) => (resolveDelete = r))
 		);
@@ -2320,9 +2317,11 @@ describe('Library page — Recently Played tile click', () => {
 		await tick();
 		expect(apiClearRecentlyPlayed).toHaveBeenCalledTimes(1);
 
-		// Simulate a post-clear socket insert arriving mid-flight.
-		const { appendRecentlyPlayedFromSocket, recentlyPlayedStore } =
-			await import('$lib/stores/recentlyPlayedStore');
+		// Simulate a post-clear socket insert arriving mid-flight at a
+		// higher revision than the (still pending) DELETE response.
+		const { applyRecentlyPlayedInserted, recentlyPlayedStore } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
 		const newTrack: import('@shared/types').RecentlyPlayedEntry = {
 			title: 'NewTrack',
 			artist: 'Live Artist',
@@ -2333,25 +2332,24 @@ describe('Library page — Recently Played tile click', () => {
 			zone_name: 'Living Room',
 			played_at: '2026-05-16T08:00:00.000Z'
 		};
-		appendRecentlyPlayedFromSocket(newTrack);
-
-		// Still showing the pre-clear entry — the socket insert was
-		// queued, not applied.
+		applyRecentlyPlayedInserted({ entry: newTrack, revision: 100 });
 		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
+			'NewTrack',
 			'Hey Jude'
 		]);
 
 		// Now the slower HTTP response resolves with the (now stale)
-		// empty snapshot. Without deferral, this would wipe NewTrack.
-		resolveDelete([]);
+		// snapshot — revision 99 < 100, so it's discarded. If it
+		// weren't, the store would get wiped to [].
+		resolveDelete({ entries: [], revision: 99 });
 
-		await waitFor(() => {
-			// Snapshot applied AND queued insert drained on top → store
-			// converges to [NewTrack], matching server.
-			expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
-				'NewTrack'
-			]);
-		});
+		// Give the await chain a chance to complete; nothing should
+		// change because the response was discarded as stale.
+		await new Promise((r) => setTimeout(r, 10));
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
+			'NewTrack',
+			'Hey Jude'
+		]);
 	});
 
 	it('Clear button applies post-drain entries from the DELETE response', async () => {
@@ -2371,7 +2369,10 @@ describe('Library page — Recently Played tile click', () => {
 			zone_name: 'Living Room',
 			played_at: '2026-05-15T12:00:00.000Z'
 		};
-		apiClearRecentlyPlayed.mockResolvedValueOnce([drainedEntry]);
+		apiClearRecentlyPlayed.mockResolvedValueOnce({
+			entries: [drainedEntry],
+			revision: 999_999
+		});
 
 		render(LibraryPage);
 		await tick();

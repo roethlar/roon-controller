@@ -18,8 +18,8 @@ import {
 	updateSeekPosition,
 	initializeStores,
 	setSocketStatus,
-	appendRecentlyPlayedFromSocket,
-	clearRecentlyPlayedEntries
+	applyRecentlyPlayedInserted,
+	applyRecentlyPlayedCleared
 } from '../stores';
 import type {
 	CoreStatusResponse,
@@ -27,7 +27,8 @@ import type {
 	BrowseResult,
 	SearchResult,
 	NowPlaying,
-	RecentlyPlayedEntry,
+	RecentlyPlayedInsertedPayload,
+	RecentlyPlayedClearedPayload,
 	ZoneQueue
 } from '@shared/types';
 
@@ -126,12 +127,12 @@ export function registerSocketHandlers(): CleanupFn {
 		setSearchResults(results);
 	};
 
-	const handleRecentlyPlayedInserted = (entry: RecentlyPlayedEntry) => {
-		appendRecentlyPlayedFromSocket(entry);
+	const handleRecentlyPlayedInserted = (payload: RecentlyPlayedInsertedPayload) => {
+		applyRecentlyPlayedInserted(payload);
 	};
 
-	const handleRecentlyPlayedCleared = () => {
-		clearRecentlyPlayedEntries();
+	const handleRecentlyPlayedCleared = (payload: RecentlyPlayedClearedPayload) => {
+		applyRecentlyPlayedCleared(payload);
 	};
 
 	const handleTransportError = (payload: CommandErrorEvent) => {

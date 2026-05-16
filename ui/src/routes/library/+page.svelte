@@ -31,8 +31,7 @@
 		welcomeStatsStore,
 		loadWelcomeStats,
 		recentlyPlayedStore,
-		beginClearDeferral,
-		endClearDeferral,
+		applyClearResponse,
 		nowPlayingList,
 		type BrowseBreadcrumb,
 		type BrowseHistoryStep
@@ -214,28 +213,22 @@
 	let clearRecentInFlight = $state(false);
 
 	/**
-	 * Wipe the Recently Played list. Open the socket-event deferral
-	 * window BEFORE sending DELETE, so any `recently-played-*` events
-	 * that arrive during the in-flight period get queued. After the
-	 * DELETE response lands, apply the authoritative post-drain
-	 * entries and drain the queue in arrival order. This closes the
-	 * race where a post-snapshot `inserted` arrives first via socket,
-	 * then the slower HTTP response overwrites it with the older
-	 * snapshot — final state would otherwise be initiator-empty while
-	 * server and other clients hold the new entry.
+	 * Wipe the Recently Played list. The DELETE response carries an
+	 * authoritative `{ entries, revision }` snapshot. `applyClearResponse`
+	 * sets the store IF the revision is newer than anything else
+	 * applied so far — newer socket events that arrived during the
+	 * round trip already bumped lastApplied, so a stale snapshot
+	 * is discarded; older or concurrent socket events with revisions
+	 * <= the snapshot's get filtered out as they arrive too. Server,
+	 * disk, and all clients converge regardless of arrival order.
 	 */
 	async function clearRecentEntries(): Promise<void> {
 		if (clearRecentInFlight) return;
 		clearRecentInFlight = true;
-		beginClearDeferral();
 		try {
-			const entries = await clearRecentlyPlayed(fetch);
-			endClearDeferral(entries);
+			const snapshot = await clearRecentlyPlayed(fetch);
+			applyClearResponse(snapshot);
 		} catch (err) {
-			// Failure: don't apply a snapshot; just drain any queued
-			// socket events onto the current store so legitimate
-			// server activity isn't lost.
-			endClearDeferral();
 			pushCommandFeedback({
 				source: 'browse',
 				command: 'recently-played',

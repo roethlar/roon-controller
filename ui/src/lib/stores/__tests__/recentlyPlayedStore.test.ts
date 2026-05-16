@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
-import type { RecentlyPlayedEntry } from '@shared/types';
+import type { RecentlyPlayedEntry, RecentlyPlayedSnapshot } from '@shared/types';
 
-const fetchRecentlyPlayed = vi.fn<(_fetch: unknown) => Promise<RecentlyPlayedEntry[]>>();
+const fetchRecentlyPlayed = vi.fn<(_fetch: unknown) => Promise<RecentlyPlayedSnapshot>>();
 
 vi.mock('$lib/api/client', () => ({
 	fetchRecentlyPlayed: (...args: any[]) => fetchRecentlyPlayed(...(args as [unknown]))
@@ -11,8 +11,9 @@ vi.mock('$lib/api/client', () => ({
 import {
 	recentlyPlayedStore,
 	loadRecentlyPlayed,
-	appendRecentlyPlayedFromSocket,
-	clearRecentlyPlayedEntries,
+	applyRecentlyPlayedInserted,
+	applyRecentlyPlayedCleared,
+	applyClearResponse,
 	resetRecentlyPlayed
 } from '../recentlyPlayedStore';
 
@@ -30,6 +31,13 @@ function makeEntry(over: Partial<RecentlyPlayedEntry> = {}): RecentlyPlayedEntry
 	};
 }
 
+function snapshot(
+	entries: RecentlyPlayedEntry[],
+	revision: number
+): RecentlyPlayedSnapshot {
+	return { entries, revision };
+}
+
 beforeEach(() => {
 	fetchRecentlyPlayed.mockReset();
 	resetRecentlyPlayed();
@@ -37,10 +45,15 @@ beforeEach(() => {
 
 describe('recentlyPlayedStore', () => {
 	it('loads entries via REST and marks store as loaded', async () => {
-		fetchRecentlyPlayed.mockResolvedValueOnce([
-			makeEntry({ title: 'A', played_at: '2026-05-08T00:00:00.000Z' }),
-			makeEntry({ title: 'B', played_at: '2026-05-07T00:00:00.000Z' })
-		]);
+		fetchRecentlyPlayed.mockResolvedValueOnce(
+			snapshot(
+				[
+					makeEntry({ title: 'A', played_at: '2026-05-08T00:00:00.000Z' }),
+					makeEntry({ title: 'B', played_at: '2026-05-08T00:00:00.000Z', album: 'Album B' })
+				],
+				5
+			)
+		);
 
 		await loadRecentlyPlayed(fetch);
 
@@ -51,7 +64,7 @@ describe('recentlyPlayedStore', () => {
 	});
 
 	it('survives REST failure: keeps existing entries, clears loading', async () => {
-		fetchRecentlyPlayed.mockResolvedValueOnce([makeEntry({ title: 'A' })]);
+		fetchRecentlyPlayed.mockResolvedValueOnce(snapshot([makeEntry({ title: 'A' })], 1));
 		await loadRecentlyPlayed(fetch);
 		expect(get(recentlyPlayedStore).entries).toHaveLength(1);
 
@@ -63,66 +76,109 @@ describe('recentlyPlayedStore', () => {
 		expect(state.loading).toBe(false);
 	});
 
-	it('appendFromSocket unshifts a new entry to the top', async () => {
-		fetchRecentlyPlayed.mockResolvedValueOnce([
-			makeEntry({ title: 'Older', played_at: '2026-05-07T00:00:00.000Z' })
-		]);
+	it('socket insert unshifts a new entry to the top (newer revision)', async () => {
+		fetchRecentlyPlayed.mockResolvedValueOnce(
+			snapshot([makeEntry({ title: 'Older', played_at: '2026-05-07T00:00:00.000Z' })], 1)
+		);
 		await loadRecentlyPlayed(fetch);
 
-		appendRecentlyPlayedFromSocket(
-			makeEntry({ title: 'Newer', played_at: '2026-05-08T00:00:00.000Z' })
-		);
+		applyRecentlyPlayedInserted({
+			entry: makeEntry({ title: 'Newer', played_at: '2026-05-08T00:00:00.000Z' }),
+			revision: 2
+		});
 
 		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['Newer', 'Older']);
 	});
 
-	it('appendFromSocket bubbles a replayed track to the top instead of duplicating', async () => {
-		fetchRecentlyPlayed.mockResolvedValueOnce([
-			makeEntry({ title: 'A', played_at: '2026-05-08T00:00:01.000Z' }),
-			makeEntry({ title: 'B', played_at: '2026-05-08T00:00:00.000Z' })
-		]);
+	it('socket insert bubbles a replayed track to the top instead of duplicating', async () => {
+		fetchRecentlyPlayed.mockResolvedValueOnce(
+			snapshot(
+				[
+					makeEntry({ title: 'A', played_at: '2026-05-08T00:00:01.000Z' }),
+					makeEntry({ title: 'B', played_at: '2026-05-08T00:00:00.000Z', album: 'Album B' })
+				],
+				2
+			)
+		);
 		await loadRecentlyPlayed(fetch);
 
 		// Backend bubbled a replay of A. The store must drop the prior
 		// A and unshift the fresh one — even from a different zone,
 		// since the shared dedupe key excludes zone_id / played_at.
-		appendRecentlyPlayedFromSocket(
-			makeEntry({
+		applyRecentlyPlayedInserted({
+			entry: makeEntry({
 				title: 'A',
 				zone_id: 'zone-b',
 				played_at: '2026-05-08T00:00:05.000Z'
-			})
-		);
+			}),
+			revision: 3
+		});
 
 		const entries = get(recentlyPlayedStore).entries;
 		expect(entries.map((e) => e.title)).toEqual(['A', 'B']);
 		expect(entries[0].zone_id).toBe('zone-b');
 	});
 
-	it('appendFromSocket dedupes when head matches (same entry broadcast twice)', async () => {
-		const entry = makeEntry({
-			title: 'Dup',
-			played_at: '2026-05-08T00:00:00.000Z',
-			zone_id: 'zone-a'
+	it('socket insert with stale revision is discarded', async () => {
+		fetchRecentlyPlayed.mockResolvedValueOnce(snapshot([makeEntry({ title: 'A' })], 5));
+		await loadRecentlyPlayed(fetch);
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['A']);
+
+		// Older revision than what we've already applied — discard.
+		applyRecentlyPlayedInserted({
+			entry: makeEntry({ title: 'Stale' }),
+			revision: 3
 		});
-		appendRecentlyPlayedFromSocket(entry);
-		appendRecentlyPlayedFromSocket(entry);
+
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual(['A']);
+	});
+
+	it('socket cleared with stale revision is discarded (the load-vs-clear race guard)', async () => {
+		// A reconnect-triggered load delivers rev=10. A `cleared` event
+		// queued in the socket buffer that was emitted at rev=8 (before
+		// the load's snapshot) must NOT wipe the freshly-loaded state.
+		fetchRecentlyPlayed.mockResolvedValueOnce(
+			snapshot([makeEntry({ title: 'A' }), makeEntry({ title: 'B', album: 'Album B' })], 10)
+		);
+		await loadRecentlyPlayed(fetch);
+		expect(get(recentlyPlayedStore).entries).toHaveLength(2);
+
+		applyRecentlyPlayedCleared({ revision: 8 });
+
+		expect(get(recentlyPlayedStore).entries).toHaveLength(2);
+	});
+
+	it('socket cleared with newer revision empties the list', async () => {
+		fetchRecentlyPlayed.mockResolvedValueOnce(
+			snapshot([makeEntry({ title: 'A' }), makeEntry({ title: 'B', album: 'Album B' })], 5)
+		);
+		await loadRecentlyPlayed(fetch);
+
+		applyRecentlyPlayedCleared({ revision: 6 });
+
+		const state = get(recentlyPlayedStore);
+		expect(state.entries).toEqual([]);
+		expect(state.loaded).toBe(true);
+	});
+
+	it('socket insert idempotent: replaying the exact same revision is a no-op', () => {
+		const entry = makeEntry({ title: 'X', played_at: '2026-05-08T00:00:00.000Z' });
+		applyRecentlyPlayedInserted({ entry, revision: 1 });
+		applyRecentlyPlayedInserted({ entry, revision: 1 });
 
 		expect(get(recentlyPlayedStore).entries).toHaveLength(1);
 	});
 
-	it('appendFromSocket keeps two distinct tracks that share played_at + zone_id', async () => {
-		// Two fast track changes in the same zone can land on the same
-		// millisecond timestamp. The idempotence guard must not collapse
-		// them — it also compares the dedupe key, so distinct tracks
-		// both make it through.
+	it('two distinct tracks at consecutive revisions both apply', () => {
 		const sharedTs = '2026-05-08T00:00:00.000Z';
-		appendRecentlyPlayedFromSocket(
-			makeEntry({ title: 'First', played_at: sharedTs, zone_id: 'zone-a' })
-		);
-		appendRecentlyPlayedFromSocket(
-			makeEntry({ title: 'Second', played_at: sharedTs, zone_id: 'zone-a' })
-		);
+		applyRecentlyPlayedInserted({
+			entry: makeEntry({ title: 'First', played_at: sharedTs, zone_id: 'zone-a' }),
+			revision: 1
+		});
+		applyRecentlyPlayedInserted({
+			entry: makeEntry({ title: 'Second', played_at: sharedTs, zone_id: 'zone-a' }),
+			revision: 2
+		});
 
 		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
 			'Second',
@@ -130,77 +186,59 @@ describe('recentlyPlayedStore', () => {
 		]);
 	});
 
-	it('clearRecentlyPlayedEntries empties the list but keeps loaded=true', async () => {
-		fetchRecentlyPlayed.mockResolvedValueOnce([
-			makeEntry({ title: 'A' }),
-			makeEntry({ title: 'B' })
-		]);
-		await loadRecentlyPlayed(fetch);
-		expect(get(recentlyPlayedStore).entries).toHaveLength(2);
-
-		clearRecentlyPlayedEntries();
-
-		const state = get(recentlyPlayedStore);
-		expect(state.entries).toEqual([]);
-		// loaded stays true — the list is known-empty, not unloaded, so
-		// the welcome view shows nothing rather than a loading state.
-		expect(state.loaded).toBe(true);
-	});
-
-	it('clearRecentlyPlayedEntries on an already-empty store is a harmless no-op', () => {
-		clearRecentlyPlayedEntries();
-		const state = get(recentlyPlayedStore);
-		expect(state.entries).toEqual([]);
-		expect(state.loaded).toBe(true);
-	});
-
-	it('discards a load response that arrives after a clear (race guard)', async () => {
-		// A reconnect-triggered load can be in flight when the user
-		// (or another client via socket) clears. The stale GET
-		// response must NOT resurrect the pre-clear entries.
-		let resolveLoad!: (entries: RecentlyPlayedEntry[]) => void;
-		fetchRecentlyPlayed.mockImplementationOnce(
-			() => new Promise((r) => (resolveLoad = r))
-		);
-
-		const loadPromise = loadRecentlyPlayed(fetch);
-
-		// Mid-flight, a clear arrives (e.g., from the socket).
-		clearRecentlyPlayedEntries();
+	it('applyClearResponse with newer revision wins over stale socket events', async () => {
+		// The exact race the reviewer flagged: server clear drains
+		// MidClear, emits cleared (rev N), emits inserted:MidClear
+		// (rev N+1), DELETE response carries { entries: [MidClear],
+		// revision: N+1 }. If only the cleared socket event reaches
+		// the client (inserted dropped), applying the DELETE response
+		// authoritatively at rev N+1 sets the store to [MidClear].
+		// Subsequent stale cleared events from this same operation
+		// are filtered out.
+		applyRecentlyPlayedCleared({ revision: 5 });
 		expect(get(recentlyPlayedStore).entries).toEqual([]);
 
-		// Now let the stale load resolve with pre-clear data.
-		resolveLoad([
-			makeEntry({ title: 'Stale A' }),
-			makeEntry({ title: 'Stale B' })
+		const midClear = makeEntry({ title: 'MidClear' });
+		applyClearResponse({ entries: [midClear], revision: 6 });
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
+			'MidClear'
 		]);
-		await loadPromise;
 
-		// Stale response discarded — store stays empty.
-		expect(get(recentlyPlayedStore).entries).toEqual([]);
+		// A duplicate `cleared` for the same operation (rev <= 6)
+		// must NOT wipe the authoritative snapshot.
+		applyRecentlyPlayedCleared({ revision: 5 });
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
+			'MidClear'
+		]);
 	});
 
-	it('appendFromSocket caps the list at 50 entries', () => {
-		// Pre-fill 50 entries via socket appends.
-		for (let i = 0; i < 50; i++) {
-			appendRecentlyPlayedFromSocket(
-				makeEntry({
+	it('post-clear socket insert applies on top of an applied DELETE snapshot', () => {
+		// After DELETE applies at rev 5, a genuine post-clear insert
+		// at rev 6 should land on top of the snapshot.
+		applyClearResponse({ entries: [], revision: 5 });
+		applyRecentlyPlayedInserted({
+			entry: makeEntry({ title: 'Post' }),
+			revision: 6
+		});
+
+		expect(get(recentlyPlayedStore).entries.map((e) => e.title)).toEqual([
+			'Post'
+		]);
+	});
+
+	it('cap: insert applies caps at 50', () => {
+		for (let i = 0; i < 51; i++) {
+			applyRecentlyPlayedInserted({
+				entry: makeEntry({
 					title: `T${i}`,
 					played_at: `2026-05-08T00:00:${String(i).padStart(2, '0')}.000Z`
-				})
-			);
+				}),
+				revision: i + 1
+			});
 		}
-		expect(get(recentlyPlayedStore).entries).toHaveLength(50);
-
-		// One more — the oldest should fall off.
-		appendRecentlyPlayedFromSocket(
-			makeEntry({ title: 'Newest', played_at: '2026-05-08T00:01:00.000Z' })
-		);
-
 		const entries = get(recentlyPlayedStore).entries;
 		expect(entries).toHaveLength(50);
-		expect(entries[0].title).toBe('Newest');
-		// The very first one (T0) was pushed off the bottom.
+		expect(entries[0].title).toBe('T50');
 		expect(entries.map((e) => e.title)).not.toContain('T0');
 	});
 });

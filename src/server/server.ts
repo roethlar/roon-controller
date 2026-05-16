@@ -137,17 +137,23 @@ export const startServer = (
     socketContext.io.emit("now-playing-updated", data);
   });
 
-  // Broadcast recently-played updates to all clients only when a NEW
-  // entry actually lands (the service suppresses dedupe-collapsed
-  // updates from this event).
+  // Broadcast recently-played updates with the post-mutation revision.
+  // Clients track the highest revision they've applied and discard
+  // anything not strictly newer — closes races where socket events
+  // and REST responses arrive out of server-emit order.
   recentlyPlayedService.on("inserted", (entry) => {
-    socketContext.io.emit("recently-played-inserted", entry);
+    socketContext.io.emit("recently-played-inserted", {
+      entry,
+      revision: recentlyPlayedService.getRevision(),
+    });
   });
 
   // A user-initiated wipe — broadcast so every client's list empties,
   // not just the one that issued the DELETE.
   recentlyPlayedService.on("cleared", () => {
-    socketContext.io.emit("recently-played-cleared");
+    socketContext.io.emit("recently-played-cleared", {
+      revision: recentlyPlayedService.getRevision(),
+    });
   });
 
   transportService.on("queue-updated", (data) => {
