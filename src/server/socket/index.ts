@@ -288,6 +288,146 @@ export const attachSocketServer = (
     );
 
     socket.on(
+      "transport:group",
+      async (
+        payload: { output_ids?: unknown },
+        ack?: AckFn
+      ) => {
+        if (
+          !payload?.output_ids ||
+          !Array.isArray(payload.output_ids) ||
+          payload.output_ids.length < 2 ||
+          !payload.output_ids.every(
+            (id): id is string => typeof id === "string" && id.length > 0
+          )
+        ) {
+          sendError(
+            socket,
+            "transport:error",
+            "transport:group",
+            "output_ids must be an array of at least two non-empty strings",
+            ack
+          );
+          return;
+        }
+        await handleAsync(socket, "transport:error", "transport:group", ack, () =>
+          transportService.groupOutputs(payload.output_ids as string[])
+        );
+      }
+    );
+
+    socket.on(
+      "transport:ungroup",
+      async (
+        payload: { output_ids?: unknown },
+        ack?: AckFn
+      ) => {
+        if (
+          !payload?.output_ids ||
+          !Array.isArray(payload.output_ids) ||
+          payload.output_ids.length === 0 ||
+          !payload.output_ids.every(
+            (id): id is string => typeof id === "string" && id.length > 0
+          )
+        ) {
+          sendError(
+            socket,
+            "transport:error",
+            "transport:ungroup",
+            "output_ids must be a non-empty array of strings",
+            ack
+          );
+          return;
+        }
+        await handleAsync(socket, "transport:error", "transport:ungroup", ack, () =>
+          transportService.ungroupOutputs(payload.output_ids as string[])
+        );
+      }
+    );
+
+    socket.on(
+      "transport:standby",
+      async (
+        payload: { output_id?: unknown; control_key?: unknown },
+        ack?: AckFn
+      ) => {
+        if (
+          !payload?.output_id ||
+          typeof payload.output_id !== "string"
+        ) {
+          sendError(
+            socket,
+            "transport:error",
+            "transport:standby",
+            "output_id required",
+            ack
+          );
+          return;
+        }
+        if (
+          payload.control_key !== undefined &&
+          typeof payload.control_key !== "string"
+        ) {
+          sendError(
+            socket,
+            "transport:error",
+            "transport:standby",
+            "control_key must be a string when provided",
+            ack
+          );
+          return;
+        }
+        await handleAsync(socket, "transport:error", "transport:standby", ack, () =>
+          transportService.toggleStandby(
+            payload.output_id as string,
+            payload.control_key as string | undefined
+          )
+        );
+      }
+    );
+
+    socket.on(
+      "transport:wake",
+      async (
+        payload: { output_id?: unknown; control_key?: unknown },
+        ack?: AckFn
+      ) => {
+        if (
+          !payload?.output_id ||
+          typeof payload.output_id !== "string"
+        ) {
+          sendError(
+            socket,
+            "transport:error",
+            "transport:wake",
+            "output_id required",
+            ack
+          );
+          return;
+        }
+        if (
+          payload.control_key !== undefined &&
+          typeof payload.control_key !== "string"
+        ) {
+          sendError(
+            socket,
+            "transport:error",
+            "transport:wake",
+            "control_key must be a string when provided",
+            ack
+          );
+          return;
+        }
+        await handleAsync(socket, "transport:error", "transport:wake", ack, () =>
+          transportService.convenienceSwitch(
+            payload.output_id as string,
+            payload.control_key as string | undefined
+          )
+        );
+      }
+    );
+
+    socket.on(
       "queue:subscribe",
       (payload: QueueSubscribeRequest, ack?: AckFn) => {
         if (!payload?.zone_id) {

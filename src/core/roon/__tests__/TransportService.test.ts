@@ -38,6 +38,10 @@ describe('TransportService', () => {
       subscribe_zones: jest.fn(),
       subscribe_queue: jest.fn(),
       play_from_here: jest.fn(),
+      group_outputs: jest.fn(),
+      ungroup_outputs: jest.fn(),
+      toggle_standby: jest.fn(),
+      convenience_switch: jest.fn(),
     };
     (mockRoonClient.getTransport as jest.Mock).mockReturnValue(mockTransport);
     service = new TransportService(mockRoonClient, mockLogger);
@@ -539,6 +543,132 @@ describe('TransportService', () => {
       expect(mockTransport.play_from_here).toHaveBeenCalledWith(
         'zone123',
         4,
+        expect.any(Function)
+      );
+    });
+  });
+
+  describe('groupOutputs (PR3)', () => {
+    it('wraps each output_id in { output_id } and passes to transport.group_outputs', async () => {
+      mockTransport.group_outputs.mockImplementation(
+        (_outputs: unknown, callback: (err?: unknown) => void) => callback(null)
+      );
+
+      await service.groupOutputs(['out-a', 'out-b', 'out-c']);
+
+      expect(mockTransport.group_outputs).toHaveBeenCalledWith(
+        [{ output_id: 'out-a' }, { output_id: 'out-b' }, { output_id: 'out-c' }],
+        expect.any(Function)
+      );
+    });
+
+    it('rejects with RoonOperationError on failure', async () => {
+      mockTransport.group_outputs.mockImplementation(
+        (_outputs: unknown, callback: (err?: unknown) => void) => callback('InvalidOutput')
+      );
+
+      await expect(service.groupOutputs(['out-a', 'out-b'])).rejects.toThrow(
+        RoonOperationError
+      );
+    });
+
+    it('throws CoreUnpairedError when transport unavailable', async () => {
+      (mockRoonClient.getTransport as jest.Mock).mockReturnValue(null);
+      await expect(service.groupOutputs(['out-a', 'out-b'])).rejects.toThrow(
+        CoreUnpairedError
+      );
+    });
+  });
+
+  describe('ungroupOutputs (PR3)', () => {
+    it('wraps output_ids and passes to transport.ungroup_outputs', async () => {
+      mockTransport.ungroup_outputs.mockImplementation(
+        (_outputs: unknown, callback: (err?: unknown) => void) => callback(null)
+      );
+
+      await service.ungroupOutputs(['out-a', 'out-b']);
+
+      expect(mockTransport.ungroup_outputs).toHaveBeenCalledWith(
+        [{ output_id: 'out-a' }, { output_id: 'out-b' }],
+        expect.any(Function)
+      );
+    });
+
+    it('rejects with RoonOperationError on failure', async () => {
+      mockTransport.ungroup_outputs.mockImplementation(
+        (_outputs: unknown, callback: (err?: unknown) => void) => callback('NetworkError')
+      );
+
+      await expect(service.ungroupOutputs(['out-a'])).rejects.toThrow(
+        RoonOperationError
+      );
+    });
+  });
+
+  describe('toggleStandby (PR3)', () => {
+    it('calls transport.toggle_standby with output_id (no control_key)', async () => {
+      mockTransport.toggle_standby.mockImplementation(
+        (_o: unknown, _opts: unknown, callback: (err?: unknown) => void) => callback(null)
+      );
+
+      await service.toggleStandby('out-a');
+
+      expect(mockTransport.toggle_standby).toHaveBeenCalledWith(
+        { output_id: 'out-a' },
+        {},
+        expect.any(Function)
+      );
+    });
+
+    it('passes control_key through when provided', async () => {
+      mockTransport.toggle_standby.mockImplementation(
+        (_o: unknown, _opts: unknown, callback: (err?: unknown) => void) => callback(null)
+      );
+
+      await service.toggleStandby('out-a', 'source-1');
+
+      expect(mockTransport.toggle_standby).toHaveBeenCalledWith(
+        { output_id: 'out-a' },
+        { control_key: 'source-1' },
+        expect.any(Function)
+      );
+    });
+
+    it('rejects with RoonOperationError on failure', async () => {
+      mockTransport.toggle_standby.mockImplementation(
+        (_o: unknown, _opts: unknown, callback: (err?: unknown) => void) =>
+          callback('StandbyUnsupported')
+      );
+
+      await expect(service.toggleStandby('out-a')).rejects.toThrow(RoonOperationError);
+    });
+  });
+
+  describe('convenienceSwitch (PR3)', () => {
+    it('calls transport.convenience_switch with output_id (no control_key)', async () => {
+      mockTransport.convenience_switch.mockImplementation(
+        (_o: unknown, _opts: unknown, callback: (err?: unknown) => void) => callback(null)
+      );
+
+      await service.convenienceSwitch('out-a');
+
+      expect(mockTransport.convenience_switch).toHaveBeenCalledWith(
+        { output_id: 'out-a' },
+        {},
+        expect.any(Function)
+      );
+    });
+
+    it('passes control_key through when provided', async () => {
+      mockTransport.convenience_switch.mockImplementation(
+        (_o: unknown, _opts: unknown, callback: (err?: unknown) => void) => callback(null)
+      );
+
+      await service.convenienceSwitch('out-a', 'source-1');
+
+      expect(mockTransport.convenience_switch).toHaveBeenCalledWith(
+        { output_id: 'out-a' },
+        { control_key: 'source-1' },
         expect.any(Function)
       );
     });

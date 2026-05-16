@@ -296,6 +296,132 @@ export class TransportService extends EventEmitter {
   }
 
   /**
+   * Group outputs into a synchronized zone.
+   *
+   * Per node-roon-api-transport docs: "The first output's zone's queue
+   * is preserved." So the order matters — callers should put the
+   * "primary" output first.
+   *
+   * Roon returns a string error name (e.g. "InvalidOutput") on
+   * failure; the wrapper converts to a `RoonOperationError` so
+   * downstream callers can inspect.
+   */
+  public async groupOutputs(output_ids: string[]): Promise<void> {
+    this.ensureTransport();
+
+    return new Promise((resolve, reject) => {
+      // Roon's group_outputs expects an array of "output objects"
+      // (it walks each and calls oid() to extract output_id). Passing
+      // bare { output_id } shapes satisfies the same contract and
+      // keeps the wrapper agnostic of Roon's internal Output type.
+      const outputs = output_ids.map((id) => ({ output_id: id }));
+      this.transport.group_outputs(outputs, (error: any) => {
+        if (error) {
+          this.logger.error({ err: error, output_ids }, "groupOutputs failed");
+          reject(new RoonOperationError("groupOutputs", error, { output_ids }));
+        } else {
+          this.logger.debug({ output_ids }, "groupOutputs succeeded");
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
+   * Ungroup outputs that were previously grouped via {@link groupOutputs}.
+   */
+  public async ungroupOutputs(output_ids: string[]): Promise<void> {
+    this.ensureTransport();
+
+    return new Promise((resolve, reject) => {
+      const outputs = output_ids.map((id) => ({ output_id: id }));
+      this.transport.ungroup_outputs(outputs, (error: any) => {
+        if (error) {
+          this.logger.error({ err: error, output_ids }, "ungroupOutputs failed");
+          reject(new RoonOperationError("ungroupOutputs", error, { output_ids }));
+        } else {
+          this.logger.debug({ output_ids }, "ungroupOutputs succeeded");
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
+   * Toggle the standby state of an output. If the output has
+   * multiple `source_controls` that expose `supports_standby`, the
+   * caller picks which one via `control_key`; for single-control
+   * outputs the key can be omitted.
+   */
+  public async toggleStandby(
+    output_id: string,
+    control_key?: string
+  ): Promise<void> {
+    this.ensureTransport();
+
+    return new Promise((resolve, reject) => {
+      const output = { output_id };
+      const opts: { control_key?: string } = {};
+      if (control_key) opts.control_key = control_key;
+      this.transport.toggle_standby(output, opts, (error: any) => {
+        if (error) {
+          this.logger.error(
+            { err: error, output_id, control_key },
+            "toggleStandby failed"
+          );
+          reject(
+            new RoonOperationError("toggleStandby", error, { output_id, control_key })
+          );
+        } else {
+          this.logger.debug({ output_id, control_key }, "toggleStandby succeeded");
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
+   * "Wake" an output via Roon's convenience-switch — takes it out
+   * of standby and switches its source-control inputs if applicable.
+   * Omitting `control_key` cycles all controls on the output.
+   *
+   * Use case: a "Wake all" button on a grouped zone iterates this
+   * per output (the API has no batch form).
+   */
+  public async convenienceSwitch(
+    output_id: string,
+    control_key?: string
+  ): Promise<void> {
+    this.ensureTransport();
+
+    return new Promise((resolve, reject) => {
+      const output = { output_id };
+      const opts: { control_key?: string } = {};
+      if (control_key) opts.control_key = control_key;
+      this.transport.convenience_switch(output, opts, (error: any) => {
+        if (error) {
+          this.logger.error(
+            { err: error, output_id, control_key },
+            "convenienceSwitch failed"
+          );
+          reject(
+            new RoonOperationError("convenienceSwitch", error, {
+              output_id,
+              control_key
+            })
+          );
+        } else {
+          this.logger.debug(
+            { output_id, control_key },
+            "convenienceSwitch succeeded"
+          );
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
    * Subscribe to queue updates for a zone.
    * Safe to call repeatedly (idempotent per zone_id).
    */
