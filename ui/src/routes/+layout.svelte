@@ -26,6 +26,7 @@
 	import {
 		browseStore,
 		setBrowseLoading,
+		clearBrowseLoading,
 		setBrowseResult,
 		setSearchLoading
 	} from '$lib/stores/browseStore';
@@ -36,6 +37,7 @@
 	import { getSocket } from '$lib/socket/client';
 	import { emitWithAck } from '$lib/socket/emit';
 	import { browse as apiBrowse } from '$lib/api/client';
+	import { get } from 'svelte/store';
 	import ErrorToast from '$lib/components/ErrorToast.svelte';
 	import Search from '$lib/components/Search.svelte';
 	import { imageUrl } from '$lib/imageUrl';
@@ -415,17 +417,48 @@
 		const onLibrary = $page.url.pathname === '/library';
 		const zoneId = $selectedZoneStore || undefined;
 
+		// Snapshot the prior browse view so a mid-walk failure can
+		// restore it. The old code mutated visible state up-front
+		// (setBrowseLoading + resetHistory) BEFORE the first apiBrowse;
+		// a failure left the pane stuck in "loading" with the user's
+		// back stack wiped. Now state mutations are deferred until the
+		// whole label-walk succeeds — on any failure (catch OR stale-
+		// label early return), we revert to the snapshot.
+		const priorState = onLibrary ? get(browseStore) : null;
+		const priorCurrent = priorState?.current ?? null;
+		const priorHierarchy = priorState?.hierarchy;
+
+		const restorePriorView = () => {
+			if (!onLibrary) return;
+			if (priorCurrent) {
+				setBrowseResult(priorCurrent, priorHierarchy);
+			} else {
+				clearBrowseLoading();
+			}
+		};
+
 		try {
 			if (onLibrary) {
 				setBrowseLoading('browse');
 			}
-			resetHistory();
 
 			let cur = await apiBrowse(fetch, {
 				hierarchy: 'browse',
 				zoneId,
 				popAll: true
 			});
+
+			// Collect the walk into a local plan; history isn't mutated
+			// until every drill succeeds. Each drill's apiBrowse is the
+			// next failure point — losing history mid-walk leaves the
+			// user worse off than a clean rollback.
+			const plan: Array<{
+				itemKey: string;
+				label: string;
+				subtitle?: string;
+				imageKey?: string;
+				itemType?: string;
+			}> = [];
 
 			for (const label of entry.labelPath) {
 				const match = cur.items.find((it) => it.title === label);
@@ -435,8 +468,10 @@
 						command: 'rail',
 						message: `Rail entry "${label}" no longer in results — refreshing.`
 					});
-					// Stale label set; refresh the rail and bail.
+					// Stale label set; refresh the rail and restore the
+					// prior view (we haven't committed any new state yet).
 					void resolveExploreRail(fetch);
+					restorePriorView();
 					return;
 				}
 				cur = await apiBrowse(fetch, {
@@ -444,14 +479,27 @@
 					zoneId,
 					itemKey: match.itemKey
 				});
+				plan.push({
+					itemKey: match.itemKey,
+					label,
+					subtitle: match.subtitle,
+					imageKey: match.imageKey,
+					itemType: match.itemType
+				});
+			}
+
+			// Walk succeeded — commit history + pane in one batch so a
+			// failure above has had no visible effect.
+			resetHistory();
+			for (const step of plan) {
 				pushHistory(
-					{ hierarchy: 'browse', itemKey: match.itemKey, zoneId },
+					{ hierarchy: 'browse', itemKey: step.itemKey, zoneId },
 					undefined,
 					{
-						title: label,
-						subtitle: match.subtitle,
-						imageKey: match.imageKey,
-						itemType: match.itemType
+						title: step.label,
+						subtitle: step.subtitle,
+						imageKey: step.imageKey,
+						itemType: step.itemType
 					}
 				);
 			}
@@ -471,6 +519,7 @@
 				command: 'rail',
 				message: `Rail navigation failed: ${(err as Error).message}`
 			});
+			restorePriorView();
 		} finally {
 			railNavInFlight = false;
 		}

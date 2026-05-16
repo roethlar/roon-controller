@@ -299,6 +299,178 @@ describe('Layout — Explore rail click', () => {
 		expect(historyAtGoto![0].itemKey).toBe('albums-key');
 		expect(historyAtGoto![0].breadcrumb?.title).toBe('Albums');
 	});
+
+	it('M-1: REST failure on the first label-walk call restores prior history and pane', async () => {
+		// Old code mutated visible state (setBrowseLoading + resetHistory)
+		// BEFORE the first apiBrowse. A failing call left the pane stuck
+		// in "loading" with the prior back stack wiped. Now we defer
+		// state changes until the walk succeeds; on failure the prior
+		// browse view is restored exactly.
+		railWritable.set({
+			entries: [
+				{ id: 'rail-albums', label: 'Albums', labelPath: ['Albums'], isEmpty: false }
+			],
+			loading: false,
+			error: null
+		});
+
+		// Seed prior history + pane content that the failure must NOT lose.
+		pushHistory({ hierarchy: 'browse', itemKey: 'prior-key' }, undefined, {
+			title: 'Prior Page'
+		});
+		const priorResult = listResult({
+			title: 'Prior Page',
+			level: 1,
+			items: [makeItem({ title: 'Prior Item', itemKey: 'prior-item-key' })]
+		});
+		setBrowseResult(priorResult, 'browse');
+
+		// First apiBrowse fails.
+		apiBrowse.mockRejectedValueOnce(new Error('REST blew up'));
+
+		renderLayout();
+		const railBtn = await screen.findByRole('button', { name: 'Albums' });
+		await fireEvent.click(railBtn);
+
+		// Feedback toast surfaced.
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import(
+				'$lib/stores/commandFeedbackStore'
+			);
+			expect(get(commandFeedbackStore)?.message).toMatch(
+				/Rail navigation failed/i
+			);
+		});
+
+		// History preserved — old code would have wiped it.
+		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual([
+			'prior-key'
+		]);
+
+		// Pane restored to prior view — loading cleared, items intact.
+		const store = get(browseStore);
+		expect(store.loading).toBe(false);
+		expect(store.current).toBe(priorResult);
+	});
+
+	it('M-1: REST failure mid-walk (second drill) leaves prior history + pane intact', async () => {
+		// Multi-step labelPath; second apiBrowse rejects. Without
+		// deferred mutation the first drill's pushHistory would have
+		// already landed (partial walk), corrupting back state.
+		railWritable.set({
+			// Layout's railSections derived groups only 'Library' (nested)
+			// and null (top-level). Use a Library-rooted labelPath so the
+			// button actually renders.
+			entries: [
+				{
+					id: 'rail-tracks',
+					label: 'Tracks',
+					labelPath: ['Library', 'Tracks'],
+					isEmpty: false
+				}
+			],
+			loading: false,
+			error: null
+		});
+
+		pushHistory({ hierarchy: 'browse', itemKey: 'prior-key' }, undefined, {
+			title: 'Prior Page'
+		});
+		const priorResult = listResult({
+			title: 'Prior Page',
+			level: 1,
+			items: [makeItem({ title: 'Prior Item', itemKey: 'prior-item-key' })]
+		});
+		setBrowseResult(priorResult, 'browse');
+
+		// popAll succeeds (root has Library); drill into Library succeeds
+		// (has Tracks); drill into Tracks fails.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [makeItem({ title: 'Library', itemKey: 'library-key' })]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [makeItem({ title: 'Tracks', itemKey: 'tracks-key' })]
+			})
+		);
+		apiBrowse.mockRejectedValueOnce(new Error('mid-walk failure'));
+
+		renderLayout();
+		const railBtn = await screen.findByRole('button', { name: 'Tracks' });
+		await fireEvent.click(railBtn);
+
+		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalledTimes(3);
+		});
+
+		// History still has ONLY the prior entry — the successful drill
+		// into Library did NOT prematurely commit (deferred-commit
+		// pattern). Old code would have left [prior-key, library-key].
+		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual([
+			'prior-key'
+		]);
+		const store2 = get(browseStore);
+		expect(store2.loading).toBe(false);
+		expect(store2.current).toBe(priorResult);
+	});
+
+	it('M-1: stale rail entry (label missing) restores prior pane', async () => {
+		// The "stale label set" early-return path used to set loading
+		// + reset history and leave it that way. Now we treat it the
+		// same as any other failure — restore the prior view.
+		railWritable.set({
+			entries: [
+				{
+					id: 'rail-ghost',
+					label: 'Ghost',
+					labelPath: ['Ghost'],
+					isEmpty: false
+				}
+			],
+			loading: false,
+			error: null
+		});
+
+		pushHistory({ hierarchy: 'browse', itemKey: 'prior-key' }, undefined, {
+			title: 'Prior Page'
+		});
+		const priorResult = listResult({
+			title: 'Prior Page',
+			level: 1,
+			items: [makeItem({ title: 'Prior Item', itemKey: 'prior-item-key' })]
+		});
+		setBrowseResult(priorResult, 'browse');
+
+		// popAll returns no matching label.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [makeItem({ title: 'Albums', itemKey: 'albums-key' })]
+			})
+		);
+
+		renderLayout();
+		const railBtn = await screen.findByRole('button', { name: 'Ghost' });
+		await fireEvent.click(railBtn);
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import(
+				'$lib/stores/commandFeedbackStore'
+			);
+			expect(get(commandFeedbackStore)?.message).toMatch(/no longer in results/i);
+		});
+
+		expect(get(browseHistoryStore).history.map((s) => s.itemKey)).toEqual([
+			'prior-key'
+		]);
+		const store3 = get(browseStore);
+		expect(store3.loading).toBe(false);
+		expect(store3.current).toBe(priorResult);
+	});
 });
 
 describe('Layout — play-bar link (resolveAndNavigate)', () => {
