@@ -75,6 +75,10 @@ import {
 import { pendingSearchStore } from '$lib/stores/pendingSearchStore';
 import { setNowPlaying, resetNowPlaying } from '$lib/stores/nowPlayingStore';
 import { setSelectedZone } from '$lib/stores/selectedZoneStore';
+import { setZonesSnapshot } from '$lib/stores/zonesStore';
+import { themeStore, toggleTheme } from '$lib/stores/themeStore';
+import { emitWithAck } from '$lib/socket/emit';
+import type { Zone } from '@shared/types';
 import {
 	resetBrowse,
 	browseStore,
@@ -106,7 +110,32 @@ beforeEach(() => {
 	resetHistory();
 	resetNowPlaying();
 	setSelectedZone('');
+	setZonesSnapshot([]);
+	vi.mocked(emitWithAck).mockReset();
+	// AckResponse<T> = { success: true; data?: T } | { success: false; ... }
+	// Tests assert on the emit call, not the resolved value, but the
+	// mock must return a shape that satisfies the type.
+	vi.mocked(emitWithAck).mockResolvedValue({ success: true });
 });
+
+/**
+ * Minimal Zone with the flags transport buttons read. Overrides win.
+ */
+function makeZone(over: Partial<Zone> = {}): Zone {
+	return {
+		zone_id: over.zone_id ?? 'zone-a',
+		display_name: over.display_name ?? 'Main Zone',
+		state: over.state ?? 'playing',
+		seek_position: over.seek_position ?? 0,
+		is_play_allowed: over.is_play_allowed ?? true,
+		is_pause_allowed: over.is_pause_allowed ?? true,
+		is_previous_allowed: over.is_previous_allowed ?? true,
+		is_next_allowed: over.is_next_allowed ?? true,
+		is_seek_allowed: over.is_seek_allowed ?? true,
+		queue_items_remaining: over.queue_items_remaining,
+		outputs: over.outputs ?? []
+	};
+}
 
 describe('Layout — header search submit', () => {
 	it('routes the query through pendingSearchStore and navigates to /library', async () => {
@@ -873,5 +902,465 @@ describe('Layout — play-bar link (resolveAndNavigate)', () => {
 		// No history pushed — a later /library visit must not see an
 		// orphan search-rooted step.
 		expect(get(browseHistoryStore).history).toEqual([]);
+	});
+});
+
+describe('Layout — transport controls', () => {
+	function setupActiveZone() {
+		const zone = makeZone({
+			zone_id: 'zone-a',
+			outputs: [
+				{
+					output_id: 'out-a',
+					display_name: 'Main',
+					volume: { type: 'number', min: 0, max: 100, value: 50, step: 1, is_muted: false }
+				}
+			]
+		});
+		setZonesSnapshot([zone]);
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 'Cornflake Girl',
+			artist: 'Tori Amos',
+			album: 'Under the Pink',
+			duration: 300,
+			seek_position: 30
+		});
+	}
+
+	it('Play/Pause button emits transport:play-pause for the active zone', async () => {
+		setupActiveZone();
+		renderLayout();
+		// `aria-label` is "Pause" while state is 'playing'.
+		const btn = await screen.findByRole('button', { name: 'Pause' });
+		await fireEvent.click(btn);
+
+		await waitFor(() => {
+			expect(emitWithAck).toHaveBeenCalledWith(
+				fakeSocket,
+				'transport:play-pause',
+				expect.objectContaining({ zone_id: 'zone-a' }),
+				expect.objectContaining({ timeoutMs: 3000 })
+			);
+		});
+	});
+
+	it('Next button emits transport:next', async () => {
+		setupActiveZone();
+		renderLayout();
+		const btn = await screen.findByRole('button', { name: 'Next' });
+		await fireEvent.click(btn);
+
+		await waitFor(() => {
+			expect(emitWithAck).toHaveBeenCalledWith(
+				fakeSocket,
+				'transport:next',
+				expect.objectContaining({ zone_id: 'zone-a' }),
+				expect.any(Object)
+			);
+		});
+	});
+
+	it('Previous button emits transport:previous', async () => {
+		setupActiveZone();
+		renderLayout();
+		const btn = await screen.findByRole('button', { name: 'Previous' });
+		await fireEvent.click(btn);
+
+		await waitFor(() => {
+			expect(emitWithAck).toHaveBeenCalledWith(
+				fakeSocket,
+				'transport:previous',
+				expect.objectContaining({ zone_id: 'zone-a' }),
+				expect.any(Object)
+			);
+		});
+	});
+
+	it('Play/Pause button is rendered but disabled when no zone is selected', async () => {
+		// No setupActiveZone — selectedZone is empty. The play-bar
+		// transport buttons render unconditionally; canPlay falls to
+		// false so the button is disabled. Clicking it is a no-op.
+		renderLayout();
+		await tick();
+		const btn = await screen.findByRole('button', { name: 'Play' });
+		expect(btn).toBeDisabled();
+		await fireEvent.click(btn);
+		expect(emitWithAck).not.toHaveBeenCalled();
+	});
+
+	it('Transport buttons disable when the zone forbids the action', async () => {
+		// state: 'paused' → aria-label = 'Play' (isPlaying derives from
+		// activeZone.state, not nowPlaying.state).
+		const zone = makeZone({
+			zone_id: 'zone-a',
+			state: 'paused',
+			is_play_allowed: false,
+			is_pause_allowed: false,
+			is_next_allowed: false,
+			is_previous_allowed: false
+		});
+		setZonesSnapshot([zone]);
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'paused',
+			title: 'X',
+			artist: 'Y',
+			album: 'Z',
+			duration: 0,
+			seek_position: 0
+		});
+
+		renderLayout();
+		const play = await screen.findByRole('button', { name: 'Play' });
+		const next = screen.getByRole('button', { name: 'Next' });
+		const prev = screen.getByRole('button', { name: 'Previous' });
+		expect(play).toBeDisabled();
+		expect(next).toBeDisabled();
+		expect(prev).toBeDisabled();
+	});
+});
+
+describe('Layout — volume controls', () => {
+	function setupAbsoluteVolumeZone() {
+		const zone = makeZone({
+			zone_id: 'zone-a',
+			outputs: [
+				{
+					output_id: 'out-a',
+					display_name: 'Main',
+					volume: { type: 'number', min: 0, max: 100, value: 42, step: 1, is_muted: false }
+				}
+			]
+		});
+		setZonesSnapshot([zone]);
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 't',
+			artist: 'a',
+			album: 'al',
+			duration: 100,
+			seek_position: 0
+		});
+	}
+
+	it('Volume +/- buttons emit transport:volume directly (no rAF) for incremental zones', async () => {
+		// +/- buttons only render when volumeIsIncremental === true.
+		// Use an incremental volume control (fixed-step amps/preamps).
+		const zone = makeZone({
+			zone_id: 'zone-a',
+			outputs: [
+				{
+					output_id: 'out-a',
+					display_name: 'Preamp',
+					volume: {
+						type: 'incremental',
+						min: 0,
+						max: 0,
+						value: 0,
+						step: 1,
+						is_muted: false
+					}
+				}
+			]
+		});
+		setZonesSnapshot([zone]);
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 't',
+			artist: 'a',
+			album: 'al',
+			duration: 100,
+			seek_position: 0
+		});
+
+		renderLayout();
+		const up = await screen.findByRole('button', { name: 'Volume up' });
+		await fireEvent.click(up);
+
+		expect(emitWithAck).toHaveBeenCalledWith(
+			fakeSocket,
+			'transport:volume',
+			expect.objectContaining({ output_id: 'out-a', value: 1 }),
+			expect.any(Object)
+		);
+	});
+
+	it('Volume slider coalesces multiple input events into one emit per animation frame', async () => {
+		setupAbsoluteVolumeZone();
+
+		// Stub rAF so we control when the flush fires. Capture the
+		// callback so the test can decide when to invoke it.
+		const rafCallbacks: FrameRequestCallback[] = [];
+		const rafSpy = vi
+			.spyOn(window, 'requestAnimationFrame')
+			.mockImplementation((cb) => {
+				rafCallbacks.push(cb);
+				return rafCallbacks.length;
+			});
+
+		try {
+			renderLayout();
+			const slider = (await screen.findByLabelText('Volume')) as HTMLInputElement;
+
+			// Three drag events back-to-back; each calls onVolumeSlide,
+			// which sets pendingVolume and schedules ONE rAF (the first
+			// time only). Subsequent input events update pendingVolume
+			// without scheduling a new rAF.
+			slider.value = '60';
+			await fireEvent.input(slider);
+			slider.value = '65';
+			await fireEvent.input(slider);
+			slider.value = '70';
+			await fireEvent.input(slider);
+
+			// Before the rAF fires: no emit yet.
+			expect(emitWithAck).not.toHaveBeenCalled();
+			// Only ONE rAF scheduled despite three input events.
+			expect(rafCallbacks).toHaveLength(1);
+
+			// Fire the rAF — should emit ONCE with the LATEST value (70).
+			rafCallbacks[0](performance.now());
+			await tick();
+			expect(emitWithAck).toHaveBeenCalledTimes(1);
+			expect(emitWithAck).toHaveBeenCalledWith(
+				fakeSocket,
+				'transport:volume',
+				expect.objectContaining({ output_id: 'out-a', value: 70 }),
+				expect.any(Object)
+			);
+		} finally {
+			rafSpy.mockRestore();
+		}
+	});
+
+	it('Volume slider is absent for fixed-volume zones (no volume control on output)', async () => {
+		const zone = makeZone({
+			zone_id: 'zone-a',
+			outputs: [
+				{ output_id: 'out-fixed', display_name: 'Fixed DAC' }
+				// No volume field → fixed-volume output.
+			]
+		});
+		setZonesSnapshot([zone]);
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 't',
+			artist: 'a',
+			album: 'al',
+			duration: 100,
+			seek_position: 0
+		});
+
+		renderLayout();
+		await tick();
+		expect(screen.queryByLabelText('Volume')).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Volume up' })).toBeNull();
+	});
+});
+
+describe('Layout — theme toggle', () => {
+	it('toggle button flips themeStore dark ↔ light', async () => {
+		// Force a known starting state.
+		const initial = get(themeStore);
+		const expectedAfterOne = initial === 'dark' ? 'light' : 'dark';
+
+		renderLayout();
+		const toggle = await screen.findByRole('button', { name: 'Toggle theme' });
+
+		await fireEvent.click(toggle);
+		expect(get(themeStore)).toBe(expectedAfterOne);
+
+		await fireEvent.click(toggle);
+		expect(get(themeStore)).toBe(initial);
+
+		// Restore so subsequent tests see the original.
+		if (get(themeStore) !== initial) {
+			toggleTheme();
+		}
+	});
+});
+
+describe('Layout — seek bar', () => {
+	it('click on the seek bar emits transport:seek at the proportional position', async () => {
+		const zone = makeZone({
+			zone_id: 'zone-a',
+			seek_position: 30,
+			is_seek_allowed: true
+		});
+		setZonesSnapshot([zone]);
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 't',
+			artist: 'a',
+			album: 'al',
+			duration: 200, // 200s track
+			seek_position: 30
+		});
+
+		const { container } = renderLayout();
+		await tick();
+		const bar = container.querySelector('.pb-progress-bar') as HTMLElement;
+		expect(bar).toBeTruthy();
+
+		// Stub getBoundingClientRect: bar is 400px wide starting at x=0.
+		bar.getBoundingClientRect = () =>
+			({
+				left: 0,
+				right: 400,
+				width: 400,
+				top: 0,
+				bottom: 8,
+				height: 8,
+				x: 0,
+				y: 0,
+				toJSON: () => ({})
+			}) as DOMRect;
+
+		// Click at 100px = 25% of 400px = 50s of 200s.
+		await fireEvent.click(bar, { clientX: 100 });
+
+		expect(emitWithAck).toHaveBeenCalledWith(
+			fakeSocket,
+			'transport:seek',
+			expect.objectContaining({ zone_id: 'zone-a', seconds: 50 }),
+			expect.any(Object)
+		);
+	});
+
+	it('seek bar does NOT emit when zone forbids seeking', async () => {
+		const zone = makeZone({
+			zone_id: 'zone-a',
+			is_seek_allowed: false
+		});
+		setZonesSnapshot([zone]);
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 't',
+			artist: 'a',
+			album: 'al',
+			duration: 200,
+			seek_position: 30
+		});
+
+		const { container } = renderLayout();
+		await tick();
+		const bar = container.querySelector('.pb-progress-bar') as HTMLElement;
+		bar.getBoundingClientRect = () =>
+			({
+				left: 0,
+				right: 400,
+				width: 400,
+				top: 0,
+				bottom: 8,
+				height: 8,
+				x: 0,
+				y: 0,
+				toJSON: () => ({})
+			}) as DOMRect;
+
+		await fireEvent.click(bar, { clientX: 100 });
+		expect(emitWithAck).not.toHaveBeenCalledWith(
+			fakeSocket,
+			'transport:seek',
+			expect.anything(),
+			expect.anything()
+		);
+	});
+});
+
+describe('Layout — openAlbumOfNowPlaying', () => {
+	it('clicking the play-bar title opens the album via resolveAndNavigate', async () => {
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 'Cornflake Girl',
+			artist: 'Tori Amos',
+			album: 'Under the Pink',
+			duration: 300,
+			seek_position: 0
+		});
+
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Under the Pink',
+						subtitle: 'Tori Amos',
+						itemKey: 'album-fresh-key',
+						itemType: 'album'
+					})
+				]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [makeItem({ title: 'Cornflake Girl', itemKey: 'track-1' })]
+			})
+		);
+
+		renderLayout();
+		const titleBtn = await screen.findByRole('button', { name: 'Cornflake Girl' });
+		await fireEvent.click(titleBtn);
+
+		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalledTimes(2);
+		});
+
+		// Search-rooted browse: input is the album name.
+		expect(apiBrowse.mock.calls[0][1]).toEqual(
+			expect.objectContaining({
+				hierarchy: 'search',
+				input: 'Under the Pink'
+			})
+		);
+		// Drill into the matched album.
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
+			expect.objectContaining({ hierarchy: 'search', itemKey: 'album-fresh-key' })
+		);
+
+		// History records the album breadcrumb.
+		const history = get(browseHistoryStore).history;
+		expect(history).toHaveLength(1);
+		expect(history[0].breadcrumb?.title).toBe('Under the Pink');
+	});
+
+	it('clicking the play-bar title is a no-op when there is no album metadata', async () => {
+		setSelectedZone('zone-a');
+		setNowPlaying('zone-a', {
+			zone_id: 'zone-a',
+			state: 'playing',
+			title: 'Radio Stream',
+			artist: 'Unknown',
+			album: undefined,
+			duration: 0,
+			seek_position: 0
+		});
+
+		renderLayout();
+		await tick();
+		const titleBtn = screen.queryByRole('button', { name: 'Radio Stream' });
+		// Title still renders as a button (it's always wrapped), but
+		// clicking it must not fire apiBrowse because nowPlaying.album
+		// is falsy.
+		if (titleBtn) await fireEvent.click(titleBtn);
+		await tick();
+		expect(apiBrowse).not.toHaveBeenCalled();
 	});
 });
