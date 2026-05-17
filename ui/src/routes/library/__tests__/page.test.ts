@@ -2462,6 +2462,68 @@ describe('Library page — album chips (PR2 album-page polish)', () => {
 		expect(link.textContent?.trim()).not.toContain('FLAC');
 	});
 
+	it('playlist contents: subtitle "453 tracks" renders as static text, not as a search-this-artist button', async () => {
+		// Live regression: a large playlist hits isTrackList=true via
+		// the size threshold (inferredAllTracks=true). Roon's subtitle
+		// on the page is "N tracks · duration" — metadata, NOT an
+		// artist. The prior code rendered any non-empty subtitle as a
+		// clickable button that called searchArtist("453 tracks"),
+		// which routed through the search hierarchy and returned
+		// "no results". Fix: gate the artist-link on isAlbumPage
+		// (which excludes inferredAllTracks), fall through to static
+		// text.
+		const trackRows: BrowseItem[] = [];
+		for (let i = 1; i <= 10; i++) {
+			trackRows.push(
+				makeItem({
+					title: `Song Title ${i}`, // no number prefix, no itemType
+					itemKey: `t${i}`,
+					hint: 'action_list'
+				})
+			);
+		}
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'My Playlist',
+				subtitle: '453 tracks',
+				items: trackRows
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// "453 tracks" appears as static text inside the album-header
+		// region, not as a button.
+		expect(screen.queryByRole('button', { name: '453 tracks' })).toBeNull();
+		// And the page IS classified as a track list (inferredAllTracks
+		// path); the subtitle is rendered as the static fallback.
+		expect(screen.getByText('453 tracks')).toBeInTheDocument();
+	});
+
+	it('non-tracklist page: subtitle like "12 albums" renders as static text, not as a search button', async () => {
+		// E.g. an artist page that shows their albums. Subtitle is
+		// informational metadata. Prior code made any non-empty
+		// subtitle on a non-tracklist page into a clickable
+		// "search this artist" button, which would search Roon for
+		// "12 albums" — wrong.
+		setBrowseResult(
+			listResult({
+				level: 1,
+				title: 'Tori Amos',
+				subtitle: '12 albums',
+				items: [makeItem({ title: 'Under the Pink', itemKey: 'a1' })]
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		expect(screen.queryByRole('button', { name: '12 albums' })).toBeNull();
+		expect(screen.getByText('12 albums')).toBeInTheDocument();
+	});
+
 	it('P2 reopen: no chips render on a non-album track list (Library/Tracks-style inferred-all-tracks page)', async () => {
 		// Same shape as albumPageResult — level 2, every row is an
 		// action_list — but NO `itemType: track` AND no numeric-

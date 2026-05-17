@@ -1309,12 +1309,17 @@
 				<div>
 					<h2>{$browseStore.current.title || 'Browse'}</h2>
 					{#if $browseStore.current?.subtitle && !isTrackList}
-						<button
-							type="button"
-							class="artist-link"
-							onclick={() => searchArtist($browseStore.current!.subtitle!)}
-							title="Search for this artist"
-						>{$browseStore.current.subtitle}</button>
+						<!--
+							Subtitle on a non-tracklist page is informational
+							metadata (e.g. "12 albums", "453 tracks") — NOT
+							an artist name. Rendering it as a search-link
+							would route clicks like "453 tracks" through the
+							search hierarchy and return "no results". Static
+							text only. Artist search is still available from
+							the play-bar artist link and from the in-album
+							header below when we're on an actual album page.
+						-->
+						<span class="artist-link-static">{$browseStore.current.subtitle}</span>
 					{/if}
 				</div>
 				{#if pageActions.length > 0}
@@ -1342,7 +1347,18 @@
 			{#if isTrackList}
 				{#if $browseStore.current?.subtitle}
 					<div class="album-header">
-						{#if albumArtist}
+						{#if isAlbumPage($browseStore.current, isTrackList, inferredAllTracks) && albumArtist}
+							<!--
+								Only render as search link on a confirmed
+								album page. Playlists/Library track lists also
+								hit isTrackList=true (via inferredAllTracks)
+								and carry subtitles like "453 tracks" — those
+								must not become "search 453 tracks" clicks.
+								isAlbumPage already excludes inferredAllTracks
+								so a true album with a parsed artist gets the
+								link, and a playlist contents page gets static
+								text.
+							-->
 							<button
 								type="button"
 								class="artist-link"
