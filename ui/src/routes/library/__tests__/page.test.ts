@@ -2928,22 +2928,24 @@ describe('Library page — playlist contents (fix-2)', () => {
 
 	it('roon "Not Found" placeholder: shows friendly explanation, not the confusing card', async () => {
 		// Verified live from server logs (2026-05-17): clicking a smart
-		// playlist returned action='list' / count=1 with a single item
-		// titled "Not Found". The page previously rendered that as a
-		// regular ItemGrid card with "N" placeholder art — confusing.
-		// Now: detect the pattern and render a friendly explanation.
+		// playlist returned action='list' / count=1 with a single item:
+		//   {title:"Not Found", subtitle:null, image_key:null,
+		//    item_key:"836:0"}  // no hint, no isPlayable, no isLoadable
+		// Replicate the EXACT placeholder shape (no hint, no subtitle,
+		// no image) so the tightened detector matches.
 		setBrowseResult(
 			listResult({
 				level: 2,
 				title: 'Last Year',
 				subtitle: '453 Tracks',
 				items: [
-					makeItem({
+					{
 						title: 'Not Found',
 						itemKey: '836:0',
-						hint: 'list',
+						isLoadable: false,
 						isPlayable: false
-					})
+						// no hint, no subtitle, no imageKey, no itemType
+					}
 				]
 			}),
 			'browse'
@@ -2966,7 +2968,14 @@ describe('Library page — playlist contents (fix-2)', () => {
 			listResult({
 				level: 2,
 				title: 'Last Year',
-				items: [makeItem({ title: '  Not Found  ', itemKey: 'x', hint: 'list' })]
+				items: [
+					{
+						title: '  Not Found  ',
+						itemKey: 'x',
+						isLoadable: false,
+						isPlayable: false
+					}
+				]
 			}),
 			'browse'
 		);
@@ -2995,6 +3004,85 @@ describe('Library page — playlist contents (fix-2)', () => {
 		render(LibraryPage);
 		await tick();
 		// Should NOT show the placeholder message.
+		expect(screen.queryByText("Couldn't load this playlist's contents")).toBeNull();
+	});
+
+	it('reopen P1: legitimate single-item list with a track titled "Not Found" does NOT trigger placeholder', async () => {
+		// Reviewer caught: the title-only detector would hide a real
+		// album / playlist whose only track is legitimately titled
+		// "Not Found" (Yusuf Islam single, a Nico song, etc.).
+		// Tightened to require the full placeholder shape: no hint, no
+		// subtitle, no image. A real track row has all three.
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'My Demos',
+				items: [
+					makeItem({
+						title: 'Not Found',
+						itemKey: 't1',
+						hint: 'action_list',           // real track row
+						subtitle: 'Some Indie Band',   // real artist
+						imageKey: 'art-123'            // real artwork
+					})
+				]
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// Placeholder UI must NOT render — this is legitimate content.
+		expect(screen.queryByText("Couldn't load this playlist's contents")).toBeNull();
+		// Real song row is still reachable (rendered via the track-list
+		// path; ▶ button is labelled "Play Not Found").
+		// (Note: a single action_list row may not pass isTrackList
+		// thresholds — we just assert the placeholder didn't hijack.)
+	});
+
+	it('reopen P1: single item with subtitle but no hint does NOT trigger placeholder', async () => {
+		// Edge case: an item titled "Not Found" with an artist subtitle
+		// is presumably a real track Roon couldn't find artwork for —
+		// still legitimate content, not the placeholder.
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'Something',
+				items: [
+					{
+						title: 'Not Found',
+						subtitle: 'Some Band',  // disqualifying signal
+						itemKey: 't1',
+						isLoadable: true,
+						isPlayable: false
+					}
+				]
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+		expect(screen.queryByText("Couldn't load this playlist's contents")).toBeNull();
+	});
+
+	it('reopen P1: single item with image but no hint does NOT trigger placeholder', async () => {
+		setBrowseResult(
+			listResult({
+				level: 2,
+				items: [
+					{
+						title: 'Not Found',
+						imageKey: 'art-id',  // disqualifying signal
+						itemKey: 't1',
+						isLoadable: true,
+						isPlayable: false
+					}
+				]
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
 		expect(screen.queryByText("Couldn't load this playlist's contents")).toBeNull();
 	});
 

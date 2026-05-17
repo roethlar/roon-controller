@@ -1206,22 +1206,36 @@
 
 	/**
 	 * True when Roon returned its "Not Found" placeholder for the page.
-	 * Verified live: clicking into a smart playlist returns count=1
-	 * with a single item literally titled "Not Found" — Roon's public
-	 * browse API can't materialize smart-playlist contents (they're a
-	 * saved query, not a stored list). Other sources of this pattern:
-	 * playlists referencing tracks from a disconnected streaming
-	 * service (Tidal/Qobuz expired), or any list whose itemKey Roon
-	 * considers unresolvable at browse time.
+	 * Verified live (server log 2026-05-17): clicking into a smart
+	 * playlist returns count=1 with a single placeholder item:
 	 *
-	 * Rendered as a friendly explanation row in place of the
-	 * confusing "Not Found" card so the user understands why the
-	 * playlist appears empty.
+	 *   {title: "Not Found", subtitle: null, image_key: null,
+	 *    item_key: "836:0"}  // no hint, no isPlayable, no isLoadable
+	 *
+	 * Roon's public browse API can't materialize smart-playlist
+	 * contents (they're a saved query, not a stored list). Other
+	 * sources of this pattern: playlists referencing tracks from a
+	 * disconnected streaming service, or any itemKey Roon considers
+	 * unresolvable at browse time.
+	 *
+	 * Match on the FULL placeholder shape — title + null subtitle +
+	 * null image + no hint — NOT just the title. A real one-item
+	 * playlist or album containing a track legitimately titled
+	 * "Not Found" would have a subtitle (artist) and/or an image
+	 * and/or a hint (action_list for a track row) and won't match.
+	 * Tightening avoids hiding legitimate content behind the
+	 * placeholder UI (reviewer caught the prior title-only check
+	 * as too broad).
 	 */
 	const isRoonNotFoundPage = $derived.by(() => {
 		const cur = $browseStore.current;
 		if (!cur || cur.items.length !== 1) return false;
-		if (cur.items[0].title.trim() !== 'Not Found') return false;
+		const only = cur.items[0];
+		if (only.title.trim() !== 'Not Found') return false;
+		// Placeholder shape: no subtitle, no image, no hint.
+		if (only.subtitle != null && only.subtitle !== '') return false;
+		if (only.imageKey != null && only.imageKey !== '') return false;
+		if (only.hint !== undefined) return false;
 		return true;
 	});
 
