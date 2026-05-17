@@ -1268,28 +1268,41 @@
 	}
 
 	/**
-	 * In a mixed list (e.g. artist page): action_list items like
-	 * "Play Artist" shown as pill buttons.
-	 * In an explicit tracklist: page-level actions ("Play Work") and
-	 * any other non-track action_list rows.
-	 * In an inferred tracklist: only the "Play <X>" action_list rows;
-	 * everything else is a track.
+	 * True when an item is unambiguously a page-level action. Two
+	 * signals trigger this:
+	 * 1. Known "Play <X>" title in PAGE_ACTION_TITLES (the cross-Roon
+	 *    contract — Playlist, Album, Tag, Mix, Work, Composer, etc.).
+	 * 2. Explicit non-track itemType (e.g. `itemType: 'action'` on a
+	 *    "1 Hour Continuous Mix" pill). Roon only sets `itemType:
+	 *    'track'` on real track rows; everything else with a typed
+	 *    itemType is page-level.
+	 *
+	 * What we INTENTIONALLY don't use as a signal: `isTrackItem` /
+	 * `!isTrackItem`. Roon frequently emits inconsistent
+	 * itemType / numeric-prefix data across rows of the SAME
+	 * playlist (one track typed `track`, hundreds untyped; or one
+	 * track titled "9 to 5" matching the numeric-prefix fallback
+	 * while siblings don't). Splitting on `!isTrackItem` would send
+	 * every untyped sibling into pageActions as a blue-pill — the
+	 * exact bug the live screenshots showed.
 	 */
+	function isPageAction(item: BrowseItem): boolean {
+		if (isPageActionTitle(item)) return true;
+		if (item.itemType && !isTrackType(item.itemType)) return true;
+		return false;
+	}
+
 	const pageActions = $derived(
-		inferredAllTracks
-			? actionListRows.filter(isPageActionTitle)
-			: isTrackList
-				? actionListRows.filter((i) => !isTrackItem(i))
-				: actionListRows
+		isTrackList
+			? actionListRows.filter(isPageAction)
+			: actionListRows
 	);
 
-	/** Individual tracks — explicit (itemType=track / numbered) or inferred (action_list row that isn't a "Play <X>" page action). */
+	/** Individual tracks — every action_list row on a track-list page that ISN'T a page action. */
 	const trackItems = $derived(
-		inferredAllTracks
-			? actionListRows.filter((i) => !isPageActionTitle(i))
-			: isTrackList
-				? actionListRows.filter(isTrackItem)
-				: []
+		isTrackList
+			? actionListRows.filter((i) => !isPageAction(i))
+			: []
 	);
 
 	/** Non-action items for the current list. */

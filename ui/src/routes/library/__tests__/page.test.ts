@@ -2787,6 +2787,47 @@ describe('Library page — playlist contents (fix-2)', () => {
 		expect(screen.getByRole('button', { name: 'Play Album' })).toBeInTheDocument();
 	});
 
+	it('live regression: untyped track rows stay as tracks even when one sibling has itemType=track', async () => {
+		// Observed shape from a 321-track user playlist that rendered
+		// every row as a blue-pill: most rows were untyped action_list
+		// with non-numeric song titles, but ONE row happened to be
+		// typed `track` (or had a numeric prefix). Pre-fix the
+		// pageActions/trackItems split used !isTrackItem to mean "page
+		// action" — that one typed row flipped inferredAllTracks=false
+		// and sent every untyped sibling into pageActions as pills.
+		const items: BrowseItem[] = [
+			makeItem({ title: 'Play Playlist', itemKey: 'pa', hint: 'action_list' }),
+			// One row Roon happens to type as `track`:
+			makeItem({ title: 'Properly Typed Track', itemKey: 't1', hint: 'action_list', itemType: 'track' }),
+			// All siblings: untyped action_list, normal song titles.
+			makeItem({ title: 'Hey Jude', itemKey: 't2', hint: 'action_list' }),
+			makeItem({ title: 'Imagine', itemKey: 't3', hint: 'action_list' }),
+			makeItem({ title: 'Yesterday', itemKey: 't4', hint: 'action_list' }),
+			makeItem({ title: 'Let It Be', itemKey: 't5', hint: 'action_list' }),
+			makeItem({ title: '321 Tracks', itemKey: 'meta', hint: 'list', isPlayable: false })
+		];
+		setBrowseResult(
+			listResult({ level: 2, title: 'Mixed Playlist', items }),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// All real songs render as track rows (per-row Play <title> button),
+		// regardless of itemType inconsistency between siblings.
+		expect(screen.getByRole('button', { name: 'Play Properly Typed Track' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Hey Jude' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Imagine' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Yesterday' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Let It Be' })).toBeInTheDocument();
+		// Page-level Play Playlist still a pill.
+		expect(screen.getByRole('button', { name: 'Play Playlist' })).toBeInTheDocument();
+		// No untyped sibling should appear as an .album-action-btn pill.
+		const pills = document.querySelectorAll('.album-action-btn');
+		expect(pills).toHaveLength(1); // just Play Playlist
+		expect(pills[0].textContent?.trim()).toBe('Play Playlist');
+	});
+
 	it('reopen P2: Work page (Play Work + contextual "X by Y" row) STAYS as pills, not tracks', async () => {
 		// Regression guard: "Play Work" is intentionally NOT in
 		// COLLECTION_PAGE_ACTION_TITLES because its siblings on a
