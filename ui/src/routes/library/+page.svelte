@@ -1213,9 +1213,31 @@
 	 * without this guard a playlist contents page would include
 	 * "Play Playlist" as the first "track" in the inferredAllTracks
 	 * layout.
+	 *
+	 * Exact match against known Roon page-action labels — NOT a
+	 * `^Play ` prefix — so that real song titles starting with "Play"
+	 * ("Play Dead", "Play With Fire", "Play That Funky Music",
+	 * "Play Crack the Sky") stay classified as tracks.
+	 *
+	 * If Roon adds a new page-action label, it will fall through to
+	 * trackItems until the set below is updated. That's the safer
+	 * failure mode: an extra row in the track list is visually wrong
+	 * but reachable; a missing song row hides content.
 	 */
+	const PAGE_ACTION_TITLES = new Set([
+		'play playlist',
+		'play album',
+		'play artist',
+		'play genre',
+		'play composer',
+		'play work',
+		'play tag',
+		'play all',
+		'play mix',
+		'play radio'
+	]);
 	function isPageActionTitle(item: BrowseItem): boolean {
-		return /^play\b/i.test(item.title.trim());
+		return PAGE_ACTION_TITLES.has(item.title.trim().toLowerCase());
 	}
 
 	/**

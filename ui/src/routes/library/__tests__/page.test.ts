@@ -2655,6 +2655,72 @@ describe('Library page — playlist contents (fix-2)', () => {
 		);
 	});
 
+	it('reopen P1: real track titles starting with "Play" stay as tracks, not page actions', async () => {
+		// Reviewer caught: prior `/^play\b/i` prefix match would
+		// route "Play Dead", "Play With Fire", "Play That Funky Music"
+		// into pageActions instead of trackItems, hiding real songs
+		// behind the bug we were trying to fix.
+		const items: BrowseItem[] = [
+			makeItem({ title: 'Play Playlist', itemKey: 'pa-pl', hint: 'action_list' }),
+			makeItem({ title: 'Play Dead', itemKey: 't1', hint: 'action_list' }),
+			makeItem({ title: 'Play With Fire', itemKey: 't2', hint: 'action_list' }),
+			makeItem({ title: 'Play That Funky Music', itemKey: 't3', hint: 'action_list' }),
+			makeItem({ title: 'Play Crack the Sky', itemKey: 't4', hint: 'action_list' }),
+			makeItem({ title: 'Other Song', itemKey: 't5', hint: 'action_list' }),
+			makeItem({ title: '6 Tracks', itemKey: 'meta', hint: 'list', isPlayable: false })
+		];
+		setBrowseResult(
+			listResult({ level: 2, title: 'Songs Starting With Play', items }),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// "Play Playlist" is the only known page-action title; it goes
+		// to pageActions and has no per-track play button.
+		expect(screen.queryByRole('button', { name: 'Play Play Playlist' })).toBeNull();
+		expect(screen.getByRole('button', { name: 'Play Playlist' })).toBeInTheDocument();
+
+		// Every real song title starting with "Play" is a track row
+		// (rendered with TrackList's per-row ▶ button labelled
+		// "Play <song>").
+		expect(screen.getByRole('button', { name: 'Play Play Dead' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Play With Fire' })).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'Play Play That Funky Music' })
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'Play Play Crack the Sky' })
+		).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Other Song' })).toBeInTheDocument();
+	});
+
+	it('reopen P1: page-action match is case-insensitive and trims whitespace, but title-only', async () => {
+		// Both " Play Album " (extra whitespace) and "PLAY GENRE" (case)
+		// match. A track titled "Play Album Tonight" should not match —
+		// only exact whole-string equality after trim+lowercase.
+		const items: BrowseItem[] = [
+			makeItem({ title: ' Play Album ', itemKey: 'pa-album', hint: 'action_list' }),
+			makeItem({ title: 'PLAY GENRE', itemKey: 'pa-genre', hint: 'action_list' }),
+			makeItem({ title: 'Play Album Tonight', itemKey: 't-album-tonight', hint: 'action_list' }),
+			makeItem({ title: 'Some Track', itemKey: 't2', hint: 'action_list' }),
+			makeItem({ title: 'Another Track', itemKey: 't3', hint: 'action_list' }),
+			makeItem({ title: '5 Tracks', itemKey: 'meta', hint: 'list', isPlayable: false })
+		];
+		setBrowseResult(
+			listResult({ level: 2, title: 'Mixed', items }),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// "Play Album Tonight" — a track title that contains "Play Album"
+		// as a prefix — must NOT be misclassified as a page action.
+		expect(
+			screen.getByRole('button', { name: 'Play Play Album Tonight' })
+		).toBeInTheDocument();
+	});
+
 	it('still classifies a small action_list-only page (< size threshold, no isTrackItem matches) as NOT a track list', async () => {
 		// Regression guard: the relaxation of every(action_list) must
 		// not also relax the "Work" page heuristic. Two action_list
