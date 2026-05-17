@@ -2926,6 +2926,78 @@ describe('Library page — playlist contents (fix-2)', () => {
 		expect(screen.queryByRole('button', { name: /^Play On Ocean/ })).toBeNull();
 	});
 
+	it('roon "Not Found" placeholder: shows friendly explanation, not the confusing card', async () => {
+		// Verified live from server logs (2026-05-17): clicking a smart
+		// playlist returned action='list' / count=1 with a single item
+		// titled "Not Found". The page previously rendered that as a
+		// regular ItemGrid card with "N" placeholder art — confusing.
+		// Now: detect the pattern and render a friendly explanation.
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'Last Year',
+				subtitle: '453 Tracks',
+				items: [
+					makeItem({
+						title: 'Not Found',
+						itemKey: '836:0',
+						hint: 'list',
+						isPlayable: false
+					})
+				]
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// The friendly message renders.
+		expect(screen.getByText("Couldn't load this playlist's contents")).toBeInTheDocument();
+		// The mention of smart playlists is the most helpful hint.
+		expect(screen.getByText(/smart playlist/i)).toBeInTheDocument();
+		// And NO ItemGrid card titled "Not Found" — that's the bug we
+		// were replacing.
+		expect(document.querySelector('.item-card')).toBeNull();
+	});
+
+	it('roon "Not Found" trim-tolerant: matches " Not Found " too', async () => {
+		// Defensive: if Roon's payload has padding, still match.
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'Last Year',
+				items: [makeItem({ title: '  Not Found  ', itemKey: 'x', hint: 'list' })]
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+		expect(screen.getByText("Couldn't load this playlist's contents")).toBeInTheDocument();
+	});
+
+	it('roon "Not Found" only triggers on exactly-one-item lists (regression guard)', async () => {
+		// Don't pattern-match every list that contains a "Not Found"
+		// row alongside real items — that could be valid content like
+		// a song titled "Not Found" or an Albums list including a
+		// genuinely-named album. Only trigger when the list is a
+		// single-item placeholder.
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'Some Album',
+				items: [
+					makeItem({ title: 'Not Found', itemKey: '1', hint: 'list' }),
+					makeItem({ title: 'Track 2', itemKey: '2', hint: 'list' })
+				]
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+		// Should NOT show the placeholder message.
+		expect(screen.queryByText("Couldn't load this playlist's contents")).toBeNull();
+	});
+
 	it('still classifies a small action_list-only page (< size threshold, no isTrackItem matches) as NOT a track list', async () => {
 		// Regression guard: the relaxation of every(action_list) must
 		// not also relax the "Work" page heuristic. Two action_list

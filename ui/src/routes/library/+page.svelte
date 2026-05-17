@@ -1205,6 +1205,27 @@
 	});
 
 	/**
+	 * True when Roon returned its "Not Found" placeholder for the page.
+	 * Verified live: clicking into a smart playlist returns count=1
+	 * with a single item literally titled "Not Found" — Roon's public
+	 * browse API can't materialize smart-playlist contents (they're a
+	 * saved query, not a stored list). Other sources of this pattern:
+	 * playlists referencing tracks from a disconnected streaming
+	 * service (Tidal/Qobuz expired), or any list whose itemKey Roon
+	 * considers unresolvable at browse time.
+	 *
+	 * Rendered as a friendly explanation row in place of the
+	 * confusing "Not Found" card so the user understands why the
+	 * playlist appears empty.
+	 */
+	const isRoonNotFoundPage = $derived.by(() => {
+		const cur = $browseStore.current;
+		if (!cur || cur.items.length !== 1) return false;
+		if (cur.items[0].title.trim() !== 'Not Found') return false;
+		return true;
+	});
+
+	/**
 	 * "Non-album track list" mode: the page IS a track list, but it
 	 * isn't an album page — so isAlbumPage / albumChips / the
 	 * subtitle-as-search-artist link should all stay off. Two
@@ -1487,7 +1508,34 @@
 				</nav>
 			{/if}
 
-			{#if isTrackList}
+			{#if isRoonNotFoundPage}
+				<!--
+					Roon returned its "Not Found" placeholder for the page.
+					Verified live for smart playlists, which Roon's public
+					browse API can't materialize. Same shape also appears
+					for playlists referencing tracks from a disconnected
+					streaming service (Tidal/Qobuz expired) and for any
+					itemKey Roon considers unresolvable at browse time.
+					Show a friendly explanation in place of the confusing
+					"Not Found" card.
+				-->
+				<div class="unloadable-list">
+					<p class="unloadable-list-title">
+						Couldn't load this playlist's contents
+					</p>
+					<p class="unloadable-list-hint">
+						Roon couldn't materialize this list — most often a
+						<strong>smart playlist</strong> (the public Roon API
+						can't browse smart-playlist contents), or a regular
+						playlist referencing tracks from a disconnected
+						streaming service.
+					</p>
+					<p class="unloadable-list-hint">
+						If this is a normal playlist, try opening it in the
+						Roon app first to verify it loads there.
+					</p>
+				</div>
+			{:else if isTrackList}
 				{#if $browseStore.current?.subtitle}
 					<div class="album-header">
 						{#if isAlbumPage($browseStore.current, isTrackList, inferredAllTracks) && albumArtist}
@@ -1983,6 +2031,29 @@
 		border: 1px solid rgba(255, 124, 124, 0.4);
 		border-radius: 10px;
 		color: #ffb3b3;
+	}
+
+	/* Roon "Not Found" placeholder: smart playlist / disconnected
+	   service / unresolvable itemKey. Distinct visual from the hard
+	   .error block — this isn't a controller error, just Roon
+	   declining to materialize the list. */
+	.unloadable-list {
+		margin: 1rem 0;
+		padding: 1rem 1.2rem;
+		background: var(--surface-2);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+	}
+	.unloadable-list-title {
+		margin: 0 0 0.4rem;
+		font-weight: 650;
+		color: var(--text);
+	}
+	.unloadable-list-hint {
+		margin: 0.3rem 0 0;
+		color: var(--text-soft);
+		font-size: 0.88rem;
+		line-height: 1.45;
 	}
 
 	/* ── Jump bar ── */
