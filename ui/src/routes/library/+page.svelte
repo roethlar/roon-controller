@@ -1000,6 +1000,20 @@
 	}
 
 	/**
+	 * Click handler for ▶ buttons inside the track-list rendering.
+	 * Bypasses the heuristic gates in `shouldQuickPlayActionList` —
+	 * if the layout has decided this is a track row, the only sensible
+	 * thing to do on play is quickPlay. Roon playlist tracks come back
+	 * without `itemType=track` and without numeric prefixes, so the
+	 * default `handleItemClick` path would drill into the play-action
+	 * menu ("Play Now / Add to Queue / …") instead of playing.
+	 */
+	function handleTrackPlay(item: BrowseItem) {
+		if (!item.itemKey) return;
+		void quickPlay(item, { multiSessionKey: activeMultiSessionKey() });
+	}
+
+	/**
 	 * Parse "<album> by <artist>" titles. Roon uses this format for
 	 * contextual rows on Work / Composer pages where the row points to a
 	 * play-action menu rather than an album browse page. Returning the
@@ -1150,11 +1164,18 @@
 	}
 
 	/**
-	 * True when the current level renders as a track list. A page is a
-	 * track list when every item is `action_list` AND either:
-	 *   (a) at least one item explicitly classifies as a track via
-	 *       `isTrackItem` (itemType=track or numbered title), OR
-	 *   (b) the list is large enough (>= 5 items) that it can only
+	 * True when the current level renders as a track list. We make the
+	 * decision against the page's action_list rows only — Roon
+	 * playlists ship 1+ non-action_list metadata rows (track count,
+	 * duration) mixed in with the track rows; previously those tripped
+	 * an `every(action_list)` check and sent every track into
+	 * `pageActions` as blue-pill buttons. Filtering to actionable rows
+	 * first keeps the classification stable.
+	 *
+	 * After the filter, a page is a track list when either:
+	 *   (a) at least one action_list row explicitly classifies as a
+	 *       track via `isTrackItem` (itemType=track or numbered title), OR
+	 *   (b) the action_list set is large enough (>= 5) that it can only
 	 *       reasonably be a track list — Library/Tracks and playlist
 	 *       contents come back as 100s of action_list rows with no
 	 *       itemType and non-numeric titles, so heuristic (a) misses.
@@ -1164,45 +1185,61 @@
 	 * layout.
 	 */
 	const TRACK_LIST_SIZE_THRESHOLD = 5;
+	const actionListRows = $derived(
+		$browseStore.current?.items.filter((i) => i.hint === 'action_list') ?? []
+	);
 	const isTrackList = $derived.by(() => {
 		const cur = $browseStore.current;
 		if (!cur || cur.items.length === 0) return false;
-		if (!cur.items.every((i) => i.hint === 'action_list')) return false;
-		if (cur.items.some(isTrackItem)) return true;
-		return cur.items.length >= TRACK_LIST_SIZE_THRESHOLD;
+		if (actionListRows.length === 0) return false;
+		if (actionListRows.some(isTrackItem)) return true;
+		return actionListRows.length >= TRACK_LIST_SIZE_THRESHOLD;
 	});
 
 	/**
 	 * Inferred-track-list mode: the page is a track list ONLY because
 	 * we hit the size-threshold fallback in `isTrackList`, not because
-	 * `isTrackItem` flagged any row. In that case every action_list
-	 * row IS a track row — splitting via `isTrackItem` would put 100%
-	 * of rows in `pageActions` (an empty `<ol>` plus a pile of pill
-	 * buttons, the bug GPT R-N flagged).
+	 * `isTrackItem` flagged any row. In that case the action_list rows
+	 * are tracks by inference.
 	 */
 	const inferredAllTracks = $derived(
-		isTrackList && !($browseStore.current?.items.some(isTrackItem) ?? false)
+		isTrackList && !actionListRows.some(isTrackItem)
 	);
 
 	/**
-	 * In a mixed list (e.g. artist page): action_list items like "Play Artist" shown as pill buttons.
-	 * In an explicit tracklist: page-level actions like "Play Work" — items that aren't tracks.
-	 * In an inferred tracklist: no page actions; every row is a track row.
+	 * Recognise page-level play actions ("Play Playlist", "Play Album",
+	 * "Play Genre") even when the page is otherwise a track list. Roon
+	 * mixes these into the same action_list stream as the track rows;
+	 * without this guard a playlist contents page would include
+	 * "Play Playlist" as the first "track" in the inferredAllTracks
+	 * layout.
+	 */
+	function isPageActionTitle(item: BrowseItem): boolean {
+		return /^play\b/i.test(item.title.trim());
+	}
+
+	/**
+	 * In a mixed list (e.g. artist page): action_list items like
+	 * "Play Artist" shown as pill buttons.
+	 * In an explicit tracklist: page-level actions ("Play Work") and
+	 * any other non-track action_list rows.
+	 * In an inferred tracklist: only the "Play <X>" action_list rows;
+	 * everything else is a track.
 	 */
 	const pageActions = $derived(
 		inferredAllTracks
-			? []
+			? actionListRows.filter(isPageActionTitle)
 			: isTrackList
-				? ($browseStore.current?.items.filter((i) => !isTrackItem(i)) ?? [])
-				: ($browseStore.current?.items.filter((i) => i.hint === 'action_list') ?? [])
+				? actionListRows.filter((i) => !isTrackItem(i))
+				: actionListRows
 	);
 
-	/** Individual tracks — explicit (itemType=track / numbered) or inferred (every action_list row). */
+	/** Individual tracks — explicit (itemType=track / numbered) or inferred (action_list row that isn't a "Play <X>" page action). */
 	const trackItems = $derived(
 		inferredAllTracks
-			? ($browseStore.current?.items ?? [])
+			? actionListRows.filter((i) => !isPageActionTitle(i))
 			: isTrackList
-				? ($browseStore.current?.items.filter(isTrackItem) ?? [])
+				? actionListRows.filter(isTrackItem)
 				: []
 	);
 
@@ -1379,7 +1416,7 @@
 				{/if}
 				<TrackList
 					items={trackItems}
-					onItemClick={handleItemClick}
+					onItemClick={handleTrackPlay}
 					onMoreClick={openActionMenu}
 					isNowPlaying={isNowPlayingTrack}
 					playDisabled={quickPlayInFlight}

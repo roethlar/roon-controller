@@ -2557,3 +2557,133 @@ describe('Library page — album chips (PR2 album-page polish)', () => {
 		expect(screen.queryByLabelText('Album metadata')).toBeNull();
 	});
 });
+
+describe('Library page — playlist contents (fix-2)', () => {
+	function playlistPageResult(numTracks: number, opts: { withMetadataRow?: boolean } = {}): BrowseResult {
+		const items: BrowseItem[] = [
+			// Page-level play action that Roon mixes into the same
+			// action_list stream as the track rows.
+			makeItem({ title: 'Play Playlist', itemKey: 'play-pl', hint: 'action_list' })
+		];
+		for (let i = 1; i <= numTracks; i++) {
+			items.push(
+				makeItem({
+					// Real-world shape: no numeric prefix, no itemType=track.
+					title: `Song Title ${i}`,
+					itemKey: `t${i}`,
+					hint: 'action_list'
+				})
+			);
+		}
+		if (opts.withMetadataRow !== false) {
+			// Roon-style metadata header that breaks every(action_list).
+			items.push(
+				makeItem({
+					title: `${numTracks} Tracks`,
+					itemKey: 'meta',
+					hint: 'list',
+					isPlayable: false
+				})
+			);
+		}
+		return listResult({
+			level: 2,
+			title: 'My Playlist',
+			subtitle: `${numTracks} Tracks`,
+			items
+		});
+	}
+
+	it('classifies a playlist with a metadata header row as a track list (not blue-pill page actions)', async () => {
+		// Pre-fix: the one `hint: 'list'` metadata row broke
+		// `every(action_list)`, sending all track rows into pageActions
+		// as blue-pill .album-action-btn buttons.
+		setBrowseResult(playlistPageResult(10), 'browse');
+		render(LibraryPage);
+		await tick();
+
+		// No "Song Title N" should appear as an .album-action-btn /
+		// page-action pill. They should be track rows. Searching by
+		// the exact play-button label is unambiguous.
+		const playButton = await screen.findByRole('button', { name: 'Play Song Title 1' });
+		expect(playButton).toBeInTheDocument();
+	});
+
+	it('routes the "Play Playlist" row to page-actions, not track rows', async () => {
+		setBrowseResult(playlistPageResult(10), 'browse');
+		render(LibraryPage);
+		await tick();
+
+		// "Play Playlist" still renders, but NOT as a track row (a
+		// track row would have an aria-label "Play Play Playlist" via
+		// TrackList's per-row play button). It's a pageAction pill.
+		expect(screen.queryByRole('button', { name: 'Play Play Playlist' })).toBeNull();
+		// And it's still clickable as a page-level action.
+		expect(screen.getByRole('button', { name: 'Play Playlist' })).toBeInTheDocument();
+	});
+
+	it('track-row ▶ click goes through quickPlay (not navigate / drill into action menu)', async () => {
+		setBrowseResult(playlistPageResult(10), 'browse');
+		setSelectedZone('zone-living-room');
+
+		// quickPlay needs an action-list lookup that contains a play
+		// action; mirror the existing "looks up the action list,
+		// executes the play action" test setup.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 3,
+				items: [makeItem({ title: 'Play Now', itemKey: 'play-now-key', hint: 'action', isPlayable: true })]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 3 }));
+
+		render(LibraryPage);
+		const playBtn = await screen.findByRole('button', { name: 'Play Song Title 1' });
+		playBtn.click();
+
+		// Two apiBrowse calls — lookup + execute, exactly the quickPlay
+		// shape. If the click had gone through the default
+		// handleItemClick (which would `navigate(item)` since
+		// shouldQuickPlayActionList returns false without itemType=track),
+		// we'd see one socket browse call and zero apiBrowse calls.
+		await waitFor(() => expect(apiBrowse).toHaveBeenCalledTimes(2));
+		expect(apiBrowse.mock.calls[0][1]).toEqual(
+			expect.objectContaining({ hierarchy: 'browse', itemKey: 't1' })
+		);
+		expect(apiBrowse.mock.calls[1][1]).toEqual(
+			expect.objectContaining({ hierarchy: 'browse', itemKey: 'play-now-key' })
+		);
+	});
+
+	it('still classifies a small action_list-only page (< size threshold, no isTrackItem matches) as NOT a track list', async () => {
+		// Regression guard: the relaxation of every(action_list) must
+		// not also relax the "Work" page heuristic. Two action_list
+		// rows that aren't tracks should stay as pageActions, not
+		// trigger inferredAllTracks.
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'On Ocean to Ocean',
+				items: [
+					makeItem({ title: 'Play Work', itemKey: 'pw', hint: 'action_list' }),
+					makeItem({
+						title: 'On Ocean to Ocean by Tori Amos',
+						itemKey: 'contextual',
+						hint: 'action_list'
+					})
+				]
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// Both render as page-action pills, not as track rows.
+		expect(screen.getByRole('button', { name: 'Play Work' })).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'On Ocean to Ocean by Tori Amos' })
+		).toBeInTheDocument();
+		// No per-track play button.
+		expect(screen.queryByRole('button', { name: /^Play On Ocean/ })).toBeNull();
+	});
+});
