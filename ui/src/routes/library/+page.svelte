@@ -1205,13 +1205,35 @@
 	});
 
 	/**
-	 * Inferred-track-list mode: the page is a track list ONLY because
-	 * we hit the size-threshold fallback in `isTrackList`, not because
-	 * `isTrackItem` flagged any row. In that case the action_list rows
-	 * are tracks by inference.
+	 * "Non-album track list" mode: the page IS a track list, but it
+	 * isn't an album page — so isAlbumPage / albumChips / the
+	 * subtitle-as-search-artist link should all stay off. Two
+	 * triggers:
+	 *
+	 * 1. No action_list row classifies as a track via isTrackItem
+	 *    (Library/Tracks-style page with hundreds of untyped rows —
+	 *    the original case).
+	 * 2. The page contains a non-album collection page action
+	 *    ("Play Playlist", "Play Tag", "Play Mix", "Play All") —
+	 *    a strong positive signal that the page is a playlist /
+	 *    tag / mix, NOT an album, even if Roon happens to type one
+	 *    of the sibling rows as `track`.
+	 *
+	 * Without (2), a mixed-typing playlist would re-enable
+	 * isAlbumPage and bring back the "subtitle becomes search link"
+	 * bug — clicking "321 Tracks" would search Roon for that string.
+	 *
+	 * The name `inferredAllTracks` is retained for backwards-
+	 * compatibility with downstream consumers (isAlbumPage callers,
+	 * the album chip / artist link gates). Its semantics are now
+	 * "is this a non-album track list" rather than the original
+	 * "did we hit the size threshold without any isTrackItem hit".
 	 */
 	const inferredAllTracks = $derived(
-		isTrackList && !actionListRows.some(isTrackItem)
+		isTrackList && (
+			!actionListRows.some(isTrackItem) ||
+			actionListRows.some(isNonAlbumCollectionAction)
+		)
 	);
 
 	/**
@@ -1234,6 +1256,28 @@
 		'play all',
 		'play mix'
 	]);
+
+	/**
+	 * Subset of collection page actions whose presence means the page
+	 * is NOT an album — playlists, tags, mixes, "All Tracks", etc.
+	 * "Play Album" is intentionally absent: a real album page has
+	 * "Play Album" as its top action, and we DO want isAlbumPage to
+	 * return true there (so artist-link, chips, etc. render).
+	 *
+	 * Used by `inferredAllTracks` to flip true even when one
+	 * mixed-typing playlist row happens to satisfy isTrackItem —
+	 * otherwise that single typed row would mark the playlist as an
+	 * album page and reintroduce the "search for 321 Tracks" bug.
+	 */
+	const NON_ALBUM_COLLECTION_TITLES = new Set([
+		'play playlist',
+		'play tag',
+		'play all',
+		'play mix'
+	]);
+	function isNonAlbumCollectionAction(item: BrowseItem): boolean {
+		return NON_ALBUM_COLLECTION_TITLES.has(item.title.trim().toLowerCase());
+	}
 
 	/**
 	 * All known Roon page-action labels — the union of "collection"

@@ -2787,6 +2787,75 @@ describe('Library page — playlist contents (fix-2)', () => {
 		expect(screen.getByRole('button', { name: 'Play Album' })).toBeInTheDocument();
 	});
 
+	it('reopen P1: mixed-typing playlist with "N Tracks" subtitle does NOT reintroduce search-this-artist bug', async () => {
+		// Reviewer caught: inferredAllTracks was defined as
+		// `isTrackList && !actionListRows.some(isTrackItem)`. One
+		// itemType=track sibling flipped it to false, isAlbumPage()
+		// then returned true, and the subtitle ("321 Tracks") became
+		// a clickable search-this-artist button — re-triggering the
+		// original cascade bug. Fix: NON_ALBUM_COLLECTION_TITLES
+		// signal forces inferredAllTracks=true on playlist/tag/mix
+		// pages regardless of any one sibling's itemType.
+		const items: BrowseItem[] = [
+			makeItem({ title: 'Play Playlist', itemKey: 'pa', hint: 'action_list' }),
+			makeItem({ title: 'Typed Track', itemKey: 't1', hint: 'action_list', itemType: 'track' }),
+			makeItem({ title: 'Hey Jude', itemKey: 't2', hint: 'action_list' }),
+			makeItem({ title: 'Imagine', itemKey: 't3', hint: 'action_list' }),
+			makeItem({ title: 'Yesterday', itemKey: 't4', hint: 'action_list' }),
+			makeItem({ title: 'Let It Be', itemKey: 't5', hint: 'action_list' })
+		];
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'Mixed Playlist',
+				subtitle: '321 Tracks',
+				items
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// Subtitle stays as static text — NO clickable search button.
+		expect(screen.queryByRole('button', { name: '321 Tracks' })).toBeNull();
+		expect(screen.getByText('321 Tracks')).toBeInTheDocument();
+		// No album chips either (this is not an album).
+		expect(screen.queryByLabelText('Album metadata')).toBeNull();
+		// Tracks still render correctly.
+		expect(screen.getByRole('button', { name: 'Play Typed Track' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Hey Jude' })).toBeInTheDocument();
+	});
+
+	it('reopen P1: real album page (Play Album + all typed tracks + artist subtitle) STILL renders artist link + chips', async () => {
+		// Regression guard: "Play Album" is intentionally NOT in
+		// NON_ALBUM_COLLECTION_TITLES, so a real album page keeps
+		// isAlbumPage=true and the artist-link / chips still render.
+		const items: BrowseItem[] = [
+			makeItem({ title: 'Play Album', itemKey: 'pa', hint: 'action_list' }),
+			makeItem({ title: '1. Pretty Good Year', itemKey: 't1', hint: 'action_list', itemType: 'track' }),
+			makeItem({ title: '2. God', itemKey: 't2', hint: 'action_list', itemType: 'track' }),
+			makeItem({ title: '3. Bells for Her', itemKey: 't3', hint: 'action_list', itemType: 'track' }),
+			makeItem({ title: '4. Past the Mission', itemKey: 't4', hint: 'action_list', itemType: 'track' }),
+			makeItem({ title: '5. Baker Baker', itemKey: 't5', hint: 'action_list', itemType: 'track' })
+		];
+		setBrowseResult(
+			listResult({
+				level: 2,
+				title: 'Under the Pink',
+				subtitle: 'Tori Amos · 1994 · FLAC',
+				items
+			}),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// Artist link still renders.
+		expect(screen.getByRole('button', { name: 'Tori Amos' })).toBeInTheDocument();
+		// Album chips still render.
+		expect(screen.getByLabelText('Album metadata')).toBeInTheDocument();
+	});
+
 	it('live regression: untyped track rows stay as tracks even when one sibling has itemType=track', async () => {
 		// Observed shape from a 321-track user playlist that rendered
 		// every row as a blue-pill: most rows were untyped action_list
