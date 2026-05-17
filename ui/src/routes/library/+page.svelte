@@ -1172,17 +1172,24 @@
 	 * `pageActions` as blue-pill buttons. Filtering to actionable rows
 	 * first keeps the classification stable.
 	 *
-	 * After the filter, a page is a track list when either:
+	 * After the filter, a page is a track list when any of:
 	 *   (a) at least one action_list row explicitly classifies as a
 	 *       track via `isTrackItem` (itemType=track or numbered title), OR
-	 *   (b) the action_list set is large enough (>= 5) that it can only
-	 *       reasonably be a track list — Library/Tracks and playlist
-	 *       contents come back as 100s of action_list rows with no
-	 *       itemType and non-numeric titles, so heuristic (a) misses.
+	 *   (b) at least one action_list row is a "collection" page action
+	 *       ("Play Playlist", "Play Album", …) — its presence implies
+	 *       the SIBLING action_list rows are tracks of that collection,
+	 *       which catches small playlists (1–4 tracks) that previously
+	 *       fell through the size threshold, OR
+	 *   (c) the action_list set is large enough (>= 5) that it can only
+	 *       reasonably be a track list — Library/Tracks pages come
+	 *       back as 100s of action_list rows with no itemType and
+	 *       non-numeric titles AND no recognised page action, so
+	 *       heuristics (a) and (b) both miss.
 	 *
-	 * The size threshold also keeps "Work"-style pages (`Play Work` +
-	 * `On Ocean to Ocean by Tori Amos`, two items) out of the track
-	 * layout.
+	 * The Work-page exclusion still holds: a Work page has "Play Work"
+	 * (NOT in the collection set) + a few "<X> by <Y>" contextual
+	 * rows, so heuristics (a), (b), and (c) all return false and it
+	 * stays out of the track layout.
 	 */
 	const TRACK_LIST_SIZE_THRESHOLD = 5;
 	const actionListRows = $derived(
@@ -1193,6 +1200,7 @@
 		if (!cur || cur.items.length === 0) return false;
 		if (actionListRows.length === 0) return false;
 		if (actionListRows.some(isTrackItem)) return true;
+		if (actionListRows.some(isCollectionPageAction)) return true;
 		return actionListRows.length >= TRACK_LIST_SIZE_THRESHOLD;
 	});
 
@@ -1207,37 +1215,56 @@
 	);
 
 	/**
-	 * Recognise page-level play actions ("Play Playlist", "Play Album",
-	 * "Play Genre") even when the page is otherwise a track list. Roon
-	 * mixes these into the same action_list stream as the track rows;
-	 * without this guard a playlist contents page would include
-	 * "Play Playlist" as the first "track" in the inferredAllTracks
-	 * layout.
+	 * Roon page-level "Play <X>" actions whose presence implies the
+	 * other action_list rows on the page ARE tracks of that
+	 * collection. Used as a positive signal in `isTrackList` so small
+	 * playlists (1–4 tracks + "Play Playlist") don't fall through the
+	 * size-threshold and render as blue-pill pageActions.
 	 *
-	 * Exact match against known Roon page-action labels — NOT a
-	 * `^Play ` prefix — so that real song titles starting with "Play"
-	 * ("Play Dead", "Play With Fire", "Play That Funky Music",
-	 * "Play Crack the Sky") stay classified as tracks.
-	 *
-	 * If Roon adds a new page-action label, it will fall through to
-	 * trackItems until the set below is updated. That's the safer
-	 * failure mode: an extra row in the track list is visually wrong
-	 * but reachable; a missing song row hides content.
+	 * Excluded from this set on purpose: "Play Work", "Play Artist",
+	 * "Play Composer", "Play Genre", "Play Radio" — those pages
+	 * have rows that aren't tracks (Work pages list recordings,
+	 * Artist pages list albums, etc.). Including them would
+	 * misclassify e.g. a Work page as a track list.
 	 */
-	const PAGE_ACTION_TITLES = new Set([
+	const COLLECTION_PAGE_ACTION_TITLES = new Set([
 		'play playlist',
 		'play album',
+		'play tag',
+		'play all',
+		'play mix'
+	]);
+
+	/**
+	 * All known Roon page-action labels — the union of "collection"
+	 * actions (above) and "navigation" actions whose siblings aren't
+	 * tracks. Used by `isPageActionTitle` to split pageActions vs
+	 * trackItems so a "Play Playlist" row never lands among the
+	 * tracks even in the inferredAllTracks layout.
+	 *
+	 * Exact match against this set — NOT a `^Play ` prefix — so
+	 * that real song titles starting with "Play" ("Play Dead",
+	 * "Play With Fire", "Play That Funky Music", "Play Crack the
+	 * Sky") stay classified as tracks.
+	 *
+	 * If Roon adds a new page-action label, it falls through to
+	 * trackItems until the set is updated. That's the safer failure
+	 * mode: an extra row in the track list is visually wrong but
+	 * reachable; a missing song row hides content.
+	 */
+	const PAGE_ACTION_TITLES = new Set([
+		...COLLECTION_PAGE_ACTION_TITLES,
 		'play artist',
 		'play genre',
 		'play composer',
 		'play work',
-		'play tag',
-		'play all',
-		'play mix',
 		'play radio'
 	]);
 	function isPageActionTitle(item: BrowseItem): boolean {
 		return PAGE_ACTION_TITLES.has(item.title.trim().toLowerCase());
+	}
+	function isCollectionPageAction(item: BrowseItem): boolean {
+		return COLLECTION_PAGE_ACTION_TITLES.has(item.title.trim().toLowerCase());
 	}
 
 	/**

@@ -2721,6 +2721,101 @@ describe('Library page — playlist contents (fix-2)', () => {
 		).toBeInTheDocument();
 	});
 
+	it('reopen P2: small playlist (3 tracks + Play Playlist) renders as track list, not pills', async () => {
+		// Reviewer caught: the size-threshold of 5 was the only path
+		// to inferredAllTracks for untyped tracks. A small playlist
+		// (1–4 tracks) has the same shape as a larger one — action_list
+		// rows with no itemType, plus a Play Playlist row — but didn't
+		// hit the threshold and reverted to the blue-pill rendering.
+		// The collection-page-action signal (presence of "Play Playlist")
+		// now triggers track-list classification at any size.
+		const items: BrowseItem[] = [
+			makeItem({ title: 'Play Playlist', itemKey: 'pa', hint: 'action_list' }),
+			makeItem({ title: 'First Song', itemKey: 't1', hint: 'action_list' }),
+			makeItem({ title: 'Second Song', itemKey: 't2', hint: 'action_list' }),
+			makeItem({ title: 'Third Song', itemKey: 't3', hint: 'action_list' }),
+			makeItem({ title: '3 Tracks', itemKey: 'meta', hint: 'list', isPlayable: false })
+		];
+		setBrowseResult(
+			listResult({ level: 2, title: 'Tiny Playlist', items }),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		expect(screen.getByRole('button', { name: 'Play First Song' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Second Song' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Third Song' })).toBeInTheDocument();
+		// Play Playlist still the page-level action.
+		expect(screen.getByRole('button', { name: 'Play Playlist' })).toBeInTheDocument();
+	});
+
+	it('reopen P2: single-track playlist also renders as track list (size = 1)', async () => {
+		const items: BrowseItem[] = [
+			makeItem({ title: 'Play Playlist', itemKey: 'pa', hint: 'action_list' }),
+			makeItem({ title: 'Only Song', itemKey: 't1', hint: 'action_list' })
+		];
+		setBrowseResult(
+			listResult({ level: 2, title: 'One-Song Playlist', items }),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		expect(screen.getByRole('button', { name: 'Play Only Song' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Playlist' })).toBeInTheDocument();
+	});
+
+	it('reopen P2: small album with Play Album + 2 untyped tracks also classifies as track list', async () => {
+		// Same shape as small playlist but with Play Album as the
+		// collection action. Roon EP / single albums (< 5 tracks) hit
+		// this path.
+		const items: BrowseItem[] = [
+			makeItem({ title: 'Play Album', itemKey: 'pa', hint: 'action_list' }),
+			makeItem({ title: 'Intro', itemKey: 't1', hint: 'action_list' }),
+			makeItem({ title: 'Outro', itemKey: 't2', hint: 'action_list' })
+		];
+		setBrowseResult(
+			listResult({ level: 2, title: 'Short EP', items }),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		expect(screen.getByRole('button', { name: 'Play Intro' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Outro' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Play Album' })).toBeInTheDocument();
+	});
+
+	it('reopen P2: Work page (Play Work + contextual "X by Y" row) STAYS as pills, not tracks', async () => {
+		// Regression guard: "Play Work" is intentionally NOT in
+		// COLLECTION_PAGE_ACTION_TITLES because its siblings on a
+		// Work page are contextual recordings, not tracks. This
+		// preserves the existing comment's "Work-style page" exclusion.
+		const items: BrowseItem[] = [
+			makeItem({ title: 'Play Work', itemKey: 'pw', hint: 'action_list' }),
+			makeItem({
+				title: 'On Ocean to Ocean by Tori Amos',
+				itemKey: 'contextual',
+				hint: 'action_list'
+			})
+		];
+		setBrowseResult(
+			listResult({ level: 2, title: 'Some Work', items }),
+			'browse'
+		);
+		render(LibraryPage);
+		await tick();
+
+		// Both rows render as pageAction pills.
+		expect(screen.getByRole('button', { name: 'Play Work' })).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'On Ocean to Ocean by Tori Amos' })
+		).toBeInTheDocument();
+		// And no per-track play button.
+		expect(screen.queryByRole('button', { name: /^Play On Ocean/ })).toBeNull();
+	});
+
 	it('still classifies a small action_list-only page (< size threshold, no isTrackItem matches) as NOT a track list', async () => {
 		// Regression guard: the relaxation of every(action_list) must
 		// not also relax the "Work" page heuristic. Two action_list
