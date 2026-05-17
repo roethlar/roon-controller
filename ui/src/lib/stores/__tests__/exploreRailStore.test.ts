@@ -171,6 +171,47 @@ describe('exploreRailStore — resolveExploreRail', () => {
 		expect(state.entries).toEqual([]);
 	});
 
+	it('skips the empty-check drill for Settings entirely (no apiBrowse for it)', async () => {
+		// Verified live (2026-05-17): drilling Settings via Roon's
+		// public browse API consistently returns InvalidItemKey,
+		// surfacing as `POST /api/browse 500` on every page load.
+		// The catch block downstream handled it functionally, but
+		// the 500 polluted both server journal and browser console.
+		// Settings is in SKIP_DRILL_LEVEL_0 — the resolver now
+		// pushes the entry without attempting the drill.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				items: [
+					makeItem({ title: 'Library', itemKey: 'lib' }),
+					makeItem({ title: 'Settings', itemKey: 'set' })
+				]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(listResult()); // popAll before lib
+		apiBrowse.mockResolvedValueOnce(
+			listResult({ items: [makeItem({ title: 'Albums', itemKey: 'alb' })] })
+		); // Library drill
+		// Settings should NOT generate any popAll or drill calls.
+
+		await resolveExploreRail(fetch);
+
+		const state = get(exploreRailStore);
+		expect(state.error).toBeNull();
+		const labels = state.entries.map((e) => e.label);
+		expect(labels).toContain('Settings');
+		expect(labels).toContain('Albums'); // Library still expanded
+
+		// Settings entry shape: no isEmpty (never muted), no cachedKey
+		// (forces label-walk on click).
+		const settings = state.entries.find((e) => e.label === 'Settings');
+		expect(settings?.isEmpty).toBeUndefined();
+		expect(settings?.cachedKey).toBeUndefined();
+
+		// Verify the call count: root + popAll + library drill = 3.
+		// No popAll + Settings drill (would be 5 with Settings drilled).
+		expect(apiBrowse).toHaveBeenCalledTimes(3);
+	});
+
 	it('still adds an entry when its child-drill fails (label-walk recovers later)', async () => {
 		apiBrowse.mockResolvedValueOnce(
 			listResult({

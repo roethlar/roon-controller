@@ -85,6 +85,21 @@ const EXPANDED_LEVEL_0 = new Set(['Library']);
 const EXCLUDED_LEVEL_0 = new Set<string>();
 
 /**
+ * Level-0 entries to surface in the rail but NOT drill for the
+ * empty-state check. `Settings` is a special pseudo-list in Roon's
+ * browse hierarchy — drilling its itemKey returns `InvalidItemKey`
+ * even from a clean popAll'd session (verified live: produced three
+ * `POST /api/browse 500` errors in the browser console per page
+ * load). The catch block downstream handles the failure but the
+ * surfaced 500s polluted both the journal and the browser console.
+ *
+ * Skip these: rail entry still renders (no isEmpty flag — never
+ * muted), click-through still works via the layout's label-walk
+ * fallback (cachedKey is also left unset to force the slow path).
+ */
+const SKIP_DRILL_LEVEL_0 = new Set(['Settings']);
+
+/**
  * Level-1 entries under `Library` to exclude from the rail.
  * `Search` is redundant with the top-bar search input.
  */
@@ -147,6 +162,21 @@ export async function resolveExploreRail(fetchFn: typeof fetch): Promise<void> {
 		for (const item of root.items) {
 			if (!isListChild(item)) continue;
 			if (EXCLUDED_LEVEL_0.has(item.title)) continue;
+
+			// Skip the empty-check drill for items known to fail with
+			// InvalidItemKey (currently just `Settings`). Surface them
+			// as plain rail entries with no isEmpty flag (so never
+			// muted) and no cached itemKey (so click-through walks
+			// labels). This stops the 500 spam on every rail resolve.
+			if (SKIP_DRILL_LEVEL_0.has(item.title)) {
+				entries.push({
+					label: item.title,
+					labelPath: [item.title],
+					hint: item.hint,
+					itemType: item.itemType
+				});
+				continue;
+			}
 
 			// Drill once for empty-state detection AND (if expanded) for
 			// nested entries. popAll first because Roon's browse session
