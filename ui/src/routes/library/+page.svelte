@@ -150,6 +150,11 @@
 	function normalizeText(s: string | undefined | null): string {
 		if (!s) return '';
 		return s
+			// NFC: precomposed `Beyoncé` (U+00E9) vs decomposed
+			// `Beyonce` + U+0301 should compare equal. Without this,
+			// the token strip can also lose the combining mark and
+			// produce `beyonce` vs `beyoncé`.
+			.normalize('NFC')
 			.toLowerCase()
 			.replace(/[‘’‛]/g, "'")
 			.replace(/[“”‟]/g, '"')

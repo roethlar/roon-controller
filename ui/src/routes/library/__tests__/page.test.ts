@@ -2638,12 +2638,20 @@ describe('Library page — Recently Played tile click', () => {
 		expect(navCalls).toHaveLength(1);
 	});
 
-	it('L-2: album with trailing punctuation ("Help!") matches via token equality', async () => {
+	it('L-2: album with trailing punctuation ("Help!") matches via token equality (album-evidence is load-bearing)', async () => {
 		// Reviewer (L-2): the prior `\b<album>\b` regex couldn't
 		// handle albums whose boundaries weren't ASCII-word chars.
 		// "Help!" against "The Beatles · Help!" with `\bHelp!\b`
 		// fails because `\b` requires a word-char on one side of
 		// the boundary. Tokenize-and-compare handles it cleanly.
+		//
+		// Test makes album-evidence LOAD-BEARING by adding a second
+		// same-title candidate whose subtitle does NOT contain the
+		// album token. With two title-matches, the title-only
+		// single-candidate guard would REFUSE — so the only way for
+		// the test to play the right row is for album-evidence to
+		// successfully select it. If subtitleHasAlbumToken regresses
+		// to false, the test fails.
 		setSelectedZone('zone-a');
 
 		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
@@ -2669,10 +2677,19 @@ describe('Library page — Recently Played tile click', () => {
 		const searchResponse = listResult({
 			level: 0,
 			items: [
+				// The right row: subtitle contains "Help!" album token.
 				makeItem({
 					title: 'Yesterday',
 					subtitle: 'The Beatles · Help!',
 					itemKey: 'right',
+					itemType: 'track',
+					hint: 'action_list'
+				}),
+				// Decoy: same title, NO album token in subtitle.
+				makeItem({
+					title: 'Yesterday',
+					subtitle: 'Cover Band Live, Various Artists',
+					itemKey: 'decoy',
 					itemType: 'track',
 					hint: 'action_list'
 				})
@@ -2703,13 +2720,18 @@ describe('Library page — Recently Played tile click', () => {
 			const navCalls = apiBrowse.mock.calls.filter(
 				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
 			);
-			expect(navCalls).toHaveLength(3); // album-evidence pass found it → played
+			expect(navCalls).toHaveLength(3); // album-evidence pass selected 'right' → played
 		});
+		// Lookup call hit itemKey='right', not 'decoy'.
+		const lookupCall = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		)[1];
+		expect(lookupCall?.[1].itemKey).toBe('right');
 		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
 		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
 	});
 
-	it('L-2: album with Unicode chars ("Beyoncé") matches via token equality', async () => {
+	it('L-2: album with Unicode chars ("Beyoncé") matches via token equality (album-evidence is load-bearing)', async () => {
 		setSelectedZone('zone-a');
 
 		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
@@ -2739,6 +2761,14 @@ describe('Library page — Recently Played tile click', () => {
 					title: 'Halo',
 					subtitle: 'Beyoncé · 2008',
 					itemKey: 'right',
+					itemType: 'track',
+					hint: 'action_list'
+				}),
+				// Decoy: same title, NO album token in subtitle.
+				makeItem({
+					title: 'Halo',
+					subtitle: 'Texas, A Capella Cover',
+					itemKey: 'decoy',
 					itemType: 'track',
 					hint: 'action_list'
 				})
@@ -2810,6 +2840,14 @@ describe('Library page — Recently Played tile click', () => {
 					itemKey: 'right',
 					itemType: 'track',
 					hint: 'action_list'
+				}),
+				// Decoy: same title, NO album token in subtitle.
+				makeItem({
+					title: 'Wonderwall',
+					subtitle: 'Ryan Adams · Love Is Hell',
+					itemKey: 'decoy',
+					itemType: 'track',
+					hint: 'action_list'
 				})
 			]
 		});
@@ -2844,12 +2882,100 @@ describe('Library page — Recently Played tile click', () => {
 		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
 	});
 
+	it('L-2 (NFC): precomposed entry album matches decomposed subtitle (Beyoncé)', async () => {
+		// Reviewer's nonblocking note: NFC normalization. The entry
+		// album "Beyoncé" stored as precomposed (U+00E9) must match
+		// a search subtitle that contains decomposed (U+0301 combining
+		// acute) form, and vice versa. Without NFC, the token strip
+		// can drop the trailing combining mark and produce "beyonce"
+		// vs "beyoncé" — silent false-negative.
+		setSelectedZone('zone-a');
+
+		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
+		clearCommandFeedback();
+
+		const { resetRecentlyPlayed, applyRecentlyPlayedInserted } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
+		resetRecentlyPlayed();
+		applyRecentlyPlayedInserted({
+			entry: {
+				title: 'Halo',
+				artist: 'Renamed Performer',
+				album: 'Beyoncé', // precomposed
+				zone_id: 'zone-a',
+				played_at: '2026-05-17T23:09:00Z'
+			},
+			revision: 1,
+			epoch: 1
+		});
+		await tick();
+
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				makeItem({
+					title: 'Halo',
+					subtitle: 'Beyoncé · 2008', // decomposed
+					itemKey: 'right',
+					itemType: 'track',
+					hint: 'action_list'
+				}),
+				makeItem({
+					title: 'Halo',
+					subtitle: 'Texas, A Capella Cover',
+					itemKey: 'decoy',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		const lookupResponse = listResult({
+			level: 1,
+			items: [
+				makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
+			]
+		});
+		const executeResponse = listResult({ level: 1 });
+		const rpQueue = [searchResponse, lookupResponse, executeResponse];
+		let rpIdx = 0;
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return rpQueue[rpIdx++] ?? executeResponse;
+		});
+
+		render(LibraryPage);
+		await tick();
+		const tile = await screen.findByRole('button', { name: /Play 'Halo'/i });
+		tile.click();
+
+		await waitFor(() => {
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(3);
+		});
+		const lookupCall = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		)[1];
+		expect(lookupCall?.[1].itemKey).toBe('right');
+	});
+
 	it('L-2: token match still rejects short-album false positive (album "1" vs subtitle "1971")', async () => {
 		// Regression guard: the original substring-bug fix must
 		// survive the switch from regex to tokenization. RECENT.album
 		// is "1" by default; subtitle "Live in 1971" must NOT match
 		// because tokens ["1"] and ["live","in","1971"] have no
 		// equal token.
+		//
+		// Decoy subtitle deliberately contains NO "1" anywhere — so
+		// the OLD `.includes("1")` substring matcher would have
+		// matched ONLY "Live in 1971" (a single album candidate),
+		// silently selected the live version, and the test would
+		// fail. The current token matcher rejects both → title-only
+		// single-candidate guard refuses → expected.
 		setSelectedZone('zone-a');
 
 		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
@@ -2867,7 +2993,7 @@ describe('Library page — Recently Played tile click', () => {
 				}),
 				makeItem({
 					title: 'Hey Jude',
-					subtitle: 'Tribute Cover Band, 2019',
+					subtitle: 'Tribute Cover Band, 2020',
 					itemKey: 'cover',
 					itemType: 'track',
 					hint: 'action_list'
