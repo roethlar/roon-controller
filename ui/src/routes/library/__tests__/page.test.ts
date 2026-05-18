@@ -2207,9 +2207,20 @@ describe('Library page — Recently Played tile click', () => {
 		expect(store.searchLoading).toBe(false);
 	});
 
-	it('rejects matches whose subtitle does not contain the recorded artist', async () => {
+	it('title-only fallback: plays a matching track even when the subtitle does not contain the recorded artist', async () => {
+		// Verified live (2026-05-17): a "Sons of 3rd Bass" / "Love in
+		// a Vacuum" RP entry failed to resolve because Roon's search
+		// subtitle didn't surface the artist verbatim (multi-artist
+		// tracks, abbreviated names, "feat." additions, Unicode-quote
+		// differences in artist names like "'Til Tuesday" vs "'Til
+		// Tuesday"). The resolver now falls back to a title-only match
+		// when strict title+artist doesn't find anything. Better to
+		// play SOMETHING the user explicitly asked for than to insist
+		// on artist-subtitle equality.
 		setSelectedZone('zone-a');
 
+		// Search seed: one track-typed result with matching title but
+		// a subtitle that doesn't include the recorded artist.
 		apiBrowse.mockResolvedValueOnce(
 			listResult({
 				level: 0,
@@ -2224,18 +2235,97 @@ describe('Library page — Recently Played tile click', () => {
 				]
 			})
 		);
+		// Action-list lookup for the found candidate.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [
+					makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
+				]
+			})
+		);
+		// Execute Play Now.
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
 
 		render(LibraryPage);
 		await tick();
 
 		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
 		tile.click();
+
+		// Should NOT surface "Couldn't find" — the title-only fallback
+		// resolves the candidate even with mismatched artist.
+		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalledTimes(3); // search seed + lookup + execute
+		});
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
+	});
+
+	it('Unicode-quote tolerance: matches "Til Tuesday" subtitle when entry has curly-quote "Til Tuesday"', async () => {
+		// Live regression: artist "'Til Tuesday" stored with U+2019
+		// (curly right single quotation mark) failed to match Roon's
+		// search response that used U+0027 (straight apostrophe) — or
+		// vice versa. normalizeText now folds curly/straight quotes,
+		// en/em dashes, and stray whitespace so a single character
+		// difference doesn't hide a real track.
+		setSelectedZone('zone-a');
+
+		// Re-seed the recently-played store with an entry whose artist
+		// uses the curly variant.
+		const { resetRecentlyPlayed, applyRecentlyPlayedInserted } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
+		resetRecentlyPlayed();
+		applyRecentlyPlayedInserted({
+			entry: {
+				title: 'Love in a Vacuum',
+				artist: '’Til Tuesday', // U+2019 curly
+				album: 'Coming Up Close',
+				zone_id: 'zone-a',
+				played_at: '2026-05-17T23:09:00Z'
+			},
+			revision: 1,
+			epoch: 1
+		});
 		await tick();
 
-		await waitFor(async () => {
-			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
-			expect(get(commandFeedbackStore)?.message).toMatch(/Couldn't find/);
+		// Roon's search returns the track with a STRAIGHT apostrophe.
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 0,
+				items: [
+					makeItem({
+						title: 'Love in a Vacuum',
+						subtitle: "'Til Tuesday", // straight U+0027
+						itemKey: 'real-key',
+						itemType: 'track',
+						hint: 'action_list'
+					})
+				]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(
+			listResult({
+				level: 1,
+				items: [
+					makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
+				]
+			})
+		);
+		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Love in a Vacuum'/i });
+		tile.click();
+
+		await waitFor(() => {
+			expect(apiBrowse).toHaveBeenCalledTimes(3);
 		});
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
 	});
 
 	it('Clear button issues DELETE and applies the empty response', async () => {

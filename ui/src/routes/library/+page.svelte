@@ -138,6 +138,53 @@
 	 * fresh search itemKey. On no match (track removed from library, name
 	 * collision, etc.), surface a feedback toast.
 	 */
+	/**
+	 * Normalize a string for tolerant equality / substring comparison.
+	 * Live regression: a Recently Played entry for "'Til Tuesday –
+	 * Love in a Vacuum" failed to resolve because the stored artist
+	 * used U+2019 (curly apostrophe) and Roon's search response used
+	 * U+0027 (straight). Same risk with en/em dashes, double quotes,
+	 * stray whitespace, and case. Compose all comparisons through
+	 * this so a single character difference doesn't hide a real track.
+	 */
+	function normalizeText(s: string | undefined | null): string {
+		if (!s) return '';
+		return s
+			.toLowerCase()
+			.replace(/[‘’‛]/g, "'")
+			.replace(/[“”‟]/g, '"')
+			.replace(/[–—−]/g, '-')
+			.replace(/\s+/g, ' ')
+			.trim();
+	}
+
+	/**
+	 * Find the search result that matches a Recently Played entry's
+	 * track. Two passes: strict title + artist-in-subtitle first; if
+	 * none, retry with title alone. Title-only is the fallback because
+	 * Roon sometimes formats the subtitle in ways that don't surface
+	 * the artist verbatim (multi-artist tracks, "feat." additions,
+	 * etc.).
+	 */
+	function findTrackMatch(items: BrowseItem[], entry: RecentlyPlayedEntry): BrowseItem | undefined {
+		const titleN = normalizeText(entry.title);
+		const artistN = normalizeText(entry.artist);
+		const isTrack = (c: BrowseItem) => {
+			const type = (c.itemType ?? '').toLowerCase();
+			return type === 'track' || type === 'tracks';
+		};
+		const titleMatches = (c: BrowseItem) =>
+			!!c.itemKey && isTrack(c) && normalizeText(c.title) === titleN;
+
+		if (artistN) {
+			const strict = items.find(
+				(c) => titleMatches(c) && normalizeText(c.subtitle).includes(artistN)
+			);
+			if (strict) return strict;
+		}
+		return items.find(titleMatches);
+	}
+
 	async function playRecentEntry(entry: RecentlyPlayedEntry): Promise<void> {
 		if (recentlyPlayedClickInFlight) return;
 		const zoneId = $selectedZoneStore || undefined;
@@ -169,19 +216,27 @@
 				popAll: true
 			});
 
-			const titleLower = entry.title.toLowerCase();
-			const artistLower = entry.artist?.toLowerCase();
-			const match = search.items.find((candidate) => {
-				if (!candidate.itemKey) return false;
-				const type = (candidate.itemType ?? '').toLowerCase();
-				if (type !== 'track' && type !== 'tracks') return false;
-				if ((candidate.title ?? '').toLowerCase() !== titleLower) return false;
-				if (artistLower) {
-					const subtitle = (candidate.subtitle ?? '').toLowerCase();
-					if (!subtitle.includes(artistLower)) return false;
-				}
-				return true;
-			});
+			// Find a track-typed result with matching title + (optionally)
+			// matching artist. Comparisons go through `normalizeText` so
+			// curly-quote vs straight-quote ("'Til Tuesday" rendered with
+			// U+2019 in the store vs U+0027 in Roon's response or
+			// vice-versa), em/en-dash differences, and stray whitespace
+			// don't make a real track miss its match. Verified live: an
+			// RP entry for "'Til Tuesday – Love in a Vacuum" failed to
+			// resolve against Roon's identical-looking search result
+			// because of one curly-quote difference.
+			//
+			// If the strict title+artist match fails, retry with title
+			// alone. A common live failure: Roon's track subtitle is
+			// "Artist · Album · Year" (or any other variant) and our
+			// recently-played `artist` field doesn't appear verbatim in
+			// the subtitle string (e.g. abbreviated, combined with
+			// "feat." additions, etc.). Title-only retry recovers these
+			// cases. The risk of a wrong play (e.g. two unrelated tracks
+			// sharing a title) is bounded — the user explicitly clicked
+			// the RP tile so they wanted SOMETHING, and the
+			// `?artistLower` check still applied on the first pass.
+			const match = findTrackMatch(search.items, entry);
 
 			if (!match?.itemKey) {
 				pushCommandFeedback({
