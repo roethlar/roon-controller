@@ -2219,33 +2219,37 @@ describe('Library page — Recently Played tile click', () => {
 		// on artist-subtitle equality.
 		setSelectedZone('zone-a');
 
-		// Search seed: one track-typed result with matching title but
-		// a subtitle that doesn't include the recorded artist.
-		apiBrowse.mockResolvedValueOnce(
-			listResult({
-				level: 0,
-				items: [
-					makeItem({
-						title: 'Hey Jude',
-						subtitle: 'A Different Cover Artist',
-						itemKey: 'wrong',
-						itemType: 'track',
-						hint: 'action_list'
-					})
-				]
-			})
-		);
-		// Action-list lookup for the found candidate.
-		apiBrowse.mockResolvedValueOnce(
-			listResult({
-				level: 1,
-				items: [
-					makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
-				]
-			})
-		);
-		// Execute Play Now.
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
+		// Route by multiSessionKey instead of order-based
+		// mockResolvedValueOnce — welcome-stats fires multiple browse
+		// calls on mount in isolated test runs and would consume the
+		// queued responses meant for the click path.
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				makeItem({
+					title: 'Hey Jude',
+					subtitle: 'A Different Cover Artist',
+					itemKey: 'wrong',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		const lookupResponse = listResult({
+			level: 1,
+			items: [
+				makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
+			]
+		});
+		const executeResponse = listResult({ level: 1 });
+		const rpQueue = [searchResponse, lookupResponse, executeResponse];
+		let rpIdx = 0;
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return rpQueue[rpIdx++] ?? executeResponse;
+		});
 
 		render(LibraryPage);
 		await tick();
@@ -2254,9 +2258,14 @@ describe('Library page — Recently Played tile click', () => {
 		tile.click();
 
 		// Should NOT surface "Couldn't find" — the title-only fallback
-		// resolves the candidate even with mismatched artist.
+		// resolves the candidate even with mismatched artist. Filter
+		// out welcome-stats probes so the assertion is robust to
+		// test-isolation ordering.
 		await waitFor(() => {
-			expect(apiBrowse).toHaveBeenCalledTimes(3); // search seed + lookup + execute
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(3); // search seed + lookup + execute
 		});
 		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
 		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
@@ -2290,30 +2299,36 @@ describe('Library page — Recently Played tile click', () => {
 		});
 		await tick();
 
-		// Roon's search returns the track with a STRAIGHT apostrophe.
-		apiBrowse.mockResolvedValueOnce(
-			listResult({
-				level: 0,
-				items: [
-					makeItem({
-						title: 'Love in a Vacuum',
-						subtitle: "'Til Tuesday", // straight U+0027
-						itemKey: 'real-key',
-						itemType: 'track',
-						hint: 'action_list'
-					})
-				]
-			})
-		);
-		apiBrowse.mockResolvedValueOnce(
-			listResult({
-				level: 1,
-				items: [
-					makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
-				]
-			})
-		);
-		apiBrowse.mockResolvedValueOnce(listResult({ level: 1 }));
+		// Route by multiSessionKey to keep welcome-stats probes
+		// from consuming the search/lookup/execute responses in
+		// isolated test runs.
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				makeItem({
+					title: 'Love in a Vacuum',
+					subtitle: "'Til Tuesday", // straight U+0027
+					itemKey: 'real-key',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		const lookupResponse = listResult({
+			level: 1,
+			items: [
+				makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
+			]
+		});
+		const executeResponse = listResult({ level: 1 });
+		const rpQueue = [searchResponse, lookupResponse, executeResponse];
+		let rpIdx = 0;
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return rpQueue[rpIdx++] ?? executeResponse;
+		});
 
 		render(LibraryPage);
 		await tick();
@@ -2322,7 +2337,10 @@ describe('Library page — Recently Played tile click', () => {
 		tile.click();
 
 		await waitFor(() => {
-			expect(apiBrowse).toHaveBeenCalledTimes(3);
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(3);
 		});
 		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
 		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
