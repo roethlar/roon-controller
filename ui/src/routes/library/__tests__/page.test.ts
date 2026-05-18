@@ -2638,6 +2638,265 @@ describe('Library page — Recently Played tile click', () => {
 		expect(navCalls).toHaveLength(1);
 	});
 
+	it('L-2: album with trailing punctuation ("Help!") matches via token equality', async () => {
+		// Reviewer (L-2): the prior `\b<album>\b` regex couldn't
+		// handle albums whose boundaries weren't ASCII-word chars.
+		// "Help!" against "The Beatles · Help!" with `\bHelp!\b`
+		// fails because `\b` requires a word-char on one side of
+		// the boundary. Tokenize-and-compare handles it cleanly.
+		setSelectedZone('zone-a');
+
+		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
+		clearCommandFeedback();
+
+		const { resetRecentlyPlayed, applyRecentlyPlayedInserted } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
+		resetRecentlyPlayed();
+		applyRecentlyPlayedInserted({
+			entry: {
+				title: 'Yesterday',
+				artist: 'Renamed Performer',
+				album: 'Help!',
+				zone_id: 'zone-a',
+				played_at: '2026-05-17T23:09:00Z'
+			},
+			revision: 1,
+			epoch: 1
+		});
+		await tick();
+
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				makeItem({
+					title: 'Yesterday',
+					subtitle: 'The Beatles · Help!',
+					itemKey: 'right',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		const lookupResponse = listResult({
+			level: 1,
+			items: [
+				makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
+			]
+		});
+		const executeResponse = listResult({ level: 1 });
+		const rpQueue = [searchResponse, lookupResponse, executeResponse];
+		let rpIdx = 0;
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return rpQueue[rpIdx++] ?? executeResponse;
+		});
+
+		render(LibraryPage);
+		await tick();
+		const tile = await screen.findByRole('button', { name: /Play 'Yesterday'/i });
+		tile.click();
+
+		await waitFor(() => {
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(3); // album-evidence pass found it → played
+		});
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
+	});
+
+	it('L-2: album with Unicode chars ("Beyoncé") matches via token equality', async () => {
+		setSelectedZone('zone-a');
+
+		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
+		clearCommandFeedback();
+
+		const { resetRecentlyPlayed, applyRecentlyPlayedInserted } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
+		resetRecentlyPlayed();
+		applyRecentlyPlayedInserted({
+			entry: {
+				title: 'Halo',
+				artist: 'Renamed Performer',
+				album: 'Beyoncé',
+				zone_id: 'zone-a',
+				played_at: '2026-05-17T23:09:00Z'
+			},
+			revision: 1,
+			epoch: 1
+		});
+		await tick();
+
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				makeItem({
+					title: 'Halo',
+					subtitle: 'Beyoncé · 2008',
+					itemKey: 'right',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		const lookupResponse = listResult({
+			level: 1,
+			items: [
+				makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
+			]
+		});
+		const executeResponse = listResult({ level: 1 });
+		const rpQueue = [searchResponse, lookupResponse, executeResponse];
+		let rpIdx = 0;
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return rpQueue[rpIdx++] ?? executeResponse;
+		});
+
+		render(LibraryPage);
+		await tick();
+		const tile = await screen.findByRole('button', { name: /Play 'Halo'/i });
+		tile.click();
+
+		await waitFor(() => {
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(3);
+		});
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
+	});
+
+	it('L-2: multi-token album with mixed punctuation matches as a contiguous run', async () => {
+		// "(What's the Story) Morning Glory?" tokenizes to
+		// ["what's","the","story","morning","glory"]. Must match a
+		// subtitle containing those tokens in that order.
+		setSelectedZone('zone-a');
+
+		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
+		clearCommandFeedback();
+
+		const { resetRecentlyPlayed, applyRecentlyPlayedInserted } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
+		resetRecentlyPlayed();
+		applyRecentlyPlayedInserted({
+			entry: {
+				title: 'Wonderwall',
+				artist: 'Renamed Performer',
+				album: "(What's the Story) Morning Glory?",
+				zone_id: 'zone-a',
+				played_at: '2026-05-17T23:09:00Z'
+			},
+			revision: 1,
+			epoch: 1
+		});
+		await tick();
+
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				makeItem({
+					title: 'Wonderwall',
+					subtitle: "Oasis · (What's the Story) Morning Glory?",
+					itemKey: 'right',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		const lookupResponse = listResult({
+			level: 1,
+			items: [
+				makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
+			]
+		});
+		const executeResponse = listResult({ level: 1 });
+		const rpQueue = [searchResponse, lookupResponse, executeResponse];
+		let rpIdx = 0;
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return rpQueue[rpIdx++] ?? executeResponse;
+		});
+
+		render(LibraryPage);
+		await tick();
+		const tile = await screen.findByRole('button', { name: /Play 'Wonderwall'/i });
+		tile.click();
+
+		await waitFor(() => {
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(3);
+		});
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
+	});
+
+	it('L-2: token match still rejects short-album false positive (album "1" vs subtitle "1971")', async () => {
+		// Regression guard: the original substring-bug fix must
+		// survive the switch from regex to tokenization. RECENT.album
+		// is "1" by default; subtitle "Live in 1971" must NOT match
+		// because tokens ["1"] and ["live","in","1971"] have no
+		// equal token.
+		setSelectedZone('zone-a');
+
+		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
+		clearCommandFeedback();
+
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				makeItem({
+					title: 'Hey Jude',
+					subtitle: 'Live in 1971',
+					itemKey: 'live',
+					itemType: 'track',
+					hint: 'action_list'
+				}),
+				makeItem({
+					title: 'Hey Jude',
+					subtitle: 'Tribute Cover Band, 2019',
+					itemKey: 'cover',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return searchResponse;
+		});
+
+		render(LibraryPage);
+		await tick();
+		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
+		tile.click();
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message ?? '').toMatch(/Couldn't find/);
+		});
+
+		const navCalls = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		);
+		expect(navCalls).toHaveLength(1); // refused before lookup/execute
+	});
+
 	it('Clear button issues DELETE and applies the empty response', async () => {
 		// The server returns its post-drain entries. In the common
 		// case (no concurrent now-playing during clear), that's [].

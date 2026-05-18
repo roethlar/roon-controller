@@ -159,31 +159,56 @@
 	}
 
 	/**
-	 * True when `album` appears in `subtitle` as a contiguous run of
-	 * whole word-boundary tokens — NOT as an arbitrary substring.
-	 * Reviewer caught: a substring `.includes('1')` on a "Hey Jude"
-	 * RP entry with album="1" (The Beatles compilation) would match a
-	 * subtitle like "Live in 1971" because "1" is a substring of
-	 * "1971" — silently misplaying the live version. Word-boundary
-	 * regex anchors prevent that: `\b1\b` against "Live in 1971" is
-	 * false (no word boundary between "1" and "9").
+	 * Tokenize a string for content comparison: split on whitespace
+	 * and common metadata separators, then strip leading/trailing
+	 * non-letter/digit chars from each token. Empty tokens dropped.
+	 * Preserves internal punctuation so contractions ("what's"),
+	 * hyphens-inside-words, and accented letters survive.
 	 *
-	 * Both inputs go through normalizeText upstream (curly quotes →
-	 * straight, dashes normalized, lowercase), so the regex sees
-	 * ASCII-ish text where \b semantics work cleanly.
+	 * Unicode-aware via `\p{L}\p{N}` (letters + numbers across
+	 * scripts) so albums with accented characters (`Beyoncé`) and
+	 * non-Latin scripts tokenize correctly.
+	 */
+	function tokenizeForMatch(s: string): string[] {
+		return s
+			.split(/[\s·/,|:;\-]+/)
+			.map((t) => t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+			.filter((t) => t.length > 0);
+	}
+
+	/**
+	 * True when `album` appears in `subtitle` as a contiguous run of
+	 * whole tokens — NOT as an arbitrary substring.
+	 *
+	 * Tokens are compared after stripping leading/trailing punctuation,
+	 * so `Help!`, `(What's the Story) Morning Glory?`, and `Beyoncé`
+	 * match correctly even though their boundaries aren't ASCII-word
+	 * characters. The earlier `\b<album>\b` regex couldn't handle
+	 * these: `\b` in JS is ASCII-only, so `\bHelp!\b` produces a
+	 * "no-boundary after !" match where there shouldn't be one,
+	 * and `\b(What's…\b` is malformed entirely (L-2 follow-up).
+	 *
+	 * Short-album safety preserved: album="1" against subtitle "Live
+	 * in 1971" tokenizes to ["1"] vs ["live","in","1971"] — no token
+	 * match → false. The substring-bug case stays fixed.
 	 */
 	function subtitleHasAlbumToken(subtitle: string, album: string): boolean {
 		if (!album) return false;
-		const escaped = album.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-		try {
-			return new RegExp(`\\b${escaped}\\b`).test(subtitle);
-		} catch {
-			// Defensive: any regex construction failure (shouldn't
-			// happen post-escape, but album content is user-derived)
-			// falls back to no-match — same effect as the album-
-			// evidence pass not contributing on this row.
-			return false;
+		const subTokens = tokenizeForMatch(subtitle);
+		const albTokens = tokenizeForMatch(album);
+		if (albTokens.length === 0) return false;
+		const last = subTokens.length - albTokens.length;
+		for (let i = 0; i <= last; i++) {
+			let all = true;
+			for (let j = 0; j < albTokens.length; j++) {
+				if (subTokens[i + j] !== albTokens[j]) {
+					all = false;
+					break;
+				}
+			}
+			if (all) return true;
 		}
+		return false;
 	}
 
 	/**
