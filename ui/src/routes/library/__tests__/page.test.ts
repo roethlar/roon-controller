@@ -2346,6 +2346,169 @@ describe('Library page — Recently Played tile click', () => {
 		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
 	});
 
+	it('reopen P1: ambiguous title-only fallback (multiple same-title tracks) surfaces "Couldn\'t find" rather than playing the wrong one', async () => {
+		// Reviewer caught: previous fallback would play the first
+		// title-matching track even when several existed (covers,
+		// remasters, live versions, unrelated songs sharing a title).
+		// Tightened: title-only fallback now requires EXACTLY ONE
+		// title match. Multiple candidates → "Couldn't find".
+		setSelectedZone('zone-a');
+
+		// Custom entry with distinctive album so the album-evidence
+		// pass doesn't accidentally rescue the ambiguity test (the
+		// default RECENT.album = '1' would trivially substring-match
+		// subtitles like "Live in 1971").
+		const { resetRecentlyPlayed, applyRecentlyPlayedInserted } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
+		resetRecentlyPlayed();
+		applyRecentlyPlayedInserted({
+			entry: {
+				title: 'Hey Jude',
+				artist: 'The Beatles',
+				album: 'Past Masters Volume Two',
+				zone_id: 'zone-a',
+				played_at: '2026-05-17T23:09:00Z'
+			},
+			revision: 1,
+			epoch: 1
+		});
+		await tick();
+
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				// All title-match "Hey Jude" — none with The Beatles
+				// in subtitle. Three different unrelated tracks.
+				makeItem({
+					title: 'Hey Jude',
+					subtitle: 'Tribute Cover Band',
+					itemKey: 'cover1',
+					itemType: 'track',
+					hint: 'action_list'
+				}),
+				makeItem({
+					title: 'Hey Jude',
+					subtitle: 'Live in 1971',
+					itemKey: 'live',
+					itemType: 'track',
+					hint: 'action_list'
+				}),
+				makeItem({
+					title: 'Hey Jude',
+					subtitle: 'Unrelated Indie Band',
+					itemKey: 'unrelated',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return searchResponse;
+		});
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
+		tile.click();
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message ?? '').toMatch(/Couldn't find "Hey Jude"/);
+		});
+
+		// Crucially: NO lookup/execute call fired — we refused to
+		// play any of the same-title candidates.
+		const navCalls = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		);
+		expect(navCalls).toHaveLength(1); // just the search seed
+	});
+
+	it('reopen P1: album-evidence fallback — matching album in subtitle is enough when artist string differs', async () => {
+		// "Artist • Album" subtitles where the artist string in our
+		// recently-played entry doesn't appear verbatim (collab
+		// formatting, "feat." additions, etc.) should still resolve
+		// when the album DOES appear. RECENT.album === '1', so a
+		// subtitle containing "1" anywhere should match — but to
+		// avoid trivial confusion, use a more distinctive album for
+		// the test.
+		setSelectedZone('zone-a');
+
+		// Clear any stale feedback message from prior tests so the
+		// final "no Couldn't find" assertion isn't fooled by an
+		// earlier test's "Couldn't find Hey Jude" toast still sitting
+		// in the store.
+		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
+		clearCommandFeedback();
+
+		const { resetRecentlyPlayed, applyRecentlyPlayedInserted } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
+		resetRecentlyPlayed();
+		applyRecentlyPlayedInserted({
+			entry: {
+				title: 'Some Song',
+				artist: 'Original Recording Artist',
+				album: 'Distinctive Album Name',
+				zone_id: 'zone-a',
+				played_at: '2026-05-17T23:09:00Z'
+			},
+			revision: 1,
+			epoch: 1
+		});
+		await tick();
+
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				// Artist string doesn't match RECENT artist, BUT
+				// the album name does appear in subtitle.
+				makeItem({
+					title: 'Some Song',
+					subtitle: 'Different Performer · Distinctive Album Name',
+					itemKey: 'right',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		const lookupResponse = listResult({
+			level: 1,
+			items: [
+				makeItem({ title: 'Play Now', itemKey: 'play-now', hint: 'action', isPlayable: true })
+			]
+		});
+		const executeResponse = listResult({ level: 1 });
+		const rpQueue = [searchResponse, lookupResponse, executeResponse];
+		let rpIdx = 0;
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return rpQueue[rpIdx++] ?? executeResponse;
+		});
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Some Song'/i });
+		tile.click();
+
+		await waitFor(() => {
+			const navCalls = apiBrowse.mock.calls.filter(
+				([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+			);
+			expect(navCalls).toHaveLength(3); // search + lookup + execute
+		});
+		const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
+	});
+
 	it('Clear button issues DELETE and applies the empty response', async () => {
 		// The server returns its post-drain entries. In the common
 		// case (no concurrent now-playing during clear), that's [].

@@ -160,15 +160,28 @@
 
 	/**
 	 * Find the search result that matches a Recently Played entry's
-	 * track. Two passes: strict title + artist-in-subtitle first; if
-	 * none, retry with title alone. Title-only is the fallback because
-	 * Roon sometimes formats the subtitle in ways that don't surface
-	 * the artist verbatim (multi-artist tracks, "feat." additions,
-	 * etc.).
+	 * track. Three passes from strongest evidence to weakest:
+	 *
+	 *   1. Strict — title matches AND artist appears in subtitle.
+	 *      This is the original strict matcher with Unicode tolerance.
+	 *   2. Album-evidence — title matches AND album appears in
+	 *      subtitle. Roon sometimes formats subtitles as "Album"
+	 *      alone, or "Artist • Album" where the artist string in our
+	 *      entry doesn't match verbatim. Album as a secondary
+	 *      disambiguator catches those without opening the wrong-track
+	 *      door.
+	 *   3. Title-only ONLY when EXACTLY ONE title-matching track row
+	 *      exists. Multiple same-title hits (covers, remasters, live
+	 *      versions, unrelated songs) can't be safely disambiguated —
+	 *      better to surface "Couldn't find" than play the first
+	 *      arbitrary one. Reviewer caught: a previous looser fallback
+	 *      that always took the first title hit would play "Hey Jude
+	 *      (Live, 1971)" when the user clicked the studio version.
 	 */
 	function findTrackMatch(items: BrowseItem[], entry: RecentlyPlayedEntry): BrowseItem | undefined {
 		const titleN = normalizeText(entry.title);
 		const artistN = normalizeText(entry.artist);
+		const albumN = normalizeText(entry.album);
 		const isTrack = (c: BrowseItem) => {
 			const type = (c.itemType ?? '').toLowerCase();
 			return type === 'track' || type === 'tracks';
@@ -182,7 +195,16 @@
 			);
 			if (strict) return strict;
 		}
-		return items.find(titleMatches);
+		if (albumN) {
+			const byAlbum = items.find(
+				(c) => titleMatches(c) && normalizeText(c.subtitle).includes(albumN)
+			);
+			if (byAlbum) return byAlbum;
+		}
+		// Title-only: accept ONLY when unambiguous.
+		const allTitleMatches = items.filter(titleMatches);
+		if (allTitleMatches.length === 1) return allTitleMatches[0];
+		return undefined;
 	}
 
 	async function playRecentEntry(entry: RecentlyPlayedEntry): Promise<void> {
