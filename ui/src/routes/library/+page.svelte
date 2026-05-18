@@ -159,24 +159,53 @@
 	}
 
 	/**
+	 * True when `album` appears in `subtitle` as a contiguous run of
+	 * whole word-boundary tokens — NOT as an arbitrary substring.
+	 * Reviewer caught: a substring `.includes('1')` on a "Hey Jude"
+	 * RP entry with album="1" (The Beatles compilation) would match a
+	 * subtitle like "Live in 1971" because "1" is a substring of
+	 * "1971" — silently misplaying the live version. Word-boundary
+	 * regex anchors prevent that: `\b1\b` against "Live in 1971" is
+	 * false (no word boundary between "1" and "9").
+	 *
+	 * Both inputs go through normalizeText upstream (curly quotes →
+	 * straight, dashes normalized, lowercase), so the regex sees
+	 * ASCII-ish text where \b semantics work cleanly.
+	 */
+	function subtitleHasAlbumToken(subtitle: string, album: string): boolean {
+		if (!album) return false;
+		const escaped = album.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		try {
+			return new RegExp(`\\b${escaped}\\b`).test(subtitle);
+		} catch {
+			// Defensive: any regex construction failure (shouldn't
+			// happen post-escape, but album content is user-derived)
+			// falls back to no-match — same effect as the album-
+			// evidence pass not contributing on this row.
+			return false;
+		}
+	}
+
+	/**
 	 * Find the search result that matches a Recently Played entry's
 	 * track. Three passes from strongest evidence to weakest:
 	 *
-	 *   1. Strict — title matches AND artist appears in subtitle.
-	 *      This is the original strict matcher with Unicode tolerance.
+	 *   1. Strict — title matches AND artist appears in subtitle
+	 *      (Unicode-normalized substring).
 	 *   2. Album-evidence — title matches AND album appears in
-	 *      subtitle. Roon sometimes formats subtitles as "Album"
-	 *      alone, or "Artist • Album" where the artist string in our
-	 *      entry doesn't match verbatim. Album as a secondary
-	 *      disambiguator catches those without opening the wrong-track
-	 *      door.
+	 *      subtitle as a word-boundary token, AND there's EXACTLY ONE
+	 *      such candidate. Roon sometimes formats subtitles as
+	 *      "Album" alone, or "Artist · Album" where the artist string
+	 *      doesn't match verbatim. Album evidence catches those
+	 *      WITHOUT opening the wrong-track door:
+	 *        - Word-boundary regex prevents short-album false
+	 *          positives ("1" matching "1971").
+	 *        - Single-candidate requirement prevents multi-version
+	 *          ambiguity (same track appearing on N compilations).
 	 *   3. Title-only ONLY when EXACTLY ONE title-matching track row
-	 *      exists. Multiple same-title hits (covers, remasters, live
-	 *      versions, unrelated songs) can't be safely disambiguated —
-	 *      better to surface "Couldn't find" than play the first
-	 *      arbitrary one. Reviewer caught: a previous looser fallback
-	 *      that always took the first title hit would play "Hey Jude
-	 *      (Live, 1971)" when the user clicked the studio version.
+	 *      exists. Same disambiguation rationale as pass 2.
+	 *      Reviewer caught the looser variants of both fallbacks as
+	 *      silent wrong-play hazards.
 	 */
 	function findTrackMatch(items: BrowseItem[], entry: RecentlyPlayedEntry): BrowseItem | undefined {
 		const titleN = normalizeText(entry.title);
@@ -196,12 +225,14 @@
 			if (strict) return strict;
 		}
 		if (albumN) {
-			const byAlbum = items.find(
-				(c) => titleMatches(c) && normalizeText(c.subtitle).includes(albumN)
+			const albumCandidates = items.filter(
+				(c) => titleMatches(c) && subtitleHasAlbumToken(normalizeText(c.subtitle), albumN)
 			);
-			if (byAlbum) return byAlbum;
+			if (albumCandidates.length === 1) return albumCandidates[0];
+			// length === 0: fall through to title-only.
+			// length > 1: refuse here, but title-only's
+			// single-candidate guard below will also refuse → toast.
 		}
-		// Title-only: accept ONLY when unambiguous.
 		const allTitleMatches = items.filter(titleMatches);
 		if (allTitleMatches.length === 1) return allTitleMatches[0];
 		return undefined;

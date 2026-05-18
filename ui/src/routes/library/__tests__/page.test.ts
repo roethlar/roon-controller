@@ -2509,6 +2509,135 @@ describe('Library page — Recently Played tile click', () => {
 		expect(get(commandFeedbackStore)?.message ?? '').not.toMatch(/Couldn't find/);
 	});
 
+	it('reopen P1: short-album false positive — album "1" must not substring-match "1971" in subtitle', async () => {
+		// Reviewer's exact case: RECENT.album === "1" (The Beatles
+		// compilation). An ambiguous search with subtitles like
+		// "Live in 1971" would previously hit the album-evidence
+		// pass via `.includes('1')` and silently play the live
+		// version. Word-boundary matching prevents this — "1"
+		// has no word boundary inside "1971".
+		setSelectedZone('zone-a');
+
+		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
+		clearCommandFeedback();
+
+		// Default RECENT entry: title="Hey Jude", artist="The Beatles",
+		// album="1". Multiple title-only candidates with no real
+		// artist or album-token evidence — must refuse.
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				makeItem({
+					title: 'Hey Jude',
+					subtitle: 'Live in 1971',
+					itemKey: 'live',
+					itemType: 'track',
+					hint: 'action_list'
+				}),
+				makeItem({
+					title: 'Hey Jude',
+					subtitle: 'Tribute Cover Band, 2019',
+					itemKey: 'cover',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return searchResponse;
+		});
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Hey Jude'/i });
+		tile.click();
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message ?? '').toMatch(/Couldn't find/);
+		});
+
+		// Refused — no lookup/execute call fired.
+		const navCalls = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		);
+		expect(navCalls).toHaveLength(1); // just the search seed
+	});
+
+	it('reopen P1: album-evidence refuses when multiple candidates match title+album', async () => {
+		// Same track appearing on N compilations would have multiple
+		// title+album matches. Refuse rather than picking the first
+		// arbitrarily.
+		setSelectedZone('zone-a');
+
+		const { clearCommandFeedback } = await import('$lib/stores/commandFeedbackStore');
+		clearCommandFeedback();
+
+		const { resetRecentlyPlayed, applyRecentlyPlayedInserted } = await import(
+			'$lib/stores/recentlyPlayedStore'
+		);
+		resetRecentlyPlayed();
+		applyRecentlyPlayedInserted({
+			entry: {
+				title: 'Some Song',
+				artist: 'Original Artist',
+				album: 'Greatest Hits',
+				zone_id: 'zone-a',
+				played_at: '2026-05-17T23:09:00Z'
+			},
+			revision: 1,
+			epoch: 1
+		});
+		await tick();
+
+		const searchResponse = listResult({
+			level: 0,
+			items: [
+				makeItem({
+					title: 'Some Song',
+					subtitle: 'Different Artist · Greatest Hits',
+					itemKey: 'compilation-1',
+					itemType: 'track',
+					hint: 'action_list'
+				}),
+				makeItem({
+					title: 'Some Song',
+					subtitle: 'Yet Another Artist · Greatest Hits',
+					itemKey: 'compilation-2',
+					itemType: 'track',
+					hint: 'action_list'
+				})
+			]
+		});
+		apiBrowse.mockImplementation(async (_f: unknown, opts: any) => {
+			if (opts.multiSessionKey?.startsWith('welcome-stats')) {
+				return listResult({ level: 0 });
+			}
+			return searchResponse;
+		});
+
+		render(LibraryPage);
+		await tick();
+
+		const tile = await screen.findByRole('button', { name: /Play 'Some Song'/i });
+		tile.click();
+
+		await waitFor(async () => {
+			const { commandFeedbackStore } = await import('$lib/stores/commandFeedbackStore');
+			expect(get(commandFeedbackStore)?.message ?? '').toMatch(/Couldn't find/);
+		});
+
+		// Refused — no lookup/execute.
+		const navCalls = apiBrowse.mock.calls.filter(
+			([, opts]) => !opts.multiSessionKey?.startsWith('welcome-stats')
+		);
+		expect(navCalls).toHaveLength(1);
+	});
+
 	it('Clear button issues DELETE and applies the empty response', async () => {
 		// The server returns its post-drain entries. In the common
 		// case (no concurrent now-playing during clear), that's [].
